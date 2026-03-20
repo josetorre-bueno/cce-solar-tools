@@ -339,7 +339,7 @@ const C = {
   border:  "#30363d",
   text:    "#e6edf3",
   muted:   "#8b949e",
-  faint:   "#6e7681",
+  faint:   "#9ca8b4",
   blue:    "#58a6ff",
   green:   "#3fb950",
   purple:  "#bc8cff",
@@ -460,7 +460,12 @@ function App() {
   const hourly = useMemo(() => {
     if (!hourlyFixed || !hourlyTracker) return null;
     const trackerLimited = applyElevLimitToHourly(hourlyTracker, geocodedLat, minElev);
-    return buildHourlyProfile(hourlyFixed, trackerLimited, utility, chartMonth);
+    const profile = buildHourlyProfile(hourlyFixed, trackerLimited, utility, chartMonth);
+    if (minElev > 0) {
+      const unlimited = buildHourlyProfile(hourlyFixed, hourlyTracker, utility, chartMonth);
+      return profile.map((d, i) => ({ ...d, trackerUnlimited: unlimited[i].tracker }));
+    }
+    return profile;
   }, [hourlyFixed, hourlyTracker, utility, chartMonth, minElev, geocodedLat]);
 
   const tou = TOU_RATES[utility];
@@ -491,7 +496,7 @@ function App() {
             Dual-Axis Tracker — TOU Value Analyzer
           </h1>
           <p style={{color:C.muted,fontSize:13,marginTop:5}}>
-            NREL PVWatts v8 · Carport {tilt}° tilt / {azimuth}° az · Dual-axis tracker · Fixed DC:AC 1.2 · 14% losses · v6.2
+            NREL PVWatts v8 · Carport {tilt}° tilt / {azimuth}° az · Dual-axis tracker · Fixed DC:AC 1.2 · 14% losses · v6.3
           </p>
         </div>
 
@@ -884,7 +889,10 @@ function App() {
                   <Tooltip content={<CustomTooltip />} />
                   <Legend wrapperStyle={{fontSize:12,color:C.muted}} />
                   <Line type="monotone" dataKey="fixed"   stroke={C.blue}  strokeWidth={2} dot={false} name="Fixed 15°" />
-                  <Line type="monotone" dataKey="tracker" stroke={C.green} strokeWidth={2} dot={false} name="2-Axis Tracker" />
+                  <Line type="monotone" dataKey="tracker" stroke={C.green} strokeWidth={2} dot={false} name={minElev > 0 ? `Tracker (${minElev}° limit)` : "2-Axis Tracker"} />
+                  {minElev > 0 && hourly && hourly[0]?.trackerUnlimited !== undefined && (
+                    <Line type="monotone" dataKey="trackerUnlimited" stroke={C.green} strokeWidth={1.5} strokeDasharray="5 4" dot={false} name="Tracker (unlimited)" />
+                  )}
                 </LineChart>
               </ResponsiveContainer>
               <div style={{fontSize:12,color:C.muted,marginTop:6}}>
