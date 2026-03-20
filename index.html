@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>CCE Solar Tools</title>
+  <title>Solar Analysis Tools — CCE / Wipomo</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=DM+Mono&display=swap" rel="stylesheet">
   <style>
@@ -20,100 +20,45 @@
       padding: 2rem;
     }
     .logo {
-      font-size: 11px;
+      font-size: 12px;
       font-weight: 700;
-      letter-spacing: 0.15em;
+      letter-spacing: 0.12em;
       text-transform: uppercase;
       color: #4a9eff;
       margin-bottom: 0.5rem;
-    }
-    h1 {
-      font-size: 28px;
-      font-weight: 700;
-      color: #e8edf2;
-      margin-bottom: 0.5rem;
-    }
-    .subtitle {
-      font-size: 14px;
-      color: #5a7a9a;
-      margin-bottom: 3rem;
-      font-family: 'DM Mono', monospace;
-    }
-    .tools {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-      gap: 1.5rem;
-      width: 100%;
-      max-width: 720px;
-    }
-    .tool-card {
-      background: #111820;
-      border: 1px solid #1e2d3d;
-      border-radius: 12px;
-      padding: 1.75rem;
-      text-decoration: none;
-      color: inherit;
-      transition: border-color 0.15s, background 0.15s;
-      display: block;
-    }
-    .tool-card:hover {
-      border-color: #4a9eff;
-      background: #131c26;
-    }
-    .tool-tag {
-      font-size: 10px;
-      font-weight: 700;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
-      color: #4a9eff;
-      margin-bottom: 0.75rem;
-      display: block;
-    }
-    .tool-name {
-      font-size: 18px;
-      font-weight: 700;
-      color: #e8edf2;
-      margin-bottom: 0.5rem;
-    }
-    .tool-desc {
-      font-size: 13px;
-      color: #5a7a9a;
-      line-height: 1.6;
-    }
-    .tool-card.coming-soon {
-      opacity: 0.5;
-      cursor: default;
-      pointer-events: none;
-    }
-    .coming-soon .tool-tag {
-      color: #3a5a7a;
-    }
-    .footer {
-      margin-top: 3rem;
-      font-size: 11px;
-      color: #2a4a6a;
-      font-family: 'DM Mono', monospace;
       text-align: center;
-      line-height: 1.8;
     }
+    .logo span { color: #8ab8ff; opacity: 0.7; margin: 0 8px; }
+    h1 { font-size: 28px; font-weight: 700; color: #e8edf2; margin-bottom: 0.5rem; text-align: center; }
+    .subtitle { font-size: 14px; color: #8ba8c4; margin-bottom: 3rem; font-family: 'DM Mono', monospace; text-align: center; }
+    .tools { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.5rem; width: 100%; max-width: 760px; }
+    .tool-card { background: #111820; border: 1px solid #1e2d3d; border-radius: 12px; padding: 1.75rem; text-decoration: none; color: inherit; transition: border-color 0.15s, background 0.15s; display: block; }
+    .tool-card:hover { border-color: #4a9eff; background: #131c26; }
+    .tool-tag { font-size: 10px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: #4a9eff; margin-bottom: 0.75rem; display: block; }
+    .tool-name { font-size: 18px; font-weight: 700; color: #e8edf2; margin-bottom: 0.5rem; }
+    .tool-desc { font-size: 13px; color: #9ab4cc; line-height: 1.6; }
+    .tool-card.coming-soon { opacity: 0.45; cursor: default; pointer-events: none; }
+    .coming-soon .tool-tag { color: #4a6a8a; }
+    .footer { margin-top: 3rem; font-size: 11px; color: #5a7a9a; font-family: 'DM Mono', monospace; text-align: center; line-height: 1.8; }
+    .footer a { color: #6a9acc; text-decoration: none; }
   </style>
 </head>
 <body>
-  <div class="logo">Center for Community Energy</div>
+  <div class="logo">Center for Community Energy <span>/</span> Wipomo</div>
   <h1>Solar Analysis Tools</h1>
-  <p class="subtitle">SDG&E territory · Enphase · NEM 3.0</p>
+  <p class="subtitle">SDG&amp;E territory · Enphase · NEM 3.0</p>
 
   <div class="tools">
     <a href="green_button_emulator.html" class="tool-card">
       <span class="tool-tag">Pre-construction</span>
       <div class="tool-name">Green Button Emulator</div>
-      <p class="tool-desc">Generate synthetic Green Button load data for buildings before meters are installed. SDG&E XML and CSV output.</p>
+      <p class="tool-desc">Generate synthetic Green Button load data for buildings before meters are installed. Outputs SDG&amp;E XML and CSV formats.</p>
     </a>
 
     <a href="tracker_tou.html" class="tool-card">
       <span class="tool-tag">Carport Solar</span>
       <div class="tool-name">Dual-Axis Tracker Analyzer</div>
-      <p class="tool-desc">Compare fixed-tilt carport arrays vs. dual-axis trackers by TOU dollar value. Supports carport elevation limits.</p>
+      <p class="tool-desc">Compare fixed-tilt carport arrays vs. dual-axis trackers by TOU dollar value. Enter any address — pulls live NREL PVWatts data. Supports carport elevation limits.</p>
     </a>
 
     <a href="#" class="tool-card coming-soon">
@@ -130,8 +75,8 @@
   </div>
 
   <div class="footer">
-    Center for Community Energy / Wipomo · admin@cc-energy.org<br>
-    Solar analysis tools for SDG&E territory · Green Energy EPC
+    Center for Community Energy / Wipomo · <a href="mailto:admin@cc-energy.org">admin@cc-energy.org</a><br>
+    Solar analysis tools for SDG&amp;E territory · Green Energy EPC by Makello
   </div>
 </body>
 </html>
