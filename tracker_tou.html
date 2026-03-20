@@ -368,24 +368,28 @@ function getElevTable(lat) {
 
 // Apply minimum elevation constraint to a full 8760-hour tracker array
 // When sun is above horizon but below minElev, tracker holds at minElev
-// Output scales by sin(minElev)/sin(actualElev)
+// The panel points above the sun — AOI = (minElev - solarElev)
+// Output = true_tracking_output * cos(AOI) — always <= true tracking
 function applyElevLimitToHourly(trackerHourly, lat, minElev) {
   if (minElev <= 0) return trackerHourly;
   const elevTable = getElevTable(lat);
-  const MONTH_START_HOUR = [0,744,1416,2160,2880,3624,4344,5088,5832,6552,7296,8016];
-  const MONTH_DAYS = [31,28,31,30,31,30,31,31,30,31,30,31];
-  const sinMin = Math.sin(minElev * Math.PI / 180);
+  // Build month lookup array: for each of 8760 hours, which month (1-12)?
+  const MS = [0,744,1416,2160,2880,3624,4344,5088,5832,6552,7296,8016];
+  const hourToMonth = new Array(8760);
+  for (let mi = 0; mi < 12; mi++) {
+    const end = mi < 11 ? MS[mi+1] : 8760;
+    for (let i = MS[mi]; i < end; i++) hourToMonth[i] = mi + 1;
+  }
   const result = new Array(8760);
-  let mi = 0;
   for (let i = 0; i < 8760; i++) {
-    while (mi < 11 && i >= MONTH_START_HOUR[mi + 1]) mi++;
-    const month = mi + 1;
+    const month = hourToMonth[i];
     const hour = i % 24;
     const solarElev = elevTable[String(month)][hour];
     const tkwh = trackerHourly[i];
-    if (minElev > 0 && solarElev > 0 && solarElev < minElev) {
-      const sinActual = Math.sin(solarElev * Math.PI / 180);
-      result[i] = sinActual > 0 ? tkwh * (sinMin / sinActual) : tkwh;
+    // Only constrain when sun is above horizon AND below the limit
+    if (solarElev > 0 && solarElev < minElev) {
+      const aoi = (minElev - solarElev) * Math.PI / 180;
+      result[i] = tkwh * Math.cos(aoi);
     } else {
       result[i] = tkwh;
     }
@@ -487,7 +491,7 @@ function App() {
             Dual-Axis Tracker — TOU Value Analyzer
           </h1>
           <p style={{color:C.muted,fontSize:13,marginTop:5}}>
-            NREL PVWatts v8 · Carport {tilt}° tilt / {azimuth}° az · Dual-axis tracker · Fixed DC:AC 1.2 · 14% losses
+            NREL PVWatts v8 · Carport {tilt}° tilt / {azimuth}° az · Dual-axis tracker · Fixed DC:AC 1.2 · 14% losses · v6.2
           </p>
         </div>
 
