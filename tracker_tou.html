@@ -561,7 +561,7 @@ function App() {
             Dual-Axis Tracker — TOU Value Analyzer
           </h1>
           <p style={{color:C.muted,fontSize:13,marginTop:5}}>
-            NREL PVWatts v8 · Carport {tilt}° tilt / {azimuth}° az · Dual-axis tracker · Fixed DC:AC 1.2 · 14% losses · v6.5
+            NREL PVWatts v8 · Carport {tilt}° tilt / {azimuth}° az · Dual-axis tracker · Fixed DC:AC 1.2 · 14% losses · v6.6
           </p>
         </div>
 
@@ -592,12 +592,12 @@ function App() {
         </div>
 
         {/* ── Row 2: Tracker-specific parameters ── */}
-        <div style={{borderTop:`1px solid ${C.border}40`,margin:"0 0 10px"}}/>
+        <div style={{borderTop:"1px solid #3a4a5a",margin:"0 0 12px",opacity:0.8}}/>
         <div style={{fontSize:10,color:C.faint,textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:6}}>Tracker Parameters</div>
         <div style={{display:"flex",gap:14,flexWrap:"wrap",marginBottom:12,alignItems:"flex-start"}}>
 
           <ValidatedInput label="Tracker DC:AC" value={trackerDcAcInput} unit=""
-            min={0.8} max={1.5} step={0.05} hint="0.8–1.5 · Fixed always 1.2"
+            min={0.8} max={1.5} step={0.05} hint="Tracker only · range 0.8–1.5 · Fixed array uses 1.2"
             onChange={v => { setTrackerDcAcInput(v.raw); if (v.valid) setTrackerDcAc(v.num); }} />
 
           <ValidatedInput label="Bifacial Gain" value={bifacialInput} unit="%"
@@ -640,16 +640,16 @@ function App() {
         </div>
 
         {/* ── Row 3: Carport fixed-array parameters ── */}
-        <div style={{borderTop:`1px solid ${C.border}40`,margin:"0 0 10px"}}/>
+        <div style={{borderTop:"1px solid #3a4a5a",margin:"0 0 12px",opacity:0.8}}/>
         <div style={{fontSize:10,color:C.faint,textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:6}}>Carport (Fixed Array)</div>
         <div style={{display:"flex",gap:14,flexWrap:"wrap",marginBottom:20,alignItems:"flex-start"}}>
 
           <ValidatedInput label="Carport Tilt" value={tiltInput} unit="°"
-            min={0} max={60} step={1} hint="0°–60° · Tracker tilt auto-controlled"
+            min={0} max={60} step={1} hint="0°–60° · Applies to fixed array only · Tracker self-orients"
             onChange={v => { setTiltInput(v.raw); if (v.valid) setTilt(v.num); }} />
 
           <ValidatedInput label="Carport Azimuth" value={azimuthInput} unit="°"
-            min={0} max={360} step={1} hint="0°–360° · 180°=south · Tracker azimuth auto-controlled"
+            min={0} max={360} step={1} hint="0°–360° · 180°=south · Applies to fixed array only · Tracker self-orients"
             onChange={v => { setAzimuthInput(v.raw); if (v.valid) setAzimuth(v.num === 360 ? 0 : v.num); }} />
 
           <div style={{marginLeft:"auto",paddingTop:22}}>
