@@ -447,8 +447,9 @@ function ValidatedInput({ label, value, unit, min, max, step, hint, onChange }) 
   );
 }
 
+const { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine } = window.Recharts || {};
+
 function App() {
-  const { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine } = Recharts;
   const [addressInput,     setAddressInput]     = useState("");
   const [utility,          setUtility]          = useState("SDG&E TOU-A");
   const [unitsInput,       setUnitsInput]       = useState("38.7");
@@ -456,7 +457,7 @@ function App() {
   const [chartMonth,       setChartMonth]       = useState(7);
   const [trackerDcAcInput, setTrackerDcAcInput] = useState("1.1");
   const [trackerDcAc,      setTrackerDcAc]      = useState(1.1);
-  const [bifacialInput,    setTrackerBifacialInput] = useState("0");
+  const [trackerBifacialInput, setTrackerBifacialInput] = useState("0");
   const [trackerBifacial,      setTrackerBifacial]      = useState(0);
   const [carportDcAcInput,     setCarportDcAcInput]     = useState("1.2");
   const [carportDcAc,          setCarportDcAc]          = useState(1.2);
@@ -566,7 +567,7 @@ function App() {
             Dual-Axis Tracker — TOU Value Analyzer
           </h1>
           <p style={{color:C.muted,fontSize:13,marginTop:5}}>
-            NREL PVWatts v8 · Carport {tilt}° tilt / {azimuth}° az · Dual-axis tracker · Fixed DC:AC 1.2 · 14% losses · v6.7
+            NREL PVWatts v8 · Carport {tilt}° tilt / {azimuth}° az · Dual-axis tracker · Fixed DC:AC 1.2 · 14% losses · v6.8
           </p>
         </div>
 
@@ -779,6 +780,29 @@ function App() {
                   <div style={{fontSize:11,color:C.muted,marginTop:4}}>{c.sub}</div>
                 </div>
               ))}
+            </div>
+
+            {/* Export button */}
+            <div style={{marginBottom:16,display:"flex",justifyContent:"flex-end"}}>
+              <button onClick={() => {
+                const safeName = queriedAddress.replace(/[^a-zA-Z0-9]/g,'_').slice(0,40);
+                const dateStr = new Date().toISOString().slice(0,10);
+                const filename = `tracker_${safeName}_${dateStr}.csv`;
+                const rows = ['Hour,AC_kWh'];
+                hourlyTracker.forEach((v, i) => rows.push(`${i},${v.toFixed(4)}`));
+                const blob = new Blob([rows.join('\n')], {type:'text/csv'});
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url; a.download = filename; a.click();
+                URL.revokeObjectURL(url);
+              }}
+              style={{
+                padding:"7px 20px", borderRadius:6, fontSize:12, fontWeight:600,
+                background:"#161b22", border:`1px solid ${C.border}`,
+                color:C.muted, cursor:"pointer"
+              }}>
+                ↓ Export Tracker Hourly (kWh CSV)
+              </button>
             </div>
 
             {/* Effective rate row */}
