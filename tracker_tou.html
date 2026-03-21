@@ -31,7 +31,6 @@ const { useState, useMemo, useCallback } = React;
 const PVWATTS_BASE        = "https://developer.nlr.gov/api/pvwatts/v8.json";
 const PVWATTS_KEY         = "U6uDdjf1z12nH28I5O3G3dxpghQlD3FvWMKiDiDj";
 const FIXED_TILT          = 15;
-const DC_AC_RATIO_FIXED   = 1.2;
 const DC_AC_RATIO_TRACKER = 1.1;
 const LOSSES              = 14;
 
@@ -457,8 +456,12 @@ function App() {
   const [chartMonth,       setChartMonth]       = useState(7);
   const [trackerDcAcInput, setTrackerDcAcInput] = useState("1.1");
   const [trackerDcAc,      setTrackerDcAc]      = useState(1.1);
-  const [bifacialInput,    setBifacialInput]    = useState("0");
-  const [bifacial,         setBifacial]         = useState(0);
+  const [bifacialInput,    setTrackerBifacialInput] = useState("0");
+  const [trackerBifacial,      setTrackerBifacial]      = useState(0);
+  const [carportDcAcInput,     setCarportDcAcInput]     = useState("1.2");
+  const [carportDcAc,          setCarportDcAc]          = useState(1.2);
+  const [carportBifacialInput, setCarportBifacialInput] = useState("0");
+  const [carportBifacial,      setCarportBifacial]      = useState(0);
   const [tiltInput,        setTiltInput]        = useState("7");
   const [tilt,             setTilt]             = useState(7);
   const [azimuthInput,     setAzimuthInput]     = useState("180");
@@ -481,7 +484,9 @@ function App() {
     const checks = [
       { v: parseFloat(unitsInput),       min: 1,   max: 500 },
       { v: parseFloat(trackerDcAcInput), min: 0.8, max: 1.5 },
-      { v: parseFloat(bifacialInput),    min: 0,   max: 30  },
+      { v: parseFloat(trackerBifacialInput), min: 0, max: 30 },
+      { v: parseFloat(carportDcAcInput),     min: 0.8, max: 1.5 },
+      { v: parseFloat(carportBifacialInput), min: 0,   max: 30  },
       { v: parseFloat(tiltInput),        min: 0,   max: 60  },
       { v: parseFloat(azimuthInput),     min: 0,   max: 360 },
     ];
@@ -501,8 +506,8 @@ function App() {
       const geo = await geocodeAddress(addr);
       // Step 2: two parallel PVWatts calls with lat/lon
       const [fixedResult, trackerResult] = await Promise.all([
-        fetchPVWatts({ lat: geo.lat, lon: geo.lon, systemCapacity: units, arrayType: 0, tilt, azimuth, dcAcRatio: DC_AC_RATIO_FIXED, bifacial }),
-        fetchPVWatts({ lat: geo.lat, lon: geo.lon, systemCapacity: units, arrayType: 4, tilt, azimuth, dcAcRatio: trackerDcAc,            bifacial }),
+        fetchPVWatts({ lat: geo.lat, lon: geo.lon, systemCapacity: units, arrayType: 0, tilt, azimuth, dcAcRatio: carportDcAc, bifacial: carportBifacial }),
+        fetchPVWatts({ lat: geo.lat, lon: geo.lon, systemCapacity: units, arrayType: 4, tilt, azimuth, dcAcRatio: trackerDcAc, bifacial: trackerBifacial }),
       ]);
       setHourlyFixed(fixedResult.ac_hourly);
       setHourlyTracker(trackerResult.ac_hourly);
@@ -514,7 +519,7 @@ function App() {
     } finally {
       setLoading(false);
     }
-  }, [addressInput, units, trackerDcAc, bifacial, tilt, azimuth]);
+  }, [addressInput, units, trackerDcAc, trackerBifacial, carportDcAc, carportBifacial, tilt, azimuth]);
 
   const results = useMemo(() => {
     if (!hourlyFixed || !hourlyTracker) return null;
@@ -561,14 +566,13 @@ function App() {
             Dual-Axis Tracker — TOU Value Analyzer
           </h1>
           <p style={{color:C.muted,fontSize:13,marginTop:5}}>
-            NREL PVWatts v8 · Carport {tilt}° tilt / {azimuth}° az · Dual-axis tracker · Fixed DC:AC 1.2 · 14% losses · v6.6
+            NREL PVWatts v8 · Carport {tilt}° tilt / {azimuth}° az · Dual-axis tracker · Fixed DC:AC 1.2 · 14% losses · v6.7
           </p>
         </div>
 
-        {/* ── Row 1: Applies to both array types ── */}
+                {/* ── Row 1: Common to both arrays ──────────────────────────── */}
         <div style={{fontSize:10,color:C.faint,textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:6}}>Both Arrays</div>
         <div style={{display:"flex",gap:14,flexWrap:"wrap",marginBottom:12,alignItems:"flex-start"}}>
-
           <div style={{flex:"1 1 280px"}}>
             <div style={{fontSize:11,color:C.muted,marginBottom:5,textTransform:"uppercase",letterSpacing:"0.06em",fontWeight:600}}>Site Address</div>
             <input type="text" placeholder="e.g. 2020 Camino Del Rio N, San Diego, CA"
@@ -576,7 +580,6 @@ function App() {
               onKeyDown={e => e.key === "Enter" && !hasErrors && handleCompute()}
               style={{background:C.surface,border:`1px solid ${C.border}`,color:C.text,padding:"7px 12px",borderRadius:6,fontSize:13,width:"100%",boxSizing:"border-box"}} />
           </div>
-
           <div>
             <div style={{fontSize:11,color:C.muted,marginBottom:5,textTransform:"uppercase",letterSpacing:"0.06em",fontWeight:600}}>Rate Schedule</div>
             <select value={utility} onChange={e => setUtility(e.target.value)}
@@ -584,38 +587,33 @@ function App() {
               {Object.keys(TOU_RATES).map(o => <option key={o}>{o}</option>)}
             </select>
           </div>
-
           <ValidatedInput label="System kW DC" value={unitsInput} unit="kW"
-            min={1} max={500} step={0.1} hint="1–500 kW"
+            min={1} max={500} step={0.1} hint="1–500 kW · same DC capacity for both arrays"
             onChange={v => { setUnitsInput(v.raw); if (v.valid) setUnits(v.num); }} />
-
         </div>
 
-        {/* ── Row 2: Tracker-specific parameters ── */}
-        <div style={{borderTop:"1px solid #3a4a5a",margin:"0 0 12px",opacity:0.8}}/>
-        <div style={{fontSize:10,color:C.faint,textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:6}}>Tracker Parameters</div>
+        {/* Rule */}
+        <div style={{borderTop:"1px solid #3a4a5a",marginBottom:12}}/>
+
+        {/* ── Row 2: Tracker parameters ────────────────────────────────── */}
+        <div style={{fontSize:10,color:C.faint,textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:6}}>Tracker (Dual-Axis)</div>
         <div style={{display:"flex",gap:14,flexWrap:"wrap",marginBottom:12,alignItems:"flex-start"}}>
-
           <ValidatedInput label="Tracker DC:AC" value={trackerDcAcInput} unit=""
-            min={0.8} max={1.5} step={0.05} hint="Tracker only · range 0.8–1.5 · Fixed array uses 1.2"
+            min={0.8} max={1.5} step={0.05} hint="0.8–1.5 · typically 1.0–1.1"
             onChange={v => { setTrackerDcAcInput(v.raw); if (v.valid) setTrackerDcAc(v.num); }} />
-
-          <ValidatedInput label="Bifacial Gain" value={bifacialInput} unit="%"
-            min={0} max={30} step={0.5} hint="0=monofacial · 2–5%=typical · 0–30%"
-            onChange={v => { setBifacialInput(v.raw); if (v.valid) setBifacial(v.num); }} />
-
+          <ValidatedInput label="Tracker Bifacial Gain" value={trackerBifacialInput} unit="%"
+            min={0} max={30} step={0.5} hint="0=monofacial · 2–5%=typical · up to 30%"
+            onChange={v => { setTrackerBifacialInput(v.raw); if (v.valid) setTrackerBifacial(v.num); }} />
           <div>
-            <div style={{fontSize:11,color:C.muted,marginBottom:5,textTransform:"uppercase",letterSpacing:"0.06em",fontWeight:600}}>Min Elevation Limit</div>
+            <div style={{fontSize:11,color:C.muted,marginBottom:5,textTransform:"uppercase",letterSpacing:"0.06em",fontWeight:600}}>
+              Min Elevation Limit
+              {minElev > 0 && <span style={{marginLeft:8,fontWeight:700,fontSize:12,color:C.yellow,textTransform:"none",letterSpacing:0}}>{minElev}° — constrained</span>}
+            </div>
             <div style={{display:"flex",alignItems:"center",gap:8}}>
               <input type="range" min={0} max={45} step={1} value={minElev}
                 onChange={e => { const v=parseInt(e.target.value); setMinElev(v); setMinElevInput(String(v)); }}
                 style={{width:110,accentColor:"#58a6ff"}} />
-              <input
-                type="text"
-                inputMode="numeric"
-                autoComplete="off"
-                autoCorrect="off"
-                spellCheck={false}
+              <input type="text" inputMode="numeric" autoComplete="off" autoCorrect="off" spellCheck={false}
                 value={minElevInput}
                 onChange={e => {
                   const raw = e.target.value.replace(/[^0-9]/g, '');
@@ -633,25 +631,29 @@ function App() {
               <span style={{fontSize:11,color:"#8b949e"}}>°</span>
             </div>
             <div style={{fontSize:10,marginTop:3,color:minElev===0?"#9ca8b4":"#e3b341"}}>
-              {minElev===0 ? "0=unlimited true dual-axis · max 45°" : `${minElev}° limit active · early/late hours constrained`}
+              {minElev===0 ? "0=unlimited (true dual-axis) · max 45°" : `${minElev}° limit active · early/late hours constrained`}
             </div>
           </div>
-
         </div>
 
-        {/* ── Row 3: Carport fixed-array parameters ── */}
-        <div style={{borderTop:"1px solid #3a4a5a",margin:"0 0 12px",opacity:0.8}}/>
+        {/* Rule */}
+        <div style={{borderTop:"1px solid #3a4a5a",marginBottom:12}}/>
+
+        {/* ── Row 3: Carport parameters + Compute ──────────────────────── */}
         <div style={{fontSize:10,color:C.faint,textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:6}}>Carport (Fixed Array)</div>
         <div style={{display:"flex",gap:14,flexWrap:"wrap",marginBottom:20,alignItems:"flex-start"}}>
-
+          <ValidatedInput label="Carport DC:AC" value={carportDcAcInput} unit=""
+            min={0.8} max={1.5} step={0.05} hint="0.8–1.5 · typically 1.2"
+            onChange={v => { setCarportDcAcInput(v.raw); if (v.valid) setCarportDcAc(v.num); }} />
+          <ValidatedInput label="Carport Bifacial Gain" value={carportBifacialInput} unit="%"
+            min={0} max={30} step={0.5} hint="0=monofacial · 2–5%=typical · up to 30%"
+            onChange={v => { setCarportBifacialInput(v.raw); if (v.valid) setCarportBifacial(v.num); }} />
           <ValidatedInput label="Carport Tilt" value={tiltInput} unit="°"
-            min={0} max={60} step={1} hint="0°–60° · Applies to fixed array only · Tracker self-orients"
+            min={0} max={60} step={1} hint="0°–60° · tracker tilt is self-controlled"
             onChange={v => { setTiltInput(v.raw); if (v.valid) setTilt(v.num); }} />
-
           <ValidatedInput label="Carport Azimuth" value={azimuthInput} unit="°"
-            min={0} max={360} step={1} hint="0°–360° · 180°=south · Applies to fixed array only · Tracker self-orients"
+            min={0} max={360} step={1} hint="0°–360° · 180°=south · tracker azimuth is self-controlled"
             onChange={v => { setAzimuthInput(v.raw); if (v.valid) setAzimuth(v.num === 360 ? 0 : v.num); }} />
-
           <div style={{marginLeft:"auto",paddingTop:22}}>
             <button onClick={handleCompute} disabled={loading || hasErrors}
               style={{padding:"9px 32px",borderRadius:6,fontSize:14,fontWeight:600,
@@ -661,10 +663,9 @@ function App() {
               {loading ? "Computing…" : hasErrors ? "Fix inputs above" : "Compute ▶"}
             </button>
           </div>
-
         </div>
 
-        {/* Error */}
+{/* Error */}
         {error && (
           <div style={{background:"#f7816615",border:`1px solid ${C.orange}`,borderRadius:8,padding:"12px 16px",marginBottom:16,fontSize:12,color:C.orange,maxHeight:160,overflowY:"auto",wordBreak:"break-word",whiteSpace:"pre-wrap",fontFamily:"monospace",lineHeight:1.6}}>
             ⚠ {error}
