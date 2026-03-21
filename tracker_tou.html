@@ -397,6 +397,57 @@ function applyElevLimitToHourly(trackerHourly, lat, minElev) {
   return result;
 }
 
+
+// ─── VALIDATED INPUT COMPONENT ───────────────────────────────────────────────
+// Shows red border + error message when value is out of range
+// onChange receives { raw, num, valid }
+function ValidatedInput({ label, value, unit, min, max, step, hint, onChange }) {
+  const num = parseFloat(value);
+  const outOfRange = !isNaN(num) && (num < min || num > max);
+  const empty = value === "" || value === "-";
+  const invalid = empty || isNaN(num) || outOfRange;
+
+  const borderColor = outOfRange ? "#f78166" : "#30363d";
+  const msgColor = "#f78166";
+
+  return (
+    <div>
+      <div style={{fontSize:11,color:"#8b949e",marginBottom:5,textTransform:"uppercase",letterSpacing:"0.06em",fontWeight:600}}>
+        {label}
+      </div>
+      <div style={{display:"flex",alignItems:"center",gap:6}}>
+        <input
+          type="number" min={min} max={max} step={step} value={value}
+          onChange={e => {
+            const raw = e.target.value;
+            const n = parseFloat(raw);
+            const valid = !isNaN(n) && n >= min && n <= max;
+            onChange({ raw, num: n, valid });
+          }}
+          style={{
+            background:"#161b22",
+            border:`1px solid ${borderColor}`,
+            color: outOfRange ? "#f78166" : "#e6edf3",
+            padding:"7px 10px", borderRadius:6,
+            fontSize:13, width:90, textAlign:"right",
+            outline: outOfRange ? "none" : undefined,
+            boxShadow: outOfRange ? "0 0 0 2px #f7816630" : "none",
+          }}
+        />
+        {unit && <span style={{fontSize:11,color:"#8b949e"}}>{unit}</span>}
+      </div>
+      {outOfRange && (
+        <div style={{fontSize:10,color:msgColor,marginTop:3,fontWeight:600}}>
+          Max {max}{unit} · Min {min}{unit}
+        </div>
+      )}
+      {!outOfRange && hint && (
+        <div style={{fontSize:10,color:"#9ca8b4",marginTop:3}}>{hint}</div>
+      )}
+    </div>
+  );
+}
+
 function App() {
   const { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine } = Recharts;
   const [addressInput,     setAddressInput]     = useState("");
@@ -413,6 +464,7 @@ function App() {
   const [azimuthInput,     setAzimuthInput]     = useState("180");
   const [azimuth,          setAzimuth]          = useState(180);
   const [minElev,          setMinElev]          = useState(0);
+  const [minElevInput,     setMinElevInput]     = useState('0');
 
   // API state
   const [loading,      setLoading]        = useState(false);
@@ -422,6 +474,19 @@ function App() {
   const [hourlyTracker,setHourlyTracker]  = useState(null);
   const [queriedAddress, setQueriedAddress] = useState("");
   const [geocodedLat,    setGeocodedLat]    = useState(33);
+
+
+  // Validate all numeric inputs — gates the Compute button
+  const hasErrors = (() => {
+    const checks = [
+      { v: parseFloat(unitsInput),       min: 1,   max: 500 },
+      { v: parseFloat(trackerDcAcInput), min: 0.8, max: 1.5 },
+      { v: parseFloat(bifacialInput),    min: 0,   max: 30  },
+      { v: parseFloat(tiltInput),        min: 0,   max: 60  },
+      { v: parseFloat(azimuthInput),     min: 0,   max: 360 },
+    ];
+    return checks.some(({ v, min, max }) => isNaN(v) || v < min || v > max);
+  })();
 
   const handleCompute = useCallback(async () => {
     const addr = addressInput.trim();
@@ -496,12 +561,12 @@ function App() {
             Dual-Axis Tracker — TOU Value Analyzer
           </h1>
           <p style={{color:C.muted,fontSize:13,marginTop:5}}>
-            NREL PVWatts v8 · Carport {tilt}° tilt / {azimuth}° az · Dual-axis tracker · Fixed DC:AC 1.2 · 14% losses · v6.3
+            NREL PVWatts v8 · Carport {tilt}° tilt / {azimuth}° az · Dual-axis tracker · Fixed DC:AC 1.2 · 14% losses · v6.4
           </p>
         </div>
 
         {/* Controls — Row 1 */}
-        <div style={{display:"flex",gap:14,flexWrap:"wrap",marginBottom:12,alignItems:"flex-end"}}>
+        <div style={{display:"flex",gap:14,flexWrap:"wrap",marginBottom:12,alignItems:"flex-start"}}>
 
           {/* Address input */}
           <div style={{flex:"1 1 280px"}}>
@@ -513,7 +578,7 @@ function App() {
               placeholder="e.g. 2020 Camino Del Rio N, San Diego, CA"
               value={addressInput}
               onChange={e => setAddressInput(e.target.value)}
-              onKeyDown={e => e.key === "Enter" && handleCompute()}
+              onKeyDown={e => e.key === "Enter" && !hasErrors && handleCompute()}
               style={{
                 background:C.surface, border:`1px solid ${C.border}`,
                 color:C.text, padding:"7px 12px", borderRadius:6,
@@ -532,100 +597,28 @@ function App() {
           </div>
 
           {/* System kW */}
-          <div>
-            <div style={{fontSize:11,color:C.muted,marginBottom:5,textTransform:"uppercase",letterSpacing:"0.06em",fontWeight:600}}>System kW DC</div>
-            <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
-              <input
-                type="number" min="1" step="0.1" value={unitsInput}
-                onChange={e => {
-                  setUnitsInput(e.target.value);
-                  const v = parseFloat(e.target.value);
-                  if (!isNaN(v) && v > 0) setUnits(v);
-                }}
-                style={{
-                  background:C.surface, border:`1px solid ${C.blue}`,
-                  color:C.text, padding:"7px 10px", borderRadius:6,
-                  fontSize:13, width:90, textAlign:"right"
-                }}
-              />
-              <span style={{fontSize:11,color:C.muted}}>kW</span>
-              <span style={{fontSize:11,color:C.faint,margin:"0 4px"}}>or:</span>
-              {[38.7,77.4,116.1,154.8].map(v => (
-                <button key={v} onClick={() => { setUnits(v); setUnitsInput(String(v)); }}
-                  style={{padding:"7px 10px",borderRadius:6,border:"1px solid",fontSize:11,cursor:"pointer",
-                    background: units===v ? "#1f6feb" : C.surface,
-                    borderColor: units===v ? "#58a6ff" : C.border,
-                    color: units===v ? "#ffffff" : C.muted}}>
-                  {v}<span style={{opacity:.6,fontSize:9}}>({v/38.7|0}u)</span>
-                </button>
-              ))}
-            </div>
-          </div>
+          <ValidatedInput
+            label="System kW DC" value={unitsInput} unit="kW"
+            min={1} max={500} step={0.1}
+            hint="1–500 kW"
+            onChange={v => { setUnitsInput(v.raw); if (v.valid) setUnits(v.num); }}
+          />
 
           {/* Tracker DC:AC ratio */}
-          <div>
-            <div style={{fontSize:11,color:C.muted,marginBottom:5,textTransform:"uppercase",letterSpacing:"0.06em",fontWeight:600}}>
-              Tracker DC:AC
-            </div>
-            <div style={{display:"flex",gap:6,alignItems:"center"}}>
-              <input
-                type="number" min="0.8" max="1.5" step="0.05" value={trackerDcAcInput}
-                onChange={e => {
-                  setTrackerDcAcInput(e.target.value);
-                  const v = parseFloat(e.target.value);
-                  if (!isNaN(v) && v > 0) setTrackerDcAc(v);
-                }}
-                style={{
-                  background:C.surface, border:`1px solid ${C.border}`,
-                  color:C.text, padding:"7px 10px", borderRadius:6,
-                  fontSize:13, width:72, textAlign:"right"
-                }}
-              />
-              {[1.0, 1.1].map(v => (
-                <button key={v} onClick={() => { setTrackerDcAc(v); setTrackerDcAcInput(String(v)); }}
-                  style={{padding:"7px 10px",borderRadius:6,border:"1px solid",fontSize:11,cursor:"pointer",
-                    background: trackerDcAc===v ? "#1f6feb" : C.surface,
-                    borderColor: trackerDcAc===v ? "#58a6ff" : C.border,
-                    color: trackerDcAc===v ? "#ffffff" : C.muted}}>
-                  {v}
-                </button>
-              ))}
-            </div>
-            <div style={{fontSize:10,color:C.faint,marginTop:3}}>Fixed always 1.2</div>
-          </div>
+          <ValidatedInput
+            label="Tracker DC:AC" value={trackerDcAcInput} unit=""
+            min={0.8} max={1.5} step={0.05}
+            hint="Range 0.8–1.5 · Fixed always 1.2"
+            onChange={v => { setTrackerDcAcInput(v.raw); if (v.valid) setTrackerDcAc(v.num); }}
+          />
 
           {/* Bifacial gain */}
-          <div>
-            <div style={{fontSize:11,color:C.muted,marginBottom:5,textTransform:"uppercase",letterSpacing:"0.06em",fontWeight:600}}>
-              Bifacial Gain
-            </div>
-            <div style={{display:"flex",gap:6,alignItems:"center"}}>
-              <input
-                type="number" min="0" max="10" step="0.5" value={bifacialInput}
-                onChange={e => {
-                  setBifacialInput(e.target.value);
-                  const v = parseFloat(e.target.value);
-                  if (!isNaN(v) && v >= 0) setBifacial(v);
-                }}
-                style={{
-                  background:C.surface, border:`1px solid ${C.border}`,
-                  color:C.text, padding:"7px 10px", borderRadius:6,
-                  fontSize:13, width:72, textAlign:"right"
-                }}
-              />
-              <span style={{fontSize:11,color:C.muted}}>%</span>
-              {[0, 2, 3, 5].map(v => (
-                <button key={v} onClick={() => { setBifacial(v); setBifacialInput(String(v)); }}
-                  style={{padding:"7px 10px",borderRadius:6,border:"1px solid",fontSize:11,cursor:"pointer",
-                    background: bifacial===v ? "#1f6feb" : C.surface,
-                    borderColor: bifacial===v ? "#58a6ff" : C.border,
-                    color: bifacial===v ? "#ffffff" : C.muted}}>
-                  {v}%
-                </button>
-              ))}
-            </div>
-            <div style={{fontSize:10,color:C.faint,marginTop:3}}>0=monofacial · 2–3%=gravel/dirt · 5%=light concrete</div>
-          </div>
+          <ValidatedInput
+            label="Bifacial Gain" value={bifacialInput} unit="%"
+            min={0} max={30} step={0.5}
+            hint="0=monofacial · 2–5%=typical · up to 30%"
+            onChange={v => { setBifacialInput(v.raw); if (v.valid) setBifacial(v.num); }}
+          />
 
         </div>
 
