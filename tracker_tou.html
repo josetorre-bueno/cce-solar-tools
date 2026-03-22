@@ -64,6 +64,31 @@ const TOU_RATES = {
     },
     getSeasonal: (month) => month >= 6 && month <= 10 ? "summer" : "winter",
   },
+  "SDG&E AL-TOU-2": {
+    label: "SDG&E Schedule AL-TOU-2 — Medium/Large Commercial (≥20 kW, demand ratchet)",
+    rateNote: "Effective Oct 1, 2025 · Secondary voltage · Bundled service · Includes demand charges",
+    ratesVerified: "2025-10-01",
+    tariffUrl: "https://www.sdge.com/sites/default/files/regulatory/10-1-25%20Schedule%20AL-TOU-2%20Total%20Rates%20Table.pdf",
+    hasDemandCharges: true,
+    demandCharges: {
+      // Per kW — secondary voltage (Oct 2025)
+      nonCoincident: 21.89,       // highest kW any hour of month
+      summerOnPeak:   4.76,        // highest kW during on-peak hours, summer
+      winterOnPeak:   1.31,        // highest kW during on-peak hours, winter
+      touDemand:     45.61,        // TOU demand charge per kW (secondary)
+    },
+    seasonalRates: {
+      summer: { peak: 0.221, offpeak: 0.139, superoffpeak: 0.121 },
+      winter: { peak: 0.240, offpeak: 0.140, superoffpeak: 0.111 },
+    },
+    schedule: (month, hour) => {
+      if (hour >= 16 && hour < 21) return "peak";
+      if (hour < 6 || hour >= 21) return "superoffpeak";
+      return "offpeak";
+    },
+    getSeasonal: (month) => month >= 6 && month <= 10 ? "summer" : "winter",
+  },
+
   "SCE": {
     label: "SCE TOU-GS-1 — Small Commercial",
     rateNote: "Approximate 2025 rates · Verify with current SCE tariff",
@@ -449,6 +474,280 @@ function ValidatedInput({ label, value, unit, min, max, step, hint, onChange }) 
 
 const { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine } = window.Recharts || {};
 
+
+// ─── ACC EXPORT RATES — SDG&E NBT 2026 ────────────────────────────────────────
+// Source: SDG&E Solar Billing Plan Export Pricing, Current 2026, NBT00
+// Generation + Delivery components combined. Bundled customers only.
+// CPUC Resolution E-5328 / 2024 ACC vintage. Verified 2025-11-13.
+// Structure: ACC_EXPORT_RATES[month][hour] = [weekday_$/kWh, weekend_$/kWh]
+const ACC_EXPORT_RATES = {
+  1: [[0.088830,0.087919],[0.086708,0.088519],[0.084462,0.086612],[0.083976,0.085371],[0.086038,0.084260],[0.089678,0.085358],[0.089931,0.087952],[0.085156,0.079567],[0.073250,0.065637],[0.065376,0.055888],[0.063699,0.054304],[0.062991,0.053036],[0.062930,0.053382],[0.060225,0.048367],[0.060821,0.052361],[0.061243,0.054240],[0.078078,0.079013],[0.108968,0.104224],[0.099709,0.093809],[0.090204,0.086724],[0.089121,0.085628],[0.089736,0.084854],[0.093450,0.088293],[0.091064,0.085040]],
+  2: [[0.088028,0.084484],[0.085488,0.085515],[0.087321,0.084161],[0.087463,0.084004],[0.089466,0.083048],[0.087894,0.082858],[0.084338,0.079159],[0.081160,0.069955],[0.063054,0.047765],[0.052098,0.027013],[0.049321,0.026981],[0.047404,0.024705],[0.044042,0.024380],[0.039312,0.022058],[0.032813,0.021632],[0.030944,0.018969],[0.064678,0.056905],[0.107243,0.097805],[0.091985,0.100540],[0.086285,0.088926],[0.086716,0.085948],[0.083827,0.082901],[0.090950,0.083873],[0.087167,0.090545]],
+  3: [[0.073665,0.066816],[0.070120,0.068071],[0.066212,0.069400],[0.065625,0.070948],[0.066786,0.069934],[0.069908,0.069895],[0.072157,0.067394],[0.065179,0.060898],[0.046375,0.006312],[0.021641,0.001821],[0.017085,0.004610],[0.015902,0.002852],[0.016159,0.000613],[0.012092,0.000599],[0.010517,0.000000],[0.011646,0.003786],[0.022663,0.016353],[0.056232,0.031412],[0.080976,0.070648],[0.079902,0.073238],[0.074966,0.070843],[0.072088,0.070378],[0.068068,0.068560],[0.069681,0.064831]],
+  4: [[0.073861,0.064273],[0.071755,0.064986],[0.076762,0.072086],[0.074343,0.076292],[0.073300,0.072639],[0.076342,0.073763],[0.067844,0.067064],[0.054572,0.044901],[0.012343,0.001537],[0.004790,0.001788],[0.007929,0.007473],[0.007010,0.004414],[0.004092,0.000726],[0.001456,0.000000],[0.000604,0.000000],[0.000125,0.000000],[0.000763,0.000000],[0.004608,0.002651],[0.073313,0.068347],[0.073093,0.078140],[0.072325,0.066336],[0.070852,0.067226],[0.068243,0.065858],[0.074473,0.067981]],
+  5: [[0.076833,0.068009],[0.072788,0.069648],[0.075276,0.079519],[0.079648,0.080790],[0.080054,0.075809],[0.073664,0.069268],[0.065571,0.067283],[0.061636,0.031926],[0.022543,0.001904],[0.011919,0.004496],[0.013070,0.004248],[0.009893,0.004956],[0.009405,0.004478],[0.010401,0.003822],[0.008831,0.000000],[0.008420,0.000000],[0.011375,0.000000],[0.031897,0.000636],[0.080047,0.056846],[0.085340,0.083510],[0.074454,0.076365],[0.072879,0.074192],[0.074252,0.074068],[0.075341,0.075526]],
+  6: [[0.075110,0.071000],[0.072921,0.068935],[0.069859,0.068948],[0.073075,0.069319],[0.070771,0.066550],[0.069764,0.082705],[0.065914,0.068808],[0.060186,0.056840],[0.041789,0.017600],[0.035090,0.013036],[0.033042,0.017526],[0.028508,0.011107],[0.028145,0.012111],[0.029040,0.006866],[0.033089,0.008648],[0.027507,0.008815],[0.030903,0.009685],[0.043873,0.020969],[0.086613,0.069947],[0.089804,0.093212],[0.084913,0.080719],[0.080929,0.076594],[0.076009,0.075913],[0.069973,0.071979]],
+  7: [[0.072294,0.079276],[0.072987,0.072554],[0.070073,0.070130],[0.070674,0.069742],[0.067637,0.067084],[0.067539,0.067810],[0.070530,0.064218],[0.067173,0.061319],[0.063947,0.024559],[0.057203,0.024347],[0.058309,0.026333],[0.055999,0.022128],[0.051838,0.024542],[0.047670,0.025633],[0.047448,0.019821],[0.049673,0.023676],[0.153664,0.023705],[0.278933,0.043261],[0.323917,0.096132],[0.332083,0.118209],[0.205029,0.102810],[0.084826,0.081103],[0.081156,0.078378],[0.074730,0.075014]],
+  8: [[0.087316,0.086310],[0.088314,0.084451],[0.085097,0.086012],[0.081429,0.079428],[0.081097,0.076436],[0.081522,0.076520],[0.077987,0.070688],[0.069241,0.059786],[0.062737,0.042129],[0.061610,0.038652],[0.061365,0.038209],[0.060787,0.038301],[0.060721,0.035091],[0.060483,0.034742],[0.060759,0.035321],[0.064161,0.041747],[0.077103,0.056618],[0.924946,0.868307],[1.069771,0.922775],[0.908028,0.945792],[0.984815,1.019649],[0.877307,0.932945],[0.865975,0.924969],[0.090043,0.088768]],
+  9: [[0.089501,0.079133],[0.087382,0.082018],[0.085859,0.080263],[0.082266,0.076462],[0.081066,0.075522],[0.083890,0.075457],[0.081363,0.073370],[0.068222,0.060450],[0.061030,0.035832],[0.057084,0.023338],[0.055088,0.020315],[0.054825,0.019505],[0.054642,0.016615],[0.056093,0.018622],[0.053518,0.022799],[0.051662,0.025479],[0.068327,0.239859],[0.131897,0.534619],[0.450081,0.932390],[0.581786,0.886458],[0.310407,0.540889],[0.150702,0.162697],[0.150154,0.163186],[0.095243,0.092353]],
+  10: [[0.086108,0.078635],[0.086699,0.079561],[0.083384,0.076111],[0.079285,0.076768],[0.079258,0.075186],[0.079296,0.074401],[0.083516,0.072063],[0.073522,0.064841],[0.063544,0.043182],[0.077532,0.021050],[0.056688,0.021034],[0.054945,0.020321],[0.054259,0.019963],[0.053647,0.019072],[0.053285,0.020612],[0.053008,0.021686],[0.058757,0.037766],[0.186990,0.079146],[0.192285,0.083440],[0.090855,0.081874],[0.087074,0.079025],[0.081269,0.076746],[0.087816,0.088594],[0.088687,0.082960]],
+  11: [[0.083465,0.079979],[0.082191,0.076610],[0.080582,0.075178],[0.079505,0.074260],[0.083618,0.074994],[0.085306,0.076326],[0.081837,0.076349],[0.072001,0.056052],[0.062130,0.035856],[0.059489,0.026572],[0.057273,0.024142],[0.054974,0.021353],[0.053593,0.020947],[0.047525,0.020477],[0.048911,0.021288],[0.063249,0.039849],[0.090045,0.077317],[0.092403,0.088893],[0.086679,0.084457],[0.084647,0.080977],[0.083644,0.078812],[0.085518,0.078353],[0.086594,0.082666],[0.089476,0.078340]],
+  12: [[0.085735,0.079651],[0.083980,0.078065],[0.080860,0.074512],[0.081487,0.070760],[0.083587,0.069793],[0.086129,0.071724],[0.095979,0.074763],[0.080161,0.064863],[0.071046,0.042413],[0.066888,0.022129],[0.064592,0.020983],[0.060972,0.019103],[0.057166,0.020330],[0.057568,0.014622],[0.056678,0.014007],[0.067270,0.040505],[0.091712,0.081130],[0.096525,0.086330],[0.095787,0.084193],[0.088786,0.080087],[0.087545,0.078888],[0.087134,0.074242],[0.088656,0.075531],[0.088935,0.074494]]
+};
+
+// HOLIDAYS — treated as weekends for ACC rate lookup
+const HOLIDAYS_2026 = new Set([
+  '2026-01-01','2026-02-16','2026-05-25','2026-07-04',
+  '2026-09-07','2026-11-11','2026-11-26','2026-12-25'
+]);
+
+function isWeekendOrHoliday(date) {
+  const d = date.getDay(); // 0=Sun, 6=Sat
+  const key = date.toISOString().slice(0,10);
+  return d === 0 || d === 6 || HOLIDAYS_2026.has(key);
+}
+
+function getAccExportRate(month, hour, date) {
+  const we = isWeekendOrHoliday(date) ? 1 : 0;
+  return ACC_EXPORT_RATES[month]?.[hour]?.[we] ?? 0.07;
+}
+
+// ─── GREEN BUTTON CSV PARSER ──────────────────────────────────────────────────
+// Parses SDG&E tab-delimited CSV export (15-min intervals) → 8760 hourly kWh
+// Returns { hourly: Float32Array(8760), startDate: Date, address: string }
+function parseGreenButtonCSV(text) {
+  const lines = text.split(/\r?\n/);
+  // Find header row — look for "Date" and "Start Time" and "Consumption"
+  let headerIdx = -1;
+  let dateCol = -1, timeCol = -1, useCol = -1;
+  const delim = lines[0].includes('\t') ? '\t' : ',';
+
+  for (let i = 0; i < Math.min(30, lines.length); i++) {
+    const cols = lines[i].split(delim).map(c => c.trim().replace(/^"|"$/g,''));
+    const di = cols.findIndex(c => /^date$/i.test(c));
+    const ti = cols.findIndex(c => /start.?time/i.test(c));
+    const ui = cols.findIndex(c => /consumption|kWh|usage/i.test(c));
+    if (di >= 0 && ti >= 0 && ui >= 0) {
+      headerIdx = i; dateCol = di; timeCol = ti; useCol = ui;
+      break;
+    }
+  }
+  if (headerIdx < 0) throw new Error("Could not find Date/Time/Consumption columns in CSV");
+
+  // Collect all interval records
+  const intervals = [];
+  for (let i = headerIdx + 1; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    const cols = line.split(delim).map(c => c.trim().replace(/^"|"$/g,''));
+    if (cols.length <= Math.max(dateCol, timeCol, useCol)) continue;
+    const dateStr = cols[dateCol];
+    const timeStr = cols[timeCol];
+    const kwh = parseFloat(cols[useCol]);
+    if (!dateStr || isNaN(kwh)) continue;
+    // Parse date
+    const dp = dateStr.match(/(\d+)[\/\-](\d+)[\/\-](\d+)/);
+    if (!dp) continue;
+    // SDG&E format is M/D/YYYY
+    let month, day, year;
+    if (parseInt(dp[3]) > 100) {
+      month = parseInt(dp[1]); day = parseInt(dp[2]); year = parseInt(dp[3]);
+    } else {
+      year = parseInt(dp[1]); month = parseInt(dp[2]); day = parseInt(dp[3]);
+    }
+    const tp = timeStr.match(/(\d+):(\d+)/);
+    if (!tp) continue;
+    const hour = parseInt(tp[1]);
+    const minute = parseInt(tp[2]);
+    intervals.push({ year, month, day, hour, minute, kwh });
+  }
+
+  if (intervals.length < 24) throw new Error("Not enough data rows in CSV (found " + intervals.length + ")");
+
+  // Trim to most recent 365 days
+  intervals.sort((a,b) => {
+    const da = new Date(a.year, a.month-1, a.day, a.hour, a.minute);
+    const db = new Date(b.year, b.month-1, b.day, b.hour, b.minute);
+    return da - db;
+  });
+
+  const last = intervals[intervals.length - 1];
+  const lastDate = new Date(last.year, last.month-1, last.day);
+  const cutoff = new Date(lastDate);
+  cutoff.setDate(cutoff.getDate() - 365);
+  const trimmed = intervals.filter(r => {
+    const d = new Date(r.year, r.month-1, r.day);
+    return d >= cutoff;
+  });
+
+  // Aggregate 15-min → hourly
+  const hourMap = {};
+  for (const r of trimmed) {
+    const key = `${r.year}-${String(r.month).padStart(2,'0')}-${String(r.day).padStart(2,'0')}-${String(r.hour).padStart(2,'0')}`;
+    if (!hourMap[key]) hourMap[key] = { year: r.year, month: r.month, day: r.day, hour: r.hour, kwh: 0 };
+    hourMap[key].kwh += r.kwh;
+  }
+
+  const first = trimmed[0];
+  const startDate = new Date(first.year, first.month-1, first.day);
+
+  return { hourMap, startDate, totalIntervals: trimmed.length };
+}
+
+// ─── BILLING ENGINE ───────────────────────────────────────────────────────────
+// Computes full bill with and without solar, including demand charges
+// billCycleDay: day of month billing period starts (1-28)
+// Returns detailed monthly breakdown
+const MONTH_DAYS_STD = [31,28,31,30,31,30,31,31,30,31,30,31];
+
+function computeBill(hourMap, solarHourly, rateKey, billCycleDay, startDate) {
+  const tou = TOU_RATES[rateKey];
+  const hasDemand = !!tou.hasDemandCharges;
+
+  // Build billing periods — 12 periods starting from billCycleDay
+  // Anchor to the start of the data
+  const anchorYear = startDate.getFullYear();
+  const anchorMonth = startDate.getMonth(); // 0-indexed
+
+  // Generate 12 billing period start dates
+  const periods = [];
+  let y = anchorYear, m = anchorMonth;
+  // Find first period start on or before startDate
+  let periodStart = new Date(y, m, billCycleDay);
+  if (periodStart > startDate) {
+    m--;
+    if (m < 0) { m = 11; y--; }
+    periodStart = new Date(y, m, billCycleDay);
+  }
+
+  for (let p = 0; p < 12; p++) {
+    const pStart = new Date(periodStart);
+    pStart.setMonth(pStart.getMonth() + p);
+    const pEnd = new Date(pStart);
+    pEnd.setMonth(pEnd.getMonth() + 1);
+    periods.push({ start: pStart, end: pEnd });
+  }
+
+  const results = [];
+
+  for (const period of periods) {
+    let baseEnergyCost = 0, solarEnergyCost = 0;
+    let baseExport = 0, solarExport = 0;
+    let baseKwh = 0, solarNetKwh = 0, solarGenKwh = 0;
+
+    // Demand tracking — peak kW by period type
+    let baseNonCoincidentPeak = 0, baseSummerOnPeakPeak = 0, baseWinterOnPeakPeak = 0;
+    let solarNonCoincidentPeak = 0, solarSummerOnPeakPeak = 0, solarWinterOnPeakPeak = 0;
+
+    const isSummerPeriod = period.start.getMonth() >= 5 && period.start.getMonth() <= 9; // Jun-Oct
+
+    // Iterate days in period
+    const cur = new Date(period.start);
+    while (cur < period.end) {
+      const y = cur.getFullYear();
+      const mo = cur.getMonth() + 1;
+      const d = cur.getDate();
+      const isWE = isWeekendOrHoliday(cur);
+      const isSummer = mo >= 6 && mo <= 10;
+
+      for (let h = 0; h < 24; h++) {
+        const key = `${y}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}-${String(h).padStart(2,'0')}`;
+        const loadKwh = hourMap[key]?.kwh ?? 0;
+        
+        // Solar index — map to 8760 array
+        const doy = Math.floor((cur - new Date(y, 0, 0)) / 86400000);
+        const solarIdx = Math.min((doy - 1) * 24 + h, 8759);
+        const genKwh = solarHourly ? (solarHourly[solarIdx] ?? 0) : 0;
+
+        const netKwh = loadKwh - genKwh;
+        const importKwh = Math.max(0, netKwh);
+        const exportKwh = Math.max(0, -netKwh);
+
+        // TOU rate for this hour
+        const season = tou.getSeasonal(mo);
+        const period_type = tou.schedule(mo, h);
+        const rate = tou.seasonalRates[season][period_type] ?? tou.seasonalRates[season].offpeak;
+
+        // ACC export rate
+        const exportRate = getAccExportRate(mo, h, cur);
+
+        // Energy costs
+        baseEnergyCost += loadKwh * rate;
+        solarEnergyCost += importKwh * rate;
+        baseExport += 0; // no solar baseline
+        solarExport += exportKwh * exportRate;
+
+        baseKwh += loadKwh;
+        solarNetKwh += importKwh;
+        solarGenKwh += genKwh;
+
+        // Demand tracking (kW = kWh for hourly data)
+        if (hasDemand) {
+          baseNonCoincidentPeak = Math.max(baseNonCoincidentPeak, loadKwh);
+          solarNonCoincidentPeak = Math.max(solarNonCoincidentPeak, importKwh);
+          if (period_type === "peak") {
+            if (isSummer) {
+              baseSummerOnPeakPeak = Math.max(baseSummerOnPeakPeak, loadKwh);
+              solarSummerOnPeakPeak = Math.max(solarSummerOnPeakPeak, importKwh);
+            } else {
+              baseWinterOnPeakPeak = Math.max(baseWinterOnPeakPeak, loadKwh);
+              solarWinterOnPeakPeak = Math.max(solarWinterOnPeakPeak, importKwh);
+            }
+          }
+        }
+      }
+      cur.setDate(cur.getDate() + 1);
+    }
+
+    // Compute demand charges
+    let baseDemandCost = 0, solarDemandCost = 0;
+    if (hasDemand) {
+      const dc = tou.demandCharges;
+      baseDemandCost = baseNonCoincidentPeak * dc.nonCoincident
+        + baseSummerOnPeakPeak * dc.summerOnPeak
+        + baseWinterOnPeakPeak * dc.winterOnPeak;
+      solarDemandCost = solarNonCoincidentPeak * dc.nonCoincident
+        + solarSummerOnPeakPeak * dc.summerOnPeak
+        + solarWinterOnPeakPeak * dc.winterOnPeak;
+    }
+
+    const baseBill = baseEnergyCost + baseDemandCost;
+    const solarBill = solarEnergyCost + solarDemandCost - solarExport;
+    const savings = baseBill - solarBill;
+
+    results.push({
+      label: period.start.toLocaleDateString('en-US', {month:'short', year:'numeric'}),
+      baseEnergy: Math.round(baseEnergyCost),
+      baseDemand: Math.round(baseDemandCost),
+      baseBill: Math.round(baseBill),
+      solarEnergy: Math.round(solarEnergyCost),
+      solarDemand: Math.round(solarDemandCost),
+      exportCredit: Math.round(solarExport),
+      solarBill: Math.round(solarBill),
+      savings: Math.round(savings),
+      baseKwh: Math.round(baseKwh),
+      solarGenKwh: Math.round(solarGenKwh),
+      baseNonCoincidentPeak: Math.round(baseNonCoincidentPeak * 10) / 10,
+      solarNonCoincidentPeak: Math.round(solarNonCoincidentPeak * 10) / 10,
+    });
+  }
+
+  const totals = results.reduce((acc, r) => ({
+    baseEnergy: acc.baseEnergy + r.baseEnergy,
+    baseDemand: acc.baseDemand + r.baseDemand,
+    baseBill: acc.baseBill + r.baseBill,
+    solarEnergy: acc.solarEnergy + r.solarEnergy,
+    solarDemand: acc.solarDemand + r.solarDemand,
+    exportCredit: acc.exportCredit + r.exportCredit,
+    solarBill: acc.solarBill + r.solarBill,
+    savings: acc.savings + r.savings,
+    baseKwh: acc.baseKwh + r.baseKwh,
+    solarGenKwh: acc.solarGenKwh + r.solarGenKwh,
+  }), { baseEnergy:0, baseDemand:0, baseBill:0, solarEnergy:0, solarDemand:0, exportCredit:0, solarBill:0, savings:0, baseKwh:0, solarGenKwh:0 });
+
+  return { monthly: results, totals, hasDemand };
+}
+
 function App() {
   const [addressInput,     setAddressInput]     = useState("");
   const [utility,          setUtility]          = useState("SDG&E TOU-A");
@@ -478,6 +777,13 @@ function App() {
   const [hourlyTracker,setHourlyTracker]  = useState(null);
   const [queriedAddress, setQueriedAddress] = useState("");
   const [geocodedLat,    setGeocodedLat]    = useState(33);
+  // Green Button bill analysis state
+  const [gbData,         setGbData]         = useState(null);   // parsed hourly map
+  const [gbStartDate,    setGbStartDate]    = useState(null);
+  const [gbFileName,     setGbFileName]     = useState('');
+  const [gbError,        setGbError]        = useState(null);
+  const [billCycleDay,   setBillCycleDay]   = useState(1);
+  const [billCycleDayInput, setBillCycleDayInput] = useState('1');
 
 
   // Validate all numeric inputs — gates the Compute button
@@ -522,6 +828,25 @@ function App() {
     }
   }, [addressInput, units, trackerDcAc, trackerBifacial, carportDcAc, carportBifacial, tilt, azimuth]);
 
+  const handleGBUpload = useCallback((e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setGbError(null);
+    setGbData(null);
+    setGbFileName(file.name);
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const { hourMap, startDate } = parseGreenButtonCSV(ev.target.result);
+        setGbData(hourMap);
+        setGbStartDate(startDate);
+      } catch(err) {
+        setGbError(err.message);
+      }
+    };
+    reader.readAsText(file);
+  }, []);
+
   const results = useMemo(() => {
     if (!hourlyFixed || !hourlyTracker) return null;
     const trackerLimited = applyElevLimitToHourly(hourlyTracker, geocodedLat, minElev);
@@ -538,6 +863,18 @@ function App() {
     }
     return profile;
   }, [hourlyFixed, hourlyTracker, utility, chartMonth, minElev, geocodedLat]);
+
+  // Bill analysis — only when Green Button data is loaded AND PVWatts has run
+  const billAnalysis = useMemo(() => {
+    if (!gbData || !hourlyTracker || !gbStartDate) return null;
+    try {
+      const trackerLimited = applyElevLimitToHourly(hourlyTracker, geocodedLat, minElev);
+      return computeBill(gbData, trackerLimited, utility, billCycleDay, gbStartDate);
+    } catch(e) {
+      console.error('Bill analysis error:', e);
+      return null;
+    }
+  }, [gbData, hourlyTracker, utility, billCycleDay, gbStartDate, minElev, geocodedLat]);
 
   const tou = TOU_RATES[utility];
   const periodColor = { peak: C.orange, offpeak: C.green, superoffpeak: C.muted };
@@ -567,7 +904,7 @@ function App() {
             Dual-Axis Tracker — TOU Value Analyzer
           </h1>
           <p style={{color:C.muted,fontSize:13,marginTop:5}}>
-            NREL PVWatts v8 · Carport {tilt}° tilt / {azimuth}° az · Dual-axis tracker · Fixed DC:AC 1.2 · 14% losses · v6.8
+            NREL PVWatts v8 · Carport {tilt}° tilt / {azimuth}° az · Dual-axis tracker · Fixed DC:AC 1.2 · 14% losses · v6.9
           </p>
         </div>
 
@@ -665,6 +1002,99 @@ function App() {
             </button>
           </div>
         </div>
+
+
+        {/* ── Green Button Bill Analysis ──────────────────────────────────── */}
+        <div style={{borderTop:"1px solid #3a4a5a",marginTop:4,marginBottom:12,paddingTop:12}}>
+          <div style={{fontSize:10,color:C.faint,textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:8}}>
+            Bill Analysis — Upload Green Button CSV to model actual bill impact
+          </div>
+          <div style={{display:"flex",gap:14,flexWrap:"wrap",alignItems:"flex-start"}}>
+            <div>
+              <label style={{display:"inline-block",padding:"7px 16px",borderRadius:6,background:C.surface,border:`1px solid ${C.border}`,color:C.muted,fontSize:12,fontWeight:600,cursor:"pointer"}}>
+                {gbFileName ? `✓ ${gbFileName.slice(0,30)}${gbFileName.length>30?'…':''}` : "↑ Upload SDG&E CSV"}
+                <input type="file" accept=".csv,.txt" onChange={handleGBUpload} style={{display:"none"}} />
+              </label>
+              {gbData && <div style={{fontSize:10,color:C.green,marginTop:4}}>✓ {Object.keys(gbData).length} hourly records · Start: {gbStartDate?.toLocaleDateString()}</div>}
+              {gbError && <div style={{fontSize:10,color:C.orange,marginTop:4}}>⚠ {gbError}</div>}
+            </div>
+            <ValidatedInput label="Bill Cycle Start Day" value={billCycleDayInput} unit=""
+              min={1} max={28} step={1} hint="Day of month billing period starts (check your bill)"
+              onChange={v => { setBillCycleDayInput(v.raw); if(v.valid) setBillCycleDay(v.num); }} />
+            {gbData && !hourlyTracker && (
+              <div style={{fontSize:11,color:C.yellow,alignSelf:"center",paddingTop:20}}>← Enter address and click Compute ▶</div>
+            )}
+            {!gbData && (
+              <div style={{fontSize:11,color:C.faint,alignSelf:"center",paddingTop:20}}>Works with any SDG&E rate · demand charges modeled for AL-TOU-2</div>
+            )}
+          </div>
+        </div>
+
+        {billAnalysis && (
+          <div style={{marginBottom:20}}>
+            <div style={{borderTop:"1px solid #3a4a5a",marginBottom:16}}/>
+            <div style={{fontSize:13,fontWeight:600,color:C.text,marginBottom:12}}>Bill Analysis — {TOU_RATES[utility]?.label}</div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:10,marginBottom:16}}>
+              {[
+                {label:"Annual Baseline Bill", val:"$"+billAnalysis.totals.baseBill.toLocaleString(), sub:"without solar", color:C.orange},
+                {label:"Annual Solar Bill",    val:"$"+billAnalysis.totals.solarBill.toLocaleString(), sub:"with tracker",  color:C.green},
+                {label:"Annual Savings",       val:"$"+billAnalysis.totals.savings.toLocaleString(),  sub:"total reduction", color:C.teal},
+                {label:"Energy Savings",       val:"$"+(billAnalysis.totals.baseEnergy-billAnalysis.totals.solarEnergy).toLocaleString(), sub:"avoided import", color:C.blue},
+                ...(billAnalysis.hasDemand ? [{label:"Demand Savings", val:"$"+(billAnalysis.totals.baseDemand-billAnalysis.totals.solarDemand).toLocaleString(), sub:"demand reduction", color:C.purple}] : []),
+                {label:"Export Credits",       val:"$"+billAnalysis.totals.exportCredit.toLocaleString(), sub:"ACC 2026 rates", color:C.yellow},
+              ].map(c => (
+                <div key={c.label} style={{background:C.surface,borderRadius:8,padding:"12px 14px",border:`1px solid ${C.border}`}}>
+                  <div style={{fontSize:10,color:C.muted,marginBottom:4,textTransform:"uppercase",letterSpacing:"0.05em",fontWeight:600}}>{c.label}</div>
+                  <div style={{fontSize:18,fontWeight:700,color:c.color}}>{c.val}</div>
+                  <div style={{fontSize:10,color:C.muted,marginTop:2}}>{c.sub}</div>
+                </div>
+              ))}
+            </div>
+            <div style={{background:C.surface,borderRadius:8,padding:"16px",border:`1px solid ${C.border}`,overflowX:"auto"}}>
+              <div style={{fontSize:13,fontWeight:600,color:C.text,marginBottom:10}}>Monthly Bill Detail</div>
+              <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+                <thead>
+                  <tr>
+                    {["Period","Load kWh","Solar kWh","Baseline Bill",
+                      ...(billAnalysis.hasDemand?["Demand Saved"]:[]),
+                      "Export Credit","Solar Bill","Savings"].map(h => (
+                      <th key={h} style={{color:C.muted,textAlign:"right",padding:"4px 8px",borderBottom:`1px solid ${C.border}`,fontWeight:600,fontSize:10,textTransform:"uppercase",letterSpacing:"0.04em"}}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {billAnalysis.monthly.map((row,ri) => (
+                    <tr key={row.label} style={{background:ri%2===0?"transparent":"#0d111780",borderBottom:`1px solid ${C.border}20`}}>
+                      <td style={{color:C.text,padding:"5px 8px",fontWeight:600}}>{row.label}</td>
+                      <td style={{color:C.muted,padding:"5px 8px",textAlign:"right"}}>{row.baseKwh.toLocaleString()}</td>
+                      <td style={{color:C.green,padding:"5px 8px",textAlign:"right"}}>{row.solarGenKwh.toLocaleString()}</td>
+                      <td style={{color:C.orange,padding:"5px 8px",textAlign:"right"}}>${row.baseBill.toLocaleString()}</td>
+                      {billAnalysis.hasDemand && <td style={{color:C.purple,padding:"5px 8px",textAlign:"right"}}>${(row.baseDemand-row.solarDemand).toLocaleString()}</td>}
+                      <td style={{color:C.yellow,padding:"5px 8px",textAlign:"right"}}>${row.exportCredit.toLocaleString()}</td>
+                      <td style={{color:C.green,padding:"5px 8px",textAlign:"right"}}>${row.solarBill.toLocaleString()}</td>
+                      <td style={{color:C.teal,padding:"5px 8px",textAlign:"right",fontWeight:700}}>${row.savings.toLocaleString()}</td>
+                    </tr>
+                  ))}
+                  <tr style={{borderTop:`1px solid ${C.border}`,fontWeight:700}}>
+                    <td style={{color:C.text,padding:"5px 8px"}}>Total</td>
+                    <td style={{color:C.muted,padding:"5px 8px",textAlign:"right"}}>{billAnalysis.totals.baseKwh.toLocaleString()}</td>
+                    <td style={{color:C.green,padding:"5px 8px",textAlign:"right"}}>{billAnalysis.totals.solarGenKwh.toLocaleString()}</td>
+                    <td style={{color:C.orange,padding:"5px 8px",textAlign:"right"}}>${billAnalysis.totals.baseBill.toLocaleString()}</td>
+                    {billAnalysis.hasDemand && <td style={{color:C.purple,padding:"5px 8px",textAlign:"right"}}>${(billAnalysis.totals.baseDemand-billAnalysis.totals.solarDemand).toLocaleString()}</td>}
+                    <td style={{color:C.yellow,padding:"5px 8px",textAlign:"right"}}>${billAnalysis.totals.exportCredit.toLocaleString()}</td>
+                    <td style={{color:C.green,padding:"5px 8px",textAlign:"right"}}>${billAnalysis.totals.solarBill.toLocaleString()}</td>
+                    <td style={{color:C.teal,padding:"5px 8px",textAlign:"right",fontWeight:700}}>${billAnalysis.totals.savings.toLocaleString()}</td>
+                  </tr>
+                </tbody>
+              </table>
+              <div style={{fontSize:10,color:C.faint,marginTop:8}}>
+                Export credits at 2026 ACC rates (SDG&E Solar Billing Plan, NBT00).
+                {billAnalysis.hasDemand && " Demand: non-coincident + on-peak, secondary voltage, AL-TOU-2 schedule."}
+                {" "}Hourly kWh used as kW demand proxy (15-min data more accurate).
+              </div>
+            </div>
+          </div>
+        )}
 
 {/* Error */}
         {error && (
