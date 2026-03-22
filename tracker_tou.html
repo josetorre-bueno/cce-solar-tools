@@ -513,59 +513,97 @@ function getAccExportRate(month, hour, date) {
 }
 
 // ─── GREEN BUTTON CSV PARSER ──────────────────────────────────────────────────
-// Parses SDG&E tab-delimited CSV export (15-min intervals) → 8760 hourly kWh
-// Returns { hourly: Float32Array(8760), startDate: Date, address: string }
+// Supports two SDG&E tab-delimited formats:
+//   Format A (residential): separate Date / Start Time / Consumption columns
+//   Format B (commercial):  combined interval_start (M/D/YY H:MM) + interval_kWh
+// Returns { hourMap, startDate }
 function parseGreenButtonCSV(text) {
   const lines = text.split(/\r?\n/);
-  // Find header row — look for "Date" and "Start Time" and "Consumption"
-  let headerIdx = -1;
-  let dateCol = -1, timeCol = -1, useCol = -1;
   const delim = lines[0].includes('\t') ? '\t' : ',';
 
-  for (let i = 0; i < Math.min(30, lines.length); i++) {
+  // ── Find header row ────────────────────────────────────────────────────────
+  let headerIdx = -1;
+  let mode = null; // 'A' or 'B'
+  let dateCol = -1, timeCol = -1, useCol = -1, startCol = -1;
+
+  for (let i = 0; i < Math.min(40, lines.length); i++) {
     const cols = lines[i].split(delim).map(c => c.trim().replace(/^"|"$/g,''));
+
+    // Format B: commercial — interval_start + interval_kWh
+    const si = cols.findIndex(c => /^interval_start$/i.test(c));
+    const ki = cols.findIndex(c => /^interval_kwh$/i.test(c));
+    if (si >= 0 && ki >= 0) {
+      headerIdx = i; mode = 'B'; startCol = si; useCol = ki;
+      break;
+    }
+
+    // Format A: residential — Date + Start Time + Consumption
     const di = cols.findIndex(c => /^date$/i.test(c));
     const ti = cols.findIndex(c => /start.?time/i.test(c));
     const ui = cols.findIndex(c => /consumption|kWh|usage/i.test(c));
     if (di >= 0 && ti >= 0 && ui >= 0) {
-      headerIdx = i; dateCol = di; timeCol = ti; useCol = ui;
+      headerIdx = i; mode = 'A'; dateCol = di; timeCol = ti; useCol = ui;
       break;
     }
   }
-  if (headerIdx < 0) throw new Error("Could not find Date/Time/Consumption columns in CSV");
 
-  // Collect all interval records
+  if (headerIdx < 0 || !mode) {
+    throw new Error(
+      "Unrecognized CSV format. Expected SDG&E residential (Date / Start Time / Consumption) " +
+      "or commercial (interval_start / interval_kWh) tab-delimited export."
+    );
+  }
+
+  // ── Parse rows ─────────────────────────────────────────────────────────────
   const intervals = [];
+
   for (let i = headerIdx + 1; i < lines.length; i++) {
     const line = lines[i].trim();
     if (!line) continue;
     const cols = line.split(delim).map(c => c.trim().replace(/^"|"$/g,''));
-    if (cols.length <= Math.max(dateCol, timeCol, useCol)) continue;
-    const dateStr = cols[dateCol];
-    const timeStr = cols[timeCol];
-    const kwh = parseFloat(cols[useCol]);
-    if (!dateStr || isNaN(kwh)) continue;
-    // Parse date
-    const dp = dateStr.match(/(\d+)[\/\-](\d+)[\/\-](\d+)/);
-    if (!dp) continue;
-    // SDG&E format is M/D/YYYY
-    let month, day, year;
-    if (parseInt(dp[3]) > 100) {
-      month = parseInt(dp[1]); day = parseInt(dp[2]); year = parseInt(dp[3]);
+
+    let year, month, day, hour, minute, kwh;
+
+    if (mode === 'B') {
+      // "8/9/25 23:45"  or  "8/9/2025 23:45"
+      if (cols.length <= Math.max(startCol, useCol)) continue;
+      const raw = cols[startCol];
+      const m = raw.match(/(\d+)\/(\d+)\/(\d+)\s+(\d+):(\d+)/);
+      if (!m) continue;
+      month = parseInt(m[1]); day = parseInt(m[2]);
+      year  = parseInt(m[3]) < 100 ? 2000 + parseInt(m[3]) : parseInt(m[3]);
+      hour  = parseInt(m[4]); minute = parseInt(m[5]);
+      kwh   = parseFloat(cols[useCol]);
+
     } else {
-      year = parseInt(dp[1]); month = parseInt(dp[2]); day = parseInt(dp[3]);
+      // Format A — separate date / time columns
+      if (cols.length <= Math.max(dateCol, timeCol, useCol)) continue;
+      const dateStr = cols[dateCol];
+      const timeStr = cols[timeCol];
+      kwh = parseFloat(cols[useCol]);
+      if (!dateStr) continue;
+      const dp = dateStr.match(/(\d+)[\/\-](\d+)[\/\-](\d+)/);
+      if (!dp) continue;
+      if (parseInt(dp[3]) > 100) {
+        month = parseInt(dp[1]); day = parseInt(dp[2]); year = parseInt(dp[3]);
+      } else {
+        year = parseInt(dp[1]); month = parseInt(dp[2]); day = parseInt(dp[3]);
+      }
+      const tp = timeStr.match(/(\d+):(\d+)/);
+      if (!tp) continue;
+      hour = parseInt(tp[1]); minute = parseInt(tp[2]);
     }
-    const tp = timeStr.match(/(\d+):(\d+)/);
-    if (!tp) continue;
-    const hour = parseInt(tp[1]);
-    const minute = parseInt(tp[2]);
+
+    if (isNaN(kwh) || isNaN(hour)) continue;
     intervals.push({ year, month, day, hour, minute, kwh });
   }
 
-  if (intervals.length < 24) throw new Error("Not enough data rows in CSV (found " + intervals.length + ")");
+  if (intervals.length < 24) {
+    throw new Error("Not enough data rows in CSV (found " + intervals.length + "). Check file format.");
+  }
 
-  // Trim to most recent 365 days
-  intervals.sort((a,b) => {
+  // ── Sort ascending, trim to most recent 365 days ───────────────────────────
+  intervals.sort((a, b) => {
     const da = new Date(a.year, a.month-1, a.day, a.hour, a.minute);
     const db = new Date(b.year, b.month-1, b.day, b.hour, b.minute);
     return da - db;
@@ -575,23 +613,38 @@ function parseGreenButtonCSV(text) {
   const lastDate = new Date(last.year, last.month-1, last.day);
   const cutoff = new Date(lastDate);
   cutoff.setDate(cutoff.getDate() - 365);
-  const trimmed = intervals.filter(r => {
-    const d = new Date(r.year, r.month-1, r.day);
-    return d >= cutoff;
-  });
+  const trimmed = intervals.filter(r => new Date(r.year, r.month-1, r.day) >= cutoff);
 
-  // Aggregate 15-min → hourly
+  // ── Aggregate 15-min → hourly ──────────────────────────────────────────────
+  // For Format B the interval_start timestamp marks the END of the interval,
+  // so we attribute each reading to (interval_start minus 15 min).hour.
   const hourMap = {};
   for (const r of trimmed) {
-    const key = `${r.year}-${String(r.month).padStart(2,'0')}-${String(r.day).padStart(2,'0')}-${String(r.hour).padStart(2,'0')}`;
-    if (!hourMap[key]) hourMap[key] = { year: r.year, month: r.month, day: r.day, hour: r.hour, kwh: 0 };
-    hourMap[key].kwh += r.kwh;
+    let { year: y, month: mo, day: d, hour: h, minute: mi, kwh: v } = r;
+    if (mode === 'B') {
+      // shift back 15 min so 23:45→00:00 reads map to hour 23, not hour 0
+      const dt = new Date(y, mo-1, d, h, mi);
+      dt.setMinutes(dt.getMinutes() - 15);
+      y = dt.getFullYear(); mo = dt.getMonth()+1;
+      d = dt.getDate(); h = dt.getHours();
+    }
+    const key = `${y}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}-${String(h).padStart(2,'0')}`;
+    if (!hourMap[key]) hourMap[key] = { year: y, month: mo, day: d, hour: h, kwh: 0 };
+    hourMap[key].kwh += v;
   }
 
   const first = trimmed[0];
-  const startDate = new Date(first.year, first.month-1, first.day);
+  // For mode B, first row after sort is oldest interval_start; back-shift it too
+  let startDate;
+  if (mode === 'B') {
+    const dt = new Date(first.year, first.month-1, first.day, first.hour, first.minute);
+    dt.setMinutes(dt.getMinutes() - 15);
+    startDate = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate());
+  } else {
+    startDate = new Date(first.year, first.month-1, first.day);
+  }
 
-  return { hourMap, startDate, totalIntervals: trimmed.length };
+  return { hourMap, startDate, totalIntervals: trimmed.length, mode };
 }
 
 // ─── BILLING ENGINE ───────────────────────────────────────────────────────────
