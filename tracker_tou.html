@@ -517,8 +517,23 @@ function getAccExportRate(month, hour, date) {
 //   Format A (residential): separate Date / Start Time / Consumption columns
 //   Format B (commercial):  combined interval_start (M/D/YY H:MM) + interval_kWh
 // Returns { hourMap, startDate }
+function parseCSVLine(line, delim) {
+  // Handles quoted fields containing the delimiter (e.g. "ADDR, CITY, ST")
+  const result = [];
+  let cur = '', inQuote = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') { inQuote = !inQuote; }
+    else if (ch === delim && !inQuote) { result.push(cur.trim()); cur = ''; }
+    else { cur += ch; }
+  }
+  result.push(cur.trim());
+  return result;
+}
+
 function parseGreenButtonCSV(text) {
   const lines = text.split(/\r?\n/);
+  // Detect delimiter from header line
   const delim = lines[0].includes('\t') ? '\t' : ',';
 
   // ── Find header row ────────────────────────────────────────────────────────
@@ -527,7 +542,7 @@ function parseGreenButtonCSV(text) {
   let dateCol = -1, timeCol = -1, useCol = -1, startCol = -1;
 
   for (let i = 0; i < Math.min(40, lines.length); i++) {
-    const cols = lines[i].split(delim).map(c => c.trim().replace(/^"|"$/g,''));
+    const cols = parseCSVLine(lines[i], delim);
 
     // Format B: commercial — interval_start + interval_kWh
     const si = cols.findIndex(c => /^interval_start$/i.test(c));
@@ -560,19 +575,21 @@ function parseGreenButtonCSV(text) {
   for (let i = headerIdx + 1; i < lines.length; i++) {
     const line = lines[i].trim();
     if (!line) continue;
-    const cols = line.split(delim).map(c => c.trim().replace(/^"|"$/g,''));
+    const cols = parseCSVLine(line, delim);
 
     let year, month, day, hour, minute, kwh;
 
     if (mode === 'B') {
-      // "8/9/25 23:45"  or  "8/9/2025 23:45"
+      // "08/09/2025 23:45" or "8/9/25 23:45"
       if (cols.length <= Math.max(startCol, useCol)) continue;
       const raw = cols[startCol];
-      const m = raw.match(/(\d+)\/(\d+)\/(\d+)\s+(\d+):(\d+)/);
-      if (!m) continue;
-      month = parseInt(m[1]); day = parseInt(m[2]);
-      year  = parseInt(m[3]) < 100 ? 2000 + parseInt(m[3]) : parseInt(m[3]);
-      hour  = parseInt(m[4]); minute = parseInt(m[5]);
+      const parts = raw.split(/[\/\s:]/);
+      // parts: [MM, DD, YYYY, HH, MM]
+      if (parts.length < 5) continue;
+      month = parseInt(parts[0]); day = parseInt(parts[1]);
+      const yr = parseInt(parts[2]);
+      year  = yr < 100 ? 2000 + yr : yr;
+      hour  = parseInt(parts[3]); minute = parseInt(parts[4]);
       kwh   = parseFloat(cols[useCol]);
 
     } else {
@@ -957,7 +974,7 @@ function App() {
             Dual-Axis Tracker — TOU Value Analyzer
           </h1>
           <p style={{color:C.muted,fontSize:13,marginTop:5}}>
-            NREL PVWatts v8 · Carport {tilt}° tilt / {azimuth}° az · Dual-axis tracker · Fixed DC:AC 1.2 · 14% losses · v6.10
+            NREL PVWatts v8 · Carport {tilt}° tilt / {azimuth}° az · Dual-axis tracker · Fixed DC:AC 1.2 · 14% losses · v6.11
           </p>
         </div>
 
