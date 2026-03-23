@@ -1,10 +1,10 @@
 <!DOCTYPE html>
-<!-- VERSION: v6.12 -->
+<!-- VERSION: v6.13 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Dual-Axis Tracker — TOU Value Analyzer v6.12</title>
+  <title>Dual-Axis Tracker — TOU Value Analyzer v6.13</title>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
@@ -668,6 +668,68 @@ function parseGreenButtonCSV(text) {
   return { hourMap, startDate, totalIntervals: trimmed.length, mode };
 }
 
+
+// ─── BILL DETAIL CSV EXPORT ───────────────────────────────────────────────────
+function exportBillDetailCSV(billAnalysis, rateLabel, gbFileName, meterConstant) {
+  const hasDemand = billAnalysis.hasDemand;
+  const headers = [
+    "Period", "Load kWh", "Solar kWh", "Solar kWh %",
+    "Baseline Energy $", "Baseline Demand $", "Baseline Bill $",
+    "Solar Energy $", "Solar Demand $", "Export Credit $", "Solar Bill $",
+    "Savings $", "Savings %",
+    ...(hasDemand ? ["Base Non-Coinc Peak kW", "Solar Non-Coinc Peak kW", "Demand kW Reduction"] : [])
+  ];
+
+  const rows = billAnalysis.monthly.map(r => {
+    const savingsPct = r.baseBill > 0 ? Math.round(r.savings / r.baseBill * 1000) / 10 : 0;
+    const solarPct   = r.baseKwh > 0  ? Math.round(r.solarGenKwh / r.baseKwh * 1000) / 10 : 0;
+    return [
+      r.label, r.baseKwh, r.solarGenKwh, solarPct + "%",
+      r.baseEnergy, r.baseDemand, r.baseBill,
+      r.solarEnergy, r.solarDemand, r.exportCredit, r.solarBill,
+      r.savings, savingsPct + "%",
+      ...(hasDemand ? [r.baseNonCoincidentPeak, r.solarNonCoincidentPeak,
+        Math.round((r.baseNonCoincidentPeak - r.solarNonCoincidentPeak) * 10) / 10] : [])
+    ];
+  });
+
+  // Totals row
+  const t = billAnalysis.totals;
+  const totSavingsPct = t.baseBill > 0 ? Math.round(t.savings / t.baseBill * 1000) / 10 : 0;
+  const totSolarPct   = t.baseKwh > 0  ? Math.round(t.solarGenKwh / t.baseKwh * 1000) / 10 : 0;
+  rows.push([
+    "TOTAL", t.baseKwh, t.solarGenKwh, totSolarPct + "%",
+    t.baseEnergy, t.baseDemand, t.baseBill,
+    t.solarEnergy, t.solarDemand, t.exportCredit, t.solarBill,
+    t.savings, totSavingsPct + "%",
+    ...(hasDemand ? ["", "", ""] : [])
+  ]);
+
+  // Metadata rows at top
+  const meta = [
+    ["Rate", rateLabel],
+    ["Source file", gbFileName || "unknown"],
+    ["Meter constant", meterConstant],
+    ["Export rates", "SDG&E ACC 2026 NBT00"],
+    ["Generated", new Date().toLocaleDateString()],
+    [],
+  ];
+
+  const allRows = [...meta, headers, ...rows];
+  const csv = allRows.map(r => r.map(v => {
+    const s = String(v ?? "");
+    return s.includes(",") ? `"${s}"` : s;
+  }).join(",")).join("\r\n");
+
+  const blob = new Blob([csv], { type: "text/csv" });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement("a");
+  a.href = url;
+  a.download = "bill_analysis.csv";
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 // ─── BILLING ENGINE ───────────────────────────────────────────────────────────
 // Computes full bill with and without solar, including demand charges
 // billCycleDay: day of month billing period starts (1-28)
@@ -981,7 +1043,7 @@ function App() {
             Dual-Axis Tracker — TOU Value Analyzer
           </h1>
           <p style={{color:C.muted,fontSize:13,marginTop:5}}>
-            NREL PVWatts v8 · Carport {tilt}° tilt / {azimuth}° az · Dual-axis tracker · Fixed DC:AC 1.2 · 14% losses · v6.12
+            NREL PVWatts v8 · Carport {tilt}° tilt / {azimuth}° az · Dual-axis tracker · Fixed DC:AC 1.2 · 14% losses · v6.13
           </p>
         </div>
 
@@ -1172,6 +1234,13 @@ function App() {
                 Export credits at 2026 ACC rates (SDG&E Solar Billing Plan, NBT00).
                 {billAnalysis.hasDemand && " Demand: non-coincident + on-peak, secondary voltage, AL-TOU-2 schedule."}
                 {" "}Hourly kWh used as kW demand proxy (15-min data more accurate).
+              </div>
+              <div style={{marginTop:12}}>
+                <button onClick={() => exportBillDetailCSV(billAnalysis, TOU_RATES[utility]?.label, gbFileName, meterConstant)}
+                  style={{padding:"7px 20px",borderRadius:6,fontSize:12,fontWeight:600,
+                    background:C.surface,border:`1px solid ${C.blue}`,color:C.blue,cursor:"pointer"}}>
+                  ↓ Download Bill Detail CSV
+                </button>
               </div>
             </div>
           </div>
