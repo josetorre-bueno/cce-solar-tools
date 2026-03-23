@@ -81,9 +81,12 @@ const TOU_RATES = {
       summer: { peak: 0.221, offpeak: 0.139, superoffpeak: 0.121 },
       winter: { peak: 0.240, offpeak: 0.140, superoffpeak: 0.111 },
     },
-    schedule: (month, hour) => {
+    // isWeekend param optional — caller passes it for accurate Mar/Apr super off-peak
+    schedule: (month, hour, isWeekend) => {
       if (hour >= 16 && hour < 21) return "peak";
       if (hour < 6 || hour >= 21) return "superoffpeak";
+      // Mar (3) and Apr (4) weekdays: 10am–2pm is super off-peak
+      if (!isWeekend && (month === 3 || month === 4) && hour >= 10 && hour < 14) return "superoffpeak";
       return "offpeak";
     },
     getSeasonal: (month) => month >= 6 && month <= 10 ? "summer" : "winter",
@@ -670,7 +673,8 @@ function parseGreenButtonCSV(text) {
 // Returns detailed monthly breakdown
 const MONTH_DAYS_STD = [31,28,31,30,31,30,31,31,30,31,30,31];
 
-function computeBill(hourMap, solarHourly, rateKey, billCycleDay, startDate) {
+function computeBill(hourMap, solarHourly, rateKey, billCycleDay, startDate, meterConstant) {
+  meterConstant = meterConstant || 1;
   const tou = TOU_RATES[rateKey];
   const hasDemand = !!tou.hasDemandCharges;
 
@@ -722,7 +726,7 @@ function computeBill(hourMap, solarHourly, rateKey, billCycleDay, startDate) {
 
       for (let h = 0; h < 24; h++) {
         const key = `${y}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}-${String(h).padStart(2,'0')}`;
-        const loadKwh = hourMap[key]?.kwh ?? 0;
+        const loadKwh = (hourMap[key]?.kwh ?? 0) * meterConstant;
         
         // Solar index — map to 8760 array
         const doy = Math.floor((cur - new Date(y, 0, 0)) / 86400000);
@@ -735,7 +739,7 @@ function computeBill(hourMap, solarHourly, rateKey, billCycleDay, startDate) {
 
         // TOU rate for this hour
         const season = tou.getSeasonal(mo);
-        const period_type = tou.schedule(mo, h);
+        const period_type = tou.schedule(mo, h, isWE);
         const rate = tou.seasonalRates[season][period_type] ?? tou.seasonalRates[season].offpeak;
 
         // ACC export rate
@@ -854,6 +858,8 @@ function App() {
   const [gbError,        setGbError]        = useState(null);
   const [billCycleDay,   setBillCycleDay]   = useState(1);
   const [billCycleDayInput, setBillCycleDayInput] = useState('1');
+  const [meterConstant,  setMeterConstant]  = useState(1);
+  const [meterConstantInput, setMeterConstantInput] = useState('1');
 
 
   // Validate all numeric inputs — gates the Compute button
@@ -939,7 +945,7 @@ function App() {
     if (!gbData || !hourlyTracker || !gbStartDate) return null;
     try {
       const trackerLimited = applyElevLimitToHourly(hourlyTracker, geocodedLat, minElev);
-      return computeBill(gbData, trackerLimited, utility, billCycleDay, gbStartDate);
+      return computeBill(gbData, trackerLimited, utility, billCycleDay, gbStartDate, meterConstant);
     } catch(e) {
       console.error('Bill analysis error:', e);
       return null;
@@ -974,7 +980,7 @@ function App() {
             Dual-Axis Tracker — TOU Value Analyzer
           </h1>
           <p style={{color:C.muted,fontSize:13,marginTop:5}}>
-            NREL PVWatts v8 · Carport {tilt}° tilt / {azimuth}° az · Dual-axis tracker · Fixed DC:AC 1.2 · 14% losses · v6.11
+            NREL PVWatts v8 · Carport {tilt}° tilt / {azimuth}° az · Dual-axis tracker · Fixed DC:AC 1.2 · 14% losses · v6.12
           </p>
         </div>
 
@@ -1085,12 +1091,16 @@ function App() {
                 {gbFileName ? `✓ ${gbFileName.slice(0,30)}${gbFileName.length>30?'…':''}` : "↑ Upload SDG&E CSV"}
                 <input type="file" accept=".csv,.txt" onChange={handleGBUpload} style={{display:"none"}} />
               </label>
-              {gbData && <div style={{fontSize:10,color:C.green,marginTop:4}}>✓ {Object.keys(gbData).length} hourly records · Start: {gbStartDate?.toLocaleDateString()}</div>}
+              {gbData && <div style={{fontSize:10,color:C.green,marginTop:4}}>✓ {Object.keys(gbData).length} hourly records · Start: {gbStartDate?.toLocaleDateString()}{meterConstant > 1 ? ` · Meter constant: ×${meterConstant}` : ''}</div>}
               {gbError && <div style={{fontSize:10,color:C.orange,marginTop:4}}>⚠ {gbError}</div>}
             </div>
             <ValidatedInput label="Bill Cycle Start Day" value={billCycleDayInput} unit=""
               min={1} max={28} step={1} hint="Day of month billing period starts (check your bill)"
               onChange={v => { setBillCycleDayInput(v.raw); if(v.valid) setBillCycleDay(v.num); }} />
+            <ValidatedInput label="Meter Constant" value={meterConstantInput} unit=""
+              min={1} max={10000} step={1}
+              hint="CT metering multiplier (check bill page 2 — usually 1 for residential, 300 or 600 for large commercial)"
+              onChange={v => { setMeterConstantInput(v.raw); if(v.valid) setMeterConstant(v.num); }} />
             {gbData && !hourlyTracker && (
               <div style={{fontSize:11,color:C.yellow,alignSelf:"center",paddingTop:20}}>← Enter address and click Compute ▶</div>
             )}
