@@ -1,4 +1,4 @@
-<!-- v2.1 -->
+<!-- v2.4 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -81,7 +81,7 @@ button { font-family: 'DM Sans', sans-serif; }
 <body>
 <header class="site-header">
   <div class="logo">Center for Community Energy <span>/</span> Wipomo</div>
-  <div style="display:flex;align-items:center;gap:1.5rem;"><span style="font-size:11px;color:#4a6a8a;font-family:'DM Mono',monospace;">v2.1</span><a href="index.html" class="back">&#8592; All tools</a></div>
+  <div style="display:flex;align-items:center;gap:1.5rem;"><span style="font-size:11px;color:#4a6a8a;font-family:'DM Mono',monospace;">v2.4</span><a href="index.html" class="back">&#8592; All tools</a></div>
 </header>
 <div class="tool-wrapper">
   <div id="root"></div>
@@ -141,11 +141,12 @@ function getNbtRate(ts, yearOffset, accEsc) {
 }
 
 // ── Bill computation ──────────────────────────────────────────────────────────
-function computeBills(intervals, rates, annualPeakKw, yearOffset, accEsc) {
+function computeBills(intervals, rates, annualPeakKw, yearOffset, accEsc, allowExport=true) {
   const { sdge, ce } = rates;
   let kwh = {on:0, off:0, sop:0};
   let peakAll = 0, peakOnPeak = 0;
   let exportCredit = 0;
+  let peakExportKw = 0;
 
   for (const [ts, net] of intervals) {
     const period = getTouPeriod(ts);
@@ -157,9 +158,13 @@ function computeBills(intervals, rates, annualPeakKw, yearOffset, accEsc) {
       if (kw > peakAll) peakAll = kw;
       if (period === 'on_peak' && kw > peakOnPeak) peakOnPeak = kw;
     } else {
-      const exportKwh = -net;
-      const rate = getNbtRate(ts, yearOffset, accEsc);
-      exportCredit += exportKwh * rate;
+      const exportKw = (-net) * 4;
+      if (exportKw > peakExportKw) peakExportKw = exportKw;
+      if (allowExport !== false) {
+        const exportKwh = -net;
+        const rate = getNbtRate(ts, yearOffset, accEsc);
+        exportCredit += exportKwh * rate;
+      }
     }
   }
 
@@ -195,7 +200,7 @@ function computeBills(intervals, rates, annualPeakKw, yearOffset, accEsc) {
   return {
     totalKwh, peakAll, peakOnPeak, ncBilled, ratchetActive, ratchetFloor,
     sdgeTotal, ceTotal, combinedTotal: sdgeTotal + ceTotal,
-    exportCredit,
+    exportCredit, peakExportKw,
     breakdown: { deliveryEnergy, onPeakDemand, touDemand, ncDemand, wildfire, generationEnergy, franchise, stateReg, pcia, ceEnergy, ceDemand, exportCredit }
   };
 }
@@ -328,7 +333,7 @@ function runSizingSweep(intervals, pvLookup, cfg) {
   const monthKeys = Object.keys(byMonth).sort();
 
   const sizes = [];
-  for (let s = 0; s <= 1200; s += 50) sizes.push(s);
+  for (let s = 0; s <= 2500; s += 50) sizes.push(s);
 
   const results = sizes.map(sizeKw => {
     let npv = 0;
@@ -342,6 +347,7 @@ function runSizingSweep(intervals, pvLookup, cfg) {
       let yearExport = 0;
       let yearBaseCost = 0;
       let yearSolarCost = 0;
+      let yearPeakExport = 0;
 
       for (const mk of monthKeys) {
         const monthIntervals = byMonth[mk];
@@ -352,12 +358,13 @@ function runSizingSweep(intervals, pvLookup, cfg) {
           return [ts, kwh - pvKwh];
         });
 
-        const baseRes  = computeBills(monthIntervals, scaledRates, rollingPeakKw, yr, accEsc);
-        const solarRes = computeBills(netIntervals,   scaledRates, rollingPeakKw, yr, accEsc);
+        const baseRes  = computeBills(monthIntervals, scaledRates, rollingPeakKw, yr, cfg.accEsc, true);
+        const solarRes = computeBills(netIntervals,   scaledRates, rollingPeakKw, yr, cfg.accEsc, cfg.allowExport !== false);
 
         yearBaseCost  += baseRes.combinedTotal;
         yearSolarCost += solarRes.combinedTotal;
         yearExport    += solarRes.exportCredit;
+        if (solarRes.peakExportKw > yearPeakExport) yearPeakExport = solarRes.peakExportKw;
 
         // Update rolling annual peak from actual simulated peaks
         if (solarRes.peakAll > rollingPeakKw) rollingPeakKw = solarRes.peakAll;
@@ -371,6 +378,7 @@ function runSizingSweep(intervals, pvLookup, cfg) {
         savings: yearSavings,
         exportCredit: yearExport,
         discounted: yearSavings * discFactor,
+        peakExportKw: yearPeakExport,
       });
     }
 
@@ -378,7 +386,8 @@ function runSizingSweep(intervals, pvLookup, cfg) {
     const netNpv = npv - systemCost;
     const firstYearSavings = annualTable[0]?.savings || 0;
 
-    return { sizeKw, npv, netNpv, systemCost, annualTable, firstYearSavings };
+    const peakExportKw = annualTable.length ? annualTable[0].peakExportKw : 0;
+    return { sizeKw, npv, netNpv, systemCost, annualTable, firstYearSavings, peakExportKw };
   });
 
   return results;
@@ -460,6 +469,7 @@ function PvSizingTool() {
   const [accEsc, setAccEsc] = useState(1.14);
   const [costPerWatt, setCostPerWatt] = useState(2.20);
   const [incentivePct, setIncentivePct] = useState(0);
+  const [allowExport, setAllowExport] = useState(true);
   const [annualPeakKw, setAnnualPeakKw] = useState(248.4);
 
   const handleLoadFile = useCallback((e) => {
@@ -491,7 +501,8 @@ function PvSizingTool() {
         console.log('PV lookup type:', typeof lookup, 'isArray:', Array.isArray(lookup));
         console.log('PV lookup length:', lookup ? lookup.length : 'null');
         if (lookup && lookup[0]) console.log('lookup[0] type:', typeof lookup[0], 'length:', lookup[0].length, 'sample:', lookup[0][12]);
-        const annualKwh = lookup.reduce((s, month) => s + month.reduce((ms, h) => ms + h, 0), 0);
+        const daysInMo = [31,28,31,30,31,30,31,31,30,31,30,31];
+        const annualKwh = lookup.reduce((s, month, mi) => s + month.reduce((ms, h) => ms + h * daysInMo[mi], 0), 0);
         setStatus(`Loaded PV profile: 12×24 monthly average, ${annualKwh.toFixed(1)} kWh/yr per kW DC`);
       } catch(err) {
         setStatus(`Error parsing PV file: ${err.message}`);
@@ -518,6 +529,7 @@ function PvSizingTool() {
           costPerWatt: costPerWatt * (1 - incentivePct/100),
           grossCostPerWatt: costPerWatt,
           annualPeakKw,
+          allowExport,
         };
         const res = runSizingSweep(loadIntervals, pvHourly, cfg);
         const optimal = res.reduce((best, r) => r.netNpv > best.netNpv ? r : best, res[0]);
@@ -531,7 +543,7 @@ function PvSizingTool() {
         setRunning(false);
       }
     }, 50);
-  }, [loadIntervals, pvHourly, years, discountRate, utilEsc, accEsc, costPerWatt, incentivePct, annualPeakKw]);
+  }, [loadIntervals, pvHourly, years, discountRate, utilEsc, accEsc, costPerWatt, incentivePct, annualPeakKw, allowExport]);
 
   const downloadCsv = useCallback(() => {
     if (!optimalSize) return;
@@ -618,6 +630,10 @@ function PvSizingTool() {
                 <label style={labelStyle}>Prior 12-mo peak demand (kW)</label>
                 <input type="number" min="0" max="2000" step="1" value={annualPeakKw} onChange={e=>setAnnualPeakKw(+e.target.value)} style={inputStyle} />
               </div>
+              <div style={{display:'flex',alignItems:'center',gap:'10px',paddingTop:'18px'}}>
+                <input type="checkbox" id="exportToggle" checked={allowExport} onChange={e=>setAllowExport(e.target.checked)} style={{width:'16px',height:'16px',cursor:'pointer'}} />
+                <label htmlFor="exportToggle" style={{...labelStyle,margin:'0',cursor:'pointer',color:'var(--color-text-primary)'}}>Allow export to grid (NEM 3.0 credit)</label>
+              </div>
             </div>
           </div>
 
@@ -671,6 +687,17 @@ function PvSizingTool() {
               <p style={{fontSize:'22px',fontWeight:'500',margin:'0',color:'var(--color-text-primary)'}}>{s(loadIntervals ? loadIntervals.reduce((sum,[,k])=>sum+k,0) : 0)}</p>
               <p style={{fontSize:'11px',color:'var(--color-text-secondary)',margin:'2px 0 0'}}>{s(loadIntervals ? loadIntervals.reduce((sum,[,k])=>sum+k,0)/12 : 0)} kWh/mo avg</p>
             </div>
+            {allowExport && optimalSize.peakExportKw > 0 && (
+            <div style={{...metricCard, gridColumn:'1/-1', background: optimalSize.peakExportKw > annualPeakKw ? 'var(--color-background-danger)' : metricCard.background}}>
+              <p style={{fontSize:'12px',color:'var(--color-text-secondary)',margin:'0 0 4px'}}>peak export (optimal size)</p>
+              <p style={{fontSize:'22px',fontWeight:'500',margin:'0',color: optimalSize.peakExportKw > annualPeakKw ? 'var(--color-text-danger)' : 'var(--color-text-primary)'}}>{optimalSize.peakExportKw.toFixed(1)} kW</p>
+              <p style={{fontSize:'11px',color:'var(--color-text-secondary)',margin:'2px 0 0'}}>
+                {optimalSize.peakExportKw > annualPeakKw
+                  ? `⚠ Exceeds peak import (${annualPeakKw} kW) — may require larger interconnection agreement`
+                  : `Within peak import capacity (${annualPeakKw} kW) — no interconnection upgrade expected`}
+              </p>
+            </div>
+            )}
           </div>
 
           <div style={{...cardStyle,padding:'0'}}>
@@ -694,15 +721,15 @@ function PvSizingTool() {
                   </tr>
                 </thead>
                 <tbody>
-                  {results.filter(r=>r.sizeKw>0 && r.sizeKw<=800).filter((_,i)=>i%2===0).map(r=>(
+                  {results.filter(r=>r.sizeKw>0).filter((_,i)=>i%2===0).map(r=>(
                     <tr key={r.sizeKw} style={{borderBottom:'0.5px solid var(--color-border-tertiary)',background: r.sizeKw===optimalSize.sizeKw ? 'var(--color-background-info)' : 'transparent'}}>
-                      <td style={{textAlign:'right',padding:'5px 12px 5px 0',fontWeight: r.sizeKw===optimalSize.sizeKw ? '500':'400',color:'var(--color-text-primary)'}}>{r.sizeKw}</td>
-                      <td style={{textAlign:'right',padding:'5px 12px 5px 0',color:'var(--color-text-secondary)'}}>{s(Math.round(r.sizeKw * (pvHourly ? pvHourly.reduce((s,m)=>s+m.reduce((ms,h)=>ms+h,0),0) : 0)))} kWh</td>
-                      <td style={{textAlign:'right',padding:'5px 12px 5px 0',color:'var(--color-text-primary)'}}>{sc(r.systemCost)}</td>
-                      <td style={{textAlign:'right',padding:'5px 12px 5px 0',color:'var(--color-text-primary)'}}>{sc(r.firstYearSavings)}</td>
-                      <td style={{textAlign:'right',padding:'5px 12px 5px 0',color:'var(--color-text-primary)'}}>{sc(r.npv)}</td>
-                      <td style={{textAlign:'right',padding:'5px 12px 5px 0',color: r.netNpv>0 ? 'var(--color-text-success)' : 'var(--color-text-danger)'}}>{sc(r.netNpv)}</td>
-                      <td style={{textAlign:'right',padding:'5px 12px 5px 0',color:'var(--color-text-primary)'}}>{r.firstYearSavings>0?(r.systemCost/r.firstYearSavings).toFixed(1)+' yr':'—'}</td>
+                      <td style={{textAlign:'right',padding:'5px 12px 5px 0',fontWeight: r.sizeKw===optimalSize.sizeKw ? '500':'400',color:'var(--color-text-primary)',fontFamily:'var(--font-mono)',fontSize:'11px'}}>{r.sizeKw}</td>
+                      <td style={{textAlign:'right',padding:'5px 12px 5px 0',color:'var(--color-text-secondary)',fontFamily:'var(--font-mono)',fontSize:'11px'}}>{s(Math.round(r.sizeKw * (pvHourly ? pvHourly.reduce((s,m,mi)=>s+m.reduce((ms,h)=>ms+h*[31,28,31,30,31,30,31,31,30,31,30,31][mi],0),0) : 0)))} kWh</td>
+                      <td style={{textAlign:'right',padding:'5px 12px 5px 0',color:'var(--color-text-primary)',fontFamily:'var(--font-mono)',fontSize:'11px'}}>{sc(r.systemCost)}</td>
+                      <td style={{textAlign:'right',padding:'5px 12px 5px 0',color:'var(--color-text-primary)',fontFamily:'var(--font-mono)',fontSize:'11px'}}>{sc(r.firstYearSavings)}</td>
+                      <td style={{textAlign:'right',padding:'5px 12px 5px 0',color:'var(--color-text-primary)',fontFamily:'var(--font-mono)',fontSize:'11px'}}>{sc(r.npv)}</td>
+                      <td style={{textAlign:'right',padding:'5px 12px 5px 0',color: r.netNpv>0 ? 'var(--color-text-success)' : 'var(--color-text-danger)',fontFamily:'var(--font-mono)',fontSize:'11px'}}>{sc(r.netNpv)}</td>
+                      <td style={{textAlign:'right',padding:'5px 12px 5px 0',color:'var(--color-text-primary)',fontFamily:'var(--font-mono)',fontSize:'11px'}}>{r.firstYearSavings>0?(r.systemCost/r.firstYearSavings).toFixed(1)+' yr':'—'}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -740,11 +767,11 @@ function PvSizingTool() {
                     const crossed = cum >= 0 && (cum - row.savings) < 0;
                     return (
                       <tr key={i} style={{borderBottom:'0.5px solid var(--color-border-tertiary)',background: crossed ? 'var(--color-background-success)' : 'transparent'}}>
-                        <td style={{textAlign:'right',padding:'7px 16px',color:'var(--color-text-primary)'}}>{row.year}</td>
-                        <td style={{textAlign:'right',padding:'7px 16px',color:'var(--color-text-primary)'}}>{sc(row.savings)}</td>
-                        <td style={{textAlign:'right',padding:'7px 16px',color:'var(--color-text-primary)'}}>{sc(row.exportCredit)}</td>
-                        <td style={{textAlign:'right',padding:'7px 16px',color:'var(--color-text-primary)'}}>{sc(row.discounted)}</td>
-                        <td style={{textAlign:'right',padding:'7px 16px',fontWeight: cum<0?'400':'500', color: cum<0 ? 'var(--color-text-danger)' : 'var(--color-text-success)'}}>{sc(cum)}</td>
+                        <td style={{textAlign:'right',padding:'7px 16px',color:'var(--color-text-primary)',fontFamily:'var(--font-mono)',fontSize:'11px'}}>{row.year}</td>
+                        <td style={{textAlign:'right',padding:'7px 16px',color:'var(--color-text-primary)',fontFamily:'var(--font-mono)',fontSize:'11px'}}>{sc(row.savings)}</td>
+                        <td style={{textAlign:'right',padding:'7px 16px',color:'var(--color-text-primary)',fontFamily:'var(--font-mono)',fontSize:'11px'}}>{sc(row.exportCredit)}</td>
+                        <td style={{textAlign:'right',padding:'7px 16px',color:'var(--color-text-primary)',fontFamily:'var(--font-mono)',fontSize:'11px'}}>{sc(row.discounted)}</td>
+                        <td style={{textAlign:'right',padding:'7px 16px',fontWeight: cum<0?'400':'500', color: cum<0 ? 'var(--color-text-danger)' : 'var(--color-text-success)',fontFamily:'var(--font-mono)',fontSize:'11px'}}>{sc(cum)}</td>
                       </tr>
                     );
                   });
