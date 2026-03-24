@@ -1,4 +1,4 @@
-<!-- v1.4 -->
+<!-- v1.5 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -81,7 +81,7 @@ button { font-family: 'DM Sans', sans-serif; }
 <body>
 <header class="site-header">
   <div class="logo">Center for Community Energy <span>/</span> Wipomo</div>
-  <div style="display:flex;align-items:center;gap:1.5rem;"><span style="font-size:11px;color:#4a6a8a;font-family:'DM Mono',monospace;">v1.4</span><a href="index.html" class="back">&#8592; All tools</a></div>
+  <div style="display:flex;align-items:center;gap:1.5rem;"><span style="font-size:11px;color:#4a6a8a;font-family:'DM Mono',monospace;">v1.5</span><a href="index.html" class="back">&#8592; All tools</a></div>
 </header>
 <div class="tool-wrapper">
   <div id="root"></div>
@@ -206,13 +206,17 @@ function parseIntervalCsv(text) {
   const header = lines[0].split(',').map(h => h.trim().replace(/"/g,''));
   const startIdx = header.findIndex(h => /interval_start/i.test(h));
   const kwhIdx = header.findIndex(h => /interval_kwh/i.test(h));
+  console.log('CSV header:', header);
+  console.log('startIdx:', startIdx, 'kwhIdx:', kwhIdx);
   if (startIdx < 0 || kwhIdx < 0) throw new Error('CSV missing interval_start or interval_kWh columns');
   const intervals = [];
   for (let i = 1; i < lines.length; i++) {
     const cols = lines[i].split(',').map(c => c.trim().replace(/"/g,''));
     if (!cols[startIdx]) continue;
-    const ts = new Date(cols[startIdx].replace(' ', 'T'));
+    const rawTs = cols[startIdx];
+    const ts = new Date(rawTs.replace(' ', 'T'));
     const kwh = parseFloat(cols[kwhIdx]);
+    if (i <= 3) console.log('Row', i, 'rawTs:', rawTs, 'ts:', ts, 'kwh:', kwh, 'valid:', !isNaN(ts.getTime()) && !isNaN(kwh));
     if (!isNaN(ts.getTime()) && !isNaN(kwh)) intervals.push([ts, kwh]);
   }
   intervals.sort((a,b) => a[0]-b[0]);
