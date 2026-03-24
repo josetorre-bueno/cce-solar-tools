@@ -1,4 +1,4 @@
-<!-- v1.6 -->
+<!-- v1.8 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -81,7 +81,7 @@ button { font-family: 'DM Sans', sans-serif; }
 <body>
 <header class="site-header">
   <div class="logo">Center for Community Energy <span>/</span> Wipomo</div>
-  <div style="display:flex;align-items:center;gap:1.5rem;"><span style="font-size:11px;color:#4a6a8a;font-family:'DM Mono',monospace;">v1.6</span><a href="index.html" class="back">&#8592; All tools</a></div>
+  <div style="display:flex;align-items:center;gap:1.5rem;"><span style="font-size:11px;color:#4a6a8a;font-family:'DM Mono',monospace;">v1.8</span><a href="index.html" class="back">&#8592; All tools</a></div>
 </header>
 <div class="tool-wrapper">
   <div id="root"></div>
@@ -239,18 +239,51 @@ function parseIntervalCsv(text) {
 // of the load data start date — any interval can look up its PV production
 // using only its calendar month and hour-of-day.
 function parsePvwattsCsv(text) {
+  // Handles two formats:
+  // 1. Dual-axis tracker export: tab-delimited, columns "Hour" + "AC_kWh", values in kWh/hr
+  // 2. PVWatts web calculator CSV: comma-delimited, multi-row metadata header,
+  //    data columns include "AC System Output (W)" as last column, values in Watts
   const lines = text.trim().split('\n');
-  let dataStart = 0;
-  for (let i = 0; i < lines.length; i++) {
-    if (/^\d/.test(lines[i].trim())) { dataStart = i; break; }
+
+  // Detect delimiter
+  const delim = lines[0].includes('\t') ? '\t' : ',';
+
+  // Find the header row — the first line whose first token is a recognizable column name
+  // PVWatts CSV has metadata rows above the actual column header
+  let headerIdx = 0;
+  let header = [];
+  for (let i = 0; i < Math.min(lines.length, 20); i++) {
+    const cols = lines[i].split(delim).map(c => c.trim().replace(/"/g,''));
+    // Header row contains text labels, not numbers
+    if (isNaN(parseFloat(cols[0])) && cols.length >= 2) {
+      header = cols.map(c => c.toLowerCase());
+      headerIdx = i;
+      break;
+    }
   }
+
+  // Find AC output column
+  // Tracker format: "ac_kwh"
+  // PVWatts format: "ac system output (w)" — typically last column
+  let acIdx = header.findIndex(h => /ac_kwh/i.test(h));
+  let scaleToKwh = 1.0;  // tracker output already in kWh/hr
+  if (acIdx < 0) {
+    // Look for PVWatts "AC System Output (W)" — usually last data column
+    acIdx = header.findIndex(h => /ac system output/i.test(h) || h === 'ac output (w)');
+    if (acIdx < 0) acIdx = header.length - 1;  // fallback to last column
+    scaleToKwh = 1 / 1000;  // Watts → kWh/hr (one hour intervals)
+  }
+
+  // Data starts on the line after the header
+  const dataStart = headerIdx + 1;
   const hourly = [];
   for (let i = dataStart; i < lines.length; i++) {
-    const cols = lines[i].split(',');
-    const ac = parseFloat(cols[cols.length-1]);
-    if (!isNaN(ac)) hourly.push(ac / 1000); // W → kWh/hr for 1 kW system
+    if (!lines[i].trim()) continue;
+    const cols = lines[i].split(delim);
+    const raw = parseFloat(cols[acIdx]);
+    if (!isNaN(raw)) hourly.push(raw * scaleToKwh);
   }
-  if (hourly.length < 8760) throw new Error(`PVWatts file has ${hourly.length} hours, expected 8760`);
+  if (hourly.length < 8760) throw new Error(`PV profile has ${hourly.length} hours, expected 8760`);
 
   // Build 12×24 lookup by averaging TMY hours with the same month+hour
   // TMY starts Jan 1 hour 0 — day lengths: 31,28,31,30,31,30,31,31,30,31,30,31
