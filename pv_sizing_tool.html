@@ -1,4 +1,4 @@
-<!-- v1.3 -->
+<!-- v1.4 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -81,7 +81,7 @@ button { font-family: 'DM Sans', sans-serif; }
 <body>
 <header class="site-header">
   <div class="logo">Center for Community Energy <span>/</span> Wipomo</div>
-  <a href="index.html" class="back">&#8592; All tools</a>
+  <div style="display:flex;align-items:center;gap:1.5rem;"><span style="font-size:11px;color:#4a6a8a;font-family:'DM Mono',monospace;">v1.4</span><a href="index.html" class="back">&#8592; All tools</a></div>
 </header>
 <div class="tool-wrapper">
   <div id="root"></div>
@@ -211,9 +211,9 @@ function parseIntervalCsv(text) {
   for (let i = 1; i < lines.length; i++) {
     const cols = lines[i].split(',').map(c => c.trim().replace(/"/g,''));
     if (!cols[startIdx]) continue;
-    const ts = new Date(cols[startIdx]);
+    const ts = new Date(cols[startIdx].replace(' ', 'T'));
     const kwh = parseFloat(cols[kwhIdx]);
-    if (!isNaN(ts) && !isNaN(kwh)) intervals.push([ts, kwh]);
+    if (!isNaN(ts.getTime()) && !isNaN(kwh)) intervals.push([ts, kwh]);
   }
   intervals.sort((a,b) => a[0]-b[0]);
   return intervals;
