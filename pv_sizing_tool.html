@@ -1,4 +1,4 @@
-<!-- v2.0 -->
+<!-- v2.1 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -81,7 +81,7 @@ button { font-family: 'DM Sans', sans-serif; }
 <body>
 <header class="site-header">
   <div class="logo">Center for Community Energy <span>/</span> Wipomo</div>
-  <div style="display:flex;align-items:center;gap:1.5rem;"><span style="font-size:11px;color:#4a6a8a;font-family:'DM Mono',monospace;">v2.0</span><a href="index.html" class="back">&#8592; All tools</a></div>
+  <div style="display:flex;align-items:center;gap:1.5rem;"><span style="font-size:11px;color:#4a6a8a;font-family:'DM Mono',monospace;">v2.1</span><a href="index.html" class="back">&#8592; All tools</a></div>
 </header>
 <div class="tool-wrapper">
   <div id="root"></div>
@@ -459,6 +459,7 @@ function PvSizingTool() {
   const [utilEsc, setUtilEsc] = useState(5);
   const [accEsc, setAccEsc] = useState(1.14);
   const [costPerWatt, setCostPerWatt] = useState(2.20);
+  const [incentivePct, setIncentivePct] = useState(0);
   const [annualPeakKw, setAnnualPeakKw] = useState(248.4);
 
   const handleLoadFile = useCallback((e) => {
@@ -514,7 +515,8 @@ function PvSizingTool() {
           discountRate: discountRate/100,
           utilEsc: utilEsc/100,
           accEsc: accEsc/100,
-          costPerWatt,
+          costPerWatt: costPerWatt * (1 - incentivePct/100),
+          grossCostPerWatt: costPerWatt,
           annualPeakKw,
         };
         const res = runSizingSweep(loadIntervals, pvHourly, cfg);
@@ -529,7 +531,7 @@ function PvSizingTool() {
         setRunning(false);
       }
     }, 50);
-  }, [loadIntervals, pvHourly, years, discountRate, utilEsc, accEsc, costPerWatt, annualPeakKw]);
+  }, [loadIntervals, pvHourly, years, discountRate, utilEsc, accEsc, costPerWatt, incentivePct, annualPeakKw]);
 
   const downloadCsv = useCallback(() => {
     if (!optimalSize) return;
@@ -575,13 +577,13 @@ function PvSizingTool() {
               <p style={{fontSize:'13px',fontWeight:'500',margin:'0 0 12px',color:'var(--color-text-primary)'}}>Interval data (UtilityAPI CSV)</p>
               <label style={labelStyle}>Upload CSV</label>
               <input type="file" accept=".csv" onChange={handleLoadFile} style={{fontSize:'12px',color:'var(--color-text-secondary)'}} />
-              {loadFile && <p style={{fontSize:'12px',color:'var(--color-text-success)',margin:'8px 0 0'}}>{loadIntervals?.length.toLocaleString()} intervals loaded</p>}
+              {loadFile && <p style={{fontSize:'12px',color:'var(--color-text-success)',margin:'6px 0 0'}}>&#10003; {loadFile} &mdash; {loadIntervals?.length.toLocaleString()} intervals</p>}
             </div>
             <div style={cardStyle}>
               <p style={{fontSize:'13px',fontWeight:'500',margin:'0 0 12px',color:'var(--color-text-primary)'}}>PVWatts 1 kW reference profile</p>
               <label style={labelStyle}>Upload hourly CSV</label>
               <input type="file" accept=".csv" onChange={handlePvFile} style={{fontSize:'12px',color:'var(--color-text-secondary)'}} />
-              {pvFile && <p style={{fontSize:'12px',color:'var(--color-text-success)',margin:'8px 0 0'}}>Profile loaded (12×24 monthly average)</p>}
+              {pvFile && <p style={{fontSize:'12px',color:'var(--color-text-success)',margin:'6px 0 0'}}>&#10003; {pvFile} &mdash; 12&times;24 monthly avg</p>}
             </div>
           </div>
 
@@ -609,6 +611,10 @@ function PvSizingTool() {
                 <input type="number" min="0.5" max="5" step="0.05" value={costPerWatt} onChange={e=>setCostPerWatt(+e.target.value)} style={inputStyle} />
               </div>
               <div>
+                <label style={labelStyle}>Incentives / grants (% of cost)</label>
+                <input type="number" min="0" max="100" step="1" value={incentivePct} onChange={e=>setIncentivePct(+e.target.value)} style={inputStyle} />
+              </div>
+              <div>
                 <label style={labelStyle}>Prior 12-mo peak demand (kW)</label>
                 <input type="number" min="0" max="2000" step="1" value={annualPeakKw} onChange={e=>setAnnualPeakKw(+e.target.value)} style={inputStyle} />
               </div>
@@ -617,6 +623,7 @@ function PvSizingTool() {
 
           <div style={cardStyle}>
             <p style={{fontSize:'12px',color:'var(--color-text-secondary)',margin:'0 0 8px'}}>Rate config: AL-TOU2 winter (Mar 19–Apr 17, 2025) · validated against actual W1 SDG&E + CE bills · $0.00 error on Total Electric Charges</p>
+            <p style={{fontSize:'11px',color:'var(--color-text-secondary)',margin:'4px 0 0',fontStyle:'italic'}}>Note: rate schedule optimization (testing whether an alternative rate improves economics with solar) is planned for a future version.</p>
             <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:'8px',fontSize:'12px',color:'var(--color-text-secondary)'}}>
               <span>Delivery energy: $0.00686/kWh</span>
               <span>On-peak gen: $0.22774/kWh</span>
@@ -641,9 +648,9 @@ function PvSizingTool() {
               <p style={{fontSize:'22px',fontWeight:'500',margin:'0',color:'var(--color-text-primary)'}}>{optimalSize.sizeKw} kW DC</p>
             </div>
             <div style={metricCard}>
-              <p style={{fontSize:'12px',color:'var(--color-text-secondary)',margin:'0 0 4px'}}>system cost</p>
+              <p style={{fontSize:'12px',color:'var(--color-text-secondary)',margin:'0 0 4px'}}>net system cost</p>
               <p style={{fontSize:'22px',fontWeight:'500',margin:'0',color:'var(--color-text-primary)'}}>{sc(optimalSize.systemCost)}</p>
-              <p style={{fontSize:'11px',color:'var(--color-text-secondary)',margin:'2px 0 0'}}>${costPerWatt.toFixed(2)}/W installed</p>
+              <p style={{fontSize:'11px',color:'var(--color-text-secondary)',margin:'2px 0 0'}}>{incentivePct > 0 ? `after ${incentivePct}% incentive · gross ${sc(optimalSize.sizeKw*1000*costPerWatt)}` : `$${costPerWatt.toFixed(2)}/W installed`}</p>
             </div>
             <div style={metricCard}>
               <p style={{fontSize:'12px',color:'var(--color-text-secondary)',margin:'0 0 4px'}}>simple payback</p>
