@@ -1,4 +1,4 @@
-<!-- v1.9 -->
+<!-- v2.0 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -81,7 +81,7 @@ button { font-family: 'DM Sans', sans-serif; }
 <body>
 <header class="site-header">
   <div class="logo">Center for Community Energy <span>/</span> Wipomo</div>
-  <div style="display:flex;align-items:center;gap:1.5rem;"><span style="font-size:11px;color:#4a6a8a;font-family:'DM Mono',monospace;">v1.9</span><a href="index.html" class="back">&#8592; All tools</a></div>
+  <div style="display:flex;align-items:center;gap:1.5rem;"><span style="font-size:11px;color:#4a6a8a;font-family:'DM Mono',monospace;">v2.0</span><a href="index.html" class="back">&#8592; All tools</a></div>
 </header>
 <div class="tool-wrapper">
   <div id="root"></div>
@@ -90,7 +90,7 @@ button { font-family: 'DM Sans', sans-serif; }
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 <script type="text/babel">
-const { useState, useCallback, useRef } = React;
+const { useState, useCallback, useRef, useEffect } = React;
 // ── NBT Export Rates ─────────────────────────────────────────────────────────
 // Source: Current_Year_NBT_Pricing_Upload_MIDAS.xml (USCA-XXSD-NB00-0000)
 // Structure: NBT_RATES[yearIdx][month-1][hour][0=weekday, 1=weekend]
@@ -421,6 +421,38 @@ function PvSizingTool() {
   const [results, setResults] = useState(null);
   const [running, setRunning] = useState(false);
   const [optimalSize, setOptimalSize] = useState(null);
+  const chartRef = useRef(null);
+
+  useEffect(() => {
+    if (tab !== 'results' || !results) return;
+    const ctx = document.getElementById('npvChart');
+    if (!ctx || typeof Chart === 'undefined') return;
+    if (chartRef.current) { chartRef.current.destroy(); chartRef.current = null; }
+    const labels = results.filter(r => r.sizeKw > 0).map(r => r.sizeKw + ' kW');
+    const npvData = results.filter(r => r.sizeKw > 0).map(r => Math.round(r.netNpv));
+    const grossData = results.filter(r => r.sizeKw > 0).map(r => Math.round(r.npv));
+    chartRef.current = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [
+          { label: 'Net NPV (after system cost)', data: npvData, borderColor: '#4a9eff', backgroundColor: 'rgba(74,158,255,0.1)', borderWidth: 2, pointRadius: 2, fill: true },
+          { label: 'Gross NPV (savings only)', data: grossData, borderColor: '#4ade80', backgroundColor: 'transparent', borderWidth: 1.5, pointRadius: 0, borderDash: [4,3] },
+        ]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: {
+          legend: { display: true, labels: { color: '#8ba8c4', font: { size: 11 }, boxWidth: 12 } },
+          tooltip: { callbacks: { label: ctx => ' $' + ctx.raw.toLocaleString() } }
+        },
+        scales: {
+          x: { ticks: { color: '#8ba8c4', font: { size: 10 }, maxRotation: 45 }, grid: { color: 'rgba(255,255,255,0.05)' } },
+          y: { ticks: { color: '#8ba8c4', font: { size: 10 }, callback: v => '$' + (v/1000).toFixed(0) + 'k' }, grid: { color: 'rgba(255,255,255,0.05)' } }
+        }
+      }
+    });
+  }, [tab, results]);
 
   const [years, setYears] = useState(25);
   const [discountRate, setDiscountRate] = useState(6);
@@ -603,13 +635,24 @@ function PvSizingTool() {
 
       {tab === 'results' && results && optimalSize && (
         <div style={{display:'grid',gap:'16px'}}>
-          <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:'12px'}}>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'12px',marginBottom:'12px'}}>
             <div style={metricCard}>
               <p style={{fontSize:'12px',color:'var(--color-text-secondary)',margin:'0 0 4px'}}>optimal size</p>
-              <p style={{fontSize:'22px',fontWeight:'500',margin:'0',color:'var(--color-text-primary)'}}>{optimalSize.sizeKw} kW</p>
+              <p style={{fontSize:'22px',fontWeight:'500',margin:'0',color:'var(--color-text-primary)'}}>{optimalSize.sizeKw} kW DC</p>
             </div>
             <div style={metricCard}>
-              <p style={{fontSize:'12px',color:'var(--color-text-secondary)',margin:'0 0 4px'}}>net NPV</p>
+              <p style={{fontSize:'12px',color:'var(--color-text-secondary)',margin:'0 0 4px'}}>system cost</p>
+              <p style={{fontSize:'22px',fontWeight:'500',margin:'0',color:'var(--color-text-primary)'}}>{sc(optimalSize.systemCost)}</p>
+              <p style={{fontSize:'11px',color:'var(--color-text-secondary)',margin:'2px 0 0'}}>${costPerWatt.toFixed(2)}/W installed</p>
+            </div>
+            <div style={metricCard}>
+              <p style={{fontSize:'12px',color:'var(--color-text-secondary)',margin:'0 0 4px'}}>simple payback</p>
+              <p style={{fontSize:'22px',fontWeight:'500',margin:'0',color:'var(--color-text-primary)'}}>{optimalSize.firstYearSavings > 0 ? (optimalSize.systemCost/optimalSize.firstYearSavings).toFixed(1)+' yr' : '—'}</p>
+            </div>
+          </div>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'12px'}}>
+            <div style={metricCard}>
+              <p style={{fontSize:'12px',color:'var(--color-text-secondary)',margin:'0 0 4px'}}>net NPV ({years} yr)</p>
               <p style={{fontSize:'22px',fontWeight:'500',margin:'0',color:'var(--color-text-primary)'}}>{sc(optimalSize.netNpv)}</p>
             </div>
             <div style={metricCard}>
@@ -617,8 +660,9 @@ function PvSizingTool() {
               <p style={{fontSize:'22px',fontWeight:'500',margin:'0',color:'var(--color-text-primary)'}}>{sc(optimalSize.firstYearSavings)}</p>
             </div>
             <div style={metricCard}>
-              <p style={{fontSize:'12px',color:'var(--color-text-secondary)',margin:'0 0 4px'}}>simple payback</p>
-              <p style={{fontSize:'22px',fontWeight:'500',margin:'0',color:'var(--color-text-primary)'}}>{optimalSize.firstYearSavings > 0 ? (optimalSize.systemCost/optimalSize.firstYearSavings).toFixed(1)+' yr' : '—'}</p>
+              <p style={{fontSize:'12px',color:'var(--color-text-secondary)',margin:'0 0 4px'}}>annual load kWh</p>
+              <p style={{fontSize:'22px',fontWeight:'500',margin:'0',color:'var(--color-text-primary)'}}>{s(loadIntervals ? loadIntervals.reduce((sum,[,k])=>sum+k,0) : 0)}</p>
+              <p style={{fontSize:'11px',color:'var(--color-text-secondary)',margin:'2px 0 0'}}>{s(loadIntervals ? loadIntervals.reduce((sum,[,k])=>sum+k,0)/12 : 0)} kWh/mo avg</p>
             </div>
           </div>
 
@@ -637,7 +681,7 @@ function PvSizingTool() {
               <table style={{width:'100%',fontSize:'12px',borderCollapse:'collapse'}}>
                 <thead>
                   <tr style={{borderBottom:'0.5px solid var(--color-border-tertiary)'}}>
-                    {['Size (kW DC)','System Cost','Yr 1 Savings','Gross NPV','Net NPV','Payback'].map(h=>(
+                    {['Size (kW DC)','Annual Production','System Cost','Yr 1 Savings','Gross NPV','Net NPV','Payback'].map(h=>(
                       <th key={h} style={{textAlign:'right',padding:'6px 12px 6px 0',fontWeight:'500',color:'var(--color-text-secondary)',whiteSpace:'nowrap'}}>{h}</th>
                     ))}
                   </tr>
@@ -646,6 +690,7 @@ function PvSizingTool() {
                   {results.filter(r=>r.sizeKw>0 && r.sizeKw<=800).filter((_,i)=>i%2===0).map(r=>(
                     <tr key={r.sizeKw} style={{borderBottom:'0.5px solid var(--color-border-tertiary)',background: r.sizeKw===optimalSize.sizeKw ? 'var(--color-background-info)' : 'transparent'}}>
                       <td style={{textAlign:'right',padding:'5px 12px 5px 0',fontWeight: r.sizeKw===optimalSize.sizeKw ? '500':'400',color:'var(--color-text-primary)'}}>{r.sizeKw}</td>
+                      <td style={{textAlign:'right',padding:'5px 12px 5px 0',color:'var(--color-text-secondary)'}}>{s(Math.round(r.sizeKw * (pvHourly ? pvHourly.reduce((s,m)=>s+m.reduce((ms,h)=>ms+h,0),0) : 0)))} kWh</td>
                       <td style={{textAlign:'right',padding:'5px 12px 5px 0',color:'var(--color-text-primary)'}}>{sc(r.systemCost)}</td>
                       <td style={{textAlign:'right',padding:'5px 12px 5px 0',color:'var(--color-text-primary)'}}>{sc(r.firstYearSavings)}</td>
                       <td style={{textAlign:'right',padding:'5px 12px 5px 0',color:'var(--color-text-primary)'}}>{sc(r.npv)}</td>
@@ -717,5 +762,6 @@ const root = ReactDOM.createRoot(document.getElementById("root"));
 root.render(React.createElement(PvSizingTool));
 
 </script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 </body>
 </html>
