@@ -1,4 +1,4 @@
-<!-- v1.8 -->
+<!-- v1.9 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -81,7 +81,7 @@ button { font-family: 'DM Sans', sans-serif; }
 <body>
 <header class="site-header">
   <div class="logo">Center for Community Energy <span>/</span> Wipomo</div>
-  <div style="display:flex;align-items:center;gap:1.5rem;"><span style="font-size:11px;color:#4a6a8a;font-family:'DM Mono',monospace;">v1.8</span><a href="index.html" class="back">&#8592; All tools</a></div>
+  <div style="display:flex;align-items:center;gap:1.5rem;"><span style="font-size:11px;color:#4a6a8a;font-family:'DM Mono',monospace;">v1.9</span><a href="index.html" class="back">&#8592; All tools</a></div>
 </header>
 <div class="tool-wrapper">
   <div id="root"></div>
@@ -453,10 +453,13 @@ function PvSizingTool() {
     const reader = new FileReader();
     reader.onload = (ev) => {
       try {
-        const hourly = parsePvwattsCsv(ev.target.result);
-        setPvHourly(hourly);
-        const annualKwh = hourly.reduce((s,v)=>s+v,0);
-        setStatus(`Loaded PV profile: ${hourly.length} hours, ${annualKwh.toFixed(1)} kWh/yr per kW DC`);
+        const lookup = parsePvwattsCsv(ev.target.result);
+        setPvHourly(lookup);
+        console.log('PV lookup type:', typeof lookup, 'isArray:', Array.isArray(lookup));
+        console.log('PV lookup length:', lookup ? lookup.length : 'null');
+        if (lookup && lookup[0]) console.log('lookup[0] type:', typeof lookup[0], 'length:', lookup[0].length, 'sample:', lookup[0][12]);
+        const annualKwh = lookup.reduce((s, month) => s + month.reduce((ms, h) => ms + h, 0), 0);
+        setStatus(`Loaded PV profile: 12×24 monthly average, ${annualKwh.toFixed(1)} kWh/yr per kW DC`);
       } catch(err) {
         setStatus(`Error parsing PV file: ${err.message}`);
       }
