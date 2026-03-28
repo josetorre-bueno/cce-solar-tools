@@ -1,7 +1,7 @@
-// tracker_tou_app_v6.16.jsx
-// MOD-09: tracker_analyzer — Dual-Axis Tracker vs Fixed Carport TOU Value Analyzer
-// Part of the Wipomo/CCE Solar Tools suite (see TOOL_ARCHITECTURE_4.md)
-// Calls: MOD-01 (PVWatts v8), MOD-04 (rate_engine)
+// MOD-09 tracker_analyzer — module
+// Version: v6.16
+// Part of: Wipomo / CCE Solar Tools (see TOOL_ARCHITECTURE_5.md)
+// Calls: MOD-01 (pvwatts), MOD-04 (rate_engine)
 // Outputs to: MOD-05 (bill_modeler), MOD-06 (battery_simulator)
 
 // ─── REACT GLOBALS ────────────────────────────────────────────────────────────

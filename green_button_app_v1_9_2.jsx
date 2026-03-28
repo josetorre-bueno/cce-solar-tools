@@ -1,3 +1,8 @@
+// MOD-02b green_button.emulator — module
+// Version: v1.9.2
+// Part of: Wipomo / CCE Solar Tools (see TOOL_ARCHITECTURE_5.md)
+// Outputs to: MOD-05 (bill_modeler), MOD-06 (battery_simulator)
+
 const { useState, useCallback } = React;
 
 const VERSION = "1.9.2";
