@@ -407,7 +407,7 @@ function buildCommonMeta({ addressInput, geocodedLat, geocodedLon, units,
   const tou = TOU_RATES[utility];
   return [
     ["# MOD-09 tracker_analyzer -- Hourly AC Output Export"],
-    ["# Tool version",        "v6.16"],
+    ["# Tool version",        "v6.17"],
     ["# Generated",           dateStr],
     ["# --- Site ---"],
     ["# Address input",       addressInput],
@@ -775,7 +775,7 @@ function App() {
               Dual-Axis Tracker — TOU Value Analyzer
             </h1>
             <p style={{color:C.muted,fontSize:13,marginTop:5}}>
-              NREL PVWatts v8 · Carport {tilt}° tilt / {azimuth}° az · Dual-axis tracker · 14% losses · v6.16
+              NREL PVWatts v8 · Carport {tilt}° tilt / {azimuth}° az · Dual-axis tracker · 14% losses · v6.17
             </p>
           </div>
           <a href="https://tools.cc-energy.org/index.html"

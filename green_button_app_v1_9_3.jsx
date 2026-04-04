@@ -1,5 +1,5 @@
 // MOD-02b green_button.emulator — module
-// Version: v1.9.3
+// Version: v2.0.0
 // Part of: Wipomo / CCE Solar Tools (see TOOL_ARCHITECTURE_5.md)
 // Outputs to: MOD-05 (bill_modeler), MOD-06 (battery_simulator)
 // Changelog: v1.9.3 — fix fuel config redistribution bug: gas end-uses now
@@ -8,7 +8,7 @@
 
 const { useState, useCallback } = React;
 
-const VERSION = "1.9.3";
+const VERSION = "2.0.0";
 
 // ─── DATA SOURCES (for citation in output files) ──────────────────────────────
 const DATA_SOURCES = {
@@ -243,63 +243,57 @@ const BUILDING_TYPES = {
   },
 };
 
-// ─── FUEL MIX ADJUSTMENTS ─────────────────────────────────────────────────────
-// When gas is used for an end use, that load is removed from electricity.
-// The removed fraction is dropped entirely — gas appliances consume gas, not electricity.
-// Multipliers: 1.0 = electric, 0.0 = gas (end-use removed from electric total)
+// ─── INDIVIDUAL FUEL CHOICES ──────────────────────────────────────────────────
+// Each end-use fuel type is now set independently rather than as a combined preset.
+// elec_mult: multiplier applied to that end-use's kWh fraction in the building model.
+//   1.0 = fully electric (base calibration)
+//   0.0 = gas (end-use removed from electric total entirely)
+//   2.7 = electric resistance water heating (uses ~2.7× more electricity than HPWH)
+//
+// Base calibration note: water_heating fractions in BUILDING_TYPES are calibrated to
+// ResStock 2024.2 CA all-electric archetypes, which model HPWH (not resistance).
+// HPWH is therefore elec_mult=1.0 (base). Electric resistance = 2.7× that.
 
-const FUEL_CONFIGS = {
-  all_electric: {
-    label: "All-Electric (new construction / Title 24 2025)",
-    water_heating_elec: true,
-    cooking_elec: true,
-    heating_elec: true,
-    elec_fraction_multipliers: { water_heating: 1.0, cooking: 1.0, hvac_heating: 1.0 },
-  },
-  gas_water_heat: {
-    label: "Gas water heater, electric cooking",
-    water_heating_elec: false,
-    cooking_elec: true,
-    heating_elec: true,
-    elec_fraction_multipliers: { water_heating: 0.0, cooking: 1.0, hvac_heating: 1.0 },
-  },
-  gas_cooking: {
-    label: "Electric water heater, gas cooking",
-    water_heating_elec: true,
-    cooking_elec: false,
-    heating_elec: true,
-    elec_fraction_multipliers: { water_heating: 1.0, cooking: 0.0, hvac_heating: 1.0 },
-  },
-  gas_wh_cooking: {
-    label: "Gas water heater + gas cooking (typical existing)",
-    water_heating_elec: false,
-    cooking_elec: false,
-    heating_elec: true,
-    elec_fraction_multipliers: { water_heating: 0.0, cooking: 0.0, hvac_heating: 1.0 },
-  },
-  full_gas: {
-    label: "Gas water heater + gas cooking + gas heating (older stock)",
-    water_heating_elec: false,
-    cooking_elec: false,
-    heating_elec: false,
-    elec_fraction_multipliers: { water_heating: 0.0, cooking: 0.0, hvac_heating: 0.0 },
-  },
+const WATER_HEATER_OPTIONS = {
+  hpwh:               { label: "Heat pump (HPWH)",    elec_mult: 1.0 },
+  electric_resistance:{ label: "Electric resistance", elec_mult: 2.7 },
+  gas:                { label: "Gas",                  elec_mult: 0.0 },
 };
+
+const SPACE_HEATING_OPTIONS = {
+  heat_pump: { label: "Heat pump",   elec_mult: 1.0 },
+  gas:       { label: "Gas furnace", elec_mult: 0.0 },
+};
+
+const COOKING_OPTIONS = {
+  electric: { label: "Electric range + oven", elec_mult: 1.0 },
+  gas:      { label: "Gas range + oven",      elec_mult: 0.0 },
+};
+
+// Helper: build a human-readable fuel summary string from individual choices
+function fuelLabel(waterHeater, spaceHeating, cooking) {
+  return [
+    "WH: " + (WATER_HEATER_OPTIONS[waterHeater]?.label || waterHeater),
+    "Heat: " + (SPACE_HEATING_OPTIONS[spaceHeating]?.label || spaceHeating),
+    "Cook: " + (COOKING_OPTIONS[cooking]?.label || cooking),
+  ].join(" | ");
+}
 
 // ─── DEFAULT MULTIFAMILY UNIT TEMPLATES ──────────────────────────────────────
 // Example 6-unit building: 2×2BR ADA (568 sqft), 2×1BR (578 sqft), 2×1BR end (588 sqft)
 // Edit labels, sqft, bedrooms, occupants, and fuel config per unit as needed.
-const makeUnit = (id, label, sqft, bedrooms, occupants, fuelConfig) => ({
-  id, label, sqft, bedrooms, occupants, fuelConfig,
+const makeUnit = (id, label, sqft, bedrooms, occupants,
+                  waterHeater = "hpwh", spaceHeating = "heat_pump", cooking = "electric") => ({
+  id, label, sqft, bedrooms, occupants, waterHeater, spaceHeating, cooking,
 });
 
 const DEFAULT_UNITS = [
-  makeUnit("U1", "Unit 1 (2BR ADA)", 568, 2, 2.4, "all_electric"),
-  makeUnit("U2", "Unit 2 (1BR)",     578, 1, 1.5, "all_electric"),
-  makeUnit("U3", "Unit 3 (1BR end)", 588, 1, 1.5, "all_electric"),
-  makeUnit("U4", "Unit 4 (2BR ADA)", 568, 2, 2.4, "all_electric"),
-  makeUnit("U5", "Unit 5 (1BR)",     578, 1, 1.5, "all_electric"),
-  makeUnit("U6", "Unit 6 (1BR end)", 588, 1, 1.5, "all_electric"),
+  makeUnit("U1", "Unit 1 (2BR ADA)", 568, 2, 2.4),
+  makeUnit("U2", "Unit 2 (1BR)",     578, 1, 1.5),
+  makeUnit("U3", "Unit 3 (1BR end)", 588, 1, 1.5),
+  makeUnit("U4", "Unit 4 (2BR ADA)", 568, 2, 2.4),
+  makeUnit("U5", "Unit 5 (1BR)",     578, 1, 1.5),
+  makeUnit("U6", "Unit 6 (1BR end)", 588, 1, 1.5),
 ];
 
 function updateUnit(units, id, field, value) {
@@ -442,19 +436,21 @@ function lognormal(rng, mu, sigma) {
 }
 
 // ─── CORE LOAD GENERATOR ──────────────────────────────────────────────────────
-function generateIntervals(sqft, occupants, bedrooms, climateZoneKey, buildingTypeKey, fuelConfigKey, year, hasPool, hasSpa, efficiencyPct, evCount, evMilesPerYear, evEfficiency, evChargeMode) {
+function generateIntervals(sqft, occupants, bedrooms, climateZoneKey, buildingTypeKey, fuelChoices, year, hasPool, hasSpa, efficiencyPct, evCount, evMilesPerYear, evEfficiency, evChargeMode) {
   const cz = CLIMATE_ZONES[climateZoneKey];
   const bt = BUILDING_TYPES[buildingTypeKey];
-  const fc = FUEL_CONFIGS[fuelConfigKey];
   const isSFR = buildingTypeKey === "sfr_detached" || buildingTypeKey === "sfr_attached";
+
+  // Resolve individual fuel choices (with fallback defaults)
+  const whOpt = WATER_HEATER_OPTIONS[fuelChoices?.waterHeater]  || WATER_HEATER_OPTIONS.hpwh;
+  const shOpt = SPACE_HEATING_OPTIONS[fuelChoices?.spaceHeating] || SPACE_HEATING_OPTIONS.heat_pump;
+  const ckOpt = COOKING_OPTIONS[fuelChoices?.cooking]            || COOKING_OPTIONS.electric;
 
   // Adjust end-use fractions for fuel mix
   const fracs = { ...bt.end_use_fractions };
-  for (const [eu, mult] of Object.entries(fc.elec_fraction_multipliers)) {
-    if (fracs[eu] !== undefined) {
-      fracs[eu] *= mult;
-    }
-  }
+  if (fracs.water_heating !== undefined) fracs.water_heating *= whOpt.elec_mult;
+  if (fracs.hvac_heating  !== undefined) fracs.hvac_heating  *= shOpt.elec_mult;
+  if (fracs.cooking       !== undefined) fracs.cooking       *= ckOpt.elec_mult;
   // Gas end-uses are dropped from the electric total entirely.
   // They are not redistributed to other electric end-uses —
   // gas appliances consume gas, not electricity.
@@ -912,7 +908,7 @@ function buildCSV(params, intervals) {
   if (isMF) {
     rows.push(`Units:,${units.length}`);
     units.forEach((u, i) => {
-      rows.push(`Unit ${i+1}:,"${u.label} | ${u.sqft} sqft | ${u.bedrooms}BR | ${u.occupants} occ | ${FUEL_CONFIGS[u.fuelConfig].label}"`);
+      rows.push(`Unit ${i+1}:,"${u.label} | ${u.sqft} sqft | ${u.bedrooms}BR | ${u.occupants} occ | ${fuelLabel(u.waterHeater, u.spaceHeating, u.cooking)}"`);
     });
   } else {
     rows.push(`Floor area:,"${sqft} sq ft"`);
@@ -995,7 +991,7 @@ function buildSummaryCSV(params, summary) {
   if (isMF) {
     rows.push(`Number of units,${units.length}`);
     rows.push(`Total floor area (sqft),${units.reduce((a,u)=>a+(parseFloat(u.sqft)||0),0).toFixed(0)}`);
-    rows.push(`Fuel configurations,"${[...new Set(units.map(u=>FUEL_CONFIGS[u.fuelConfig].label))].join(' | ')}"`);
+    rows.push(`Fuel configurations,"${[...new Set(units.map(u=>fuelLabel(u.waterHeater, u.spaceHeating, u.cooking)))].join(' | ')}"`);
   } else {
     rows.push(`Floor area (sqft),${sqft}`);
     rows.push(`Bedrooms,${bedrooms}`);
@@ -1014,9 +1010,9 @@ function buildSummaryCSV(params, summary) {
 
   if (isMF) {
     rows.push("UNIT DETAIL");
-    rows.push("Unit,Label,Sqft,Bedrooms,Occupants,Fuel Config");
+    rows.push("Unit,Label,Sqft,Bedrooms,Occupants,Water Heater,Space Heating,Cooking");
     units.forEach((u, i) => {
-      rows.push(`U${i+1},"${u.label}",${u.sqft},${u.bedrooms},${u.occupants},"${FUEL_CONFIGS[u.fuelConfig].label}"`);
+      rows.push(`U${i+1},"${u.label}",${u.sqft},${u.bedrooms},${u.occupants},"${WATER_HEATER_OPTIONS[u.waterHeater]?.label||u.waterHeater}","${SPACE_HEATING_OPTIONS[u.spaceHeating]?.label||u.spaceHeating}","${COOKING_OPTIONS[u.cooking]?.label||u.cooking}"`);
     });
     rows.push("");
   }
@@ -1099,7 +1095,9 @@ function App() {
   const [occupants,     setOccupants]     = useState(2.4);
   const [climateZone,   setClimateZone]   = useState("CZ7");
   const [buildingType,  setBuildingType]  = useState("multifamily");
-  const [fuelConfig,    setFuelConfig]    = useState("all_electric");
+  const [waterHeater,   setWaterHeater]   = useState("hpwh");
+  const [spaceHeating,  setSpaceHeating]  = useState("heat_pump");
+  const [cooking,       setCooking]       = useState("electric");
   const [year,          setYear]          = useState(2025);
   const [hasPool,       setHasPool]       = useState(false);
   const [hasSpa,        setHasSpa]        = useState(false);
@@ -1141,7 +1139,7 @@ function App() {
       if (newN < prev.length) return prev.slice(0, newN);
       const next = [...prev];
       for (let i = prev.length; i < newN; i++) {
-        next.push(makeUnit(`U${i+1}`, `Unit ${i+1}`, 750, 2, 2.4, "all_electric"));
+        next.push(makeUnit(`U${i+1}`, `Unit ${i+1}`, 750, 2, 2.4));
       }
       return next;
     });
@@ -1162,7 +1160,10 @@ function App() {
     const _occupants     = parseFloat(occupants);
     const _bedrooms      = parseInt(bedrooms);
     const _climateZone   = climateZone;
-    const _fuelConfig    = fuelConfig;
+    const _waterHeater   = waterHeater;
+    const _spaceHeating  = spaceHeating;
+    const _cooking       = cooking;
+    const _fuelChoices   = { waterHeater: _waterHeater, spaceHeating: _spaceHeating, cooking: _cooking };
     const _year          = parseInt(year);
     const _isMF          = buildingType === "multifamily";
     const _units         = units;
@@ -1186,11 +1187,12 @@ function App() {
           const agg = new Float64Array(totalIntervals).fill(0);
           _units.forEach((u, i) => {
             if (parseFloat(u.sqft) < 50) return;
+            const uFuelChoices = { waterHeater: u.waterHeater, spaceHeating: u.spaceHeating, cooking: u.cooking };
             const uIntervals = generateIntervals(
               parseFloat(u.sqft) || 750,
               parseFloat(u.occupants) || 1.5,
               parseInt(u.bedrooms) || 1,
-              _climateZone, _buildingType, u.fuelConfig, _year,
+              _climateZone, _buildingType, uFuelChoices, _year,
               false, false, _efficiencyPct  // pool/spa at building level below
             );
             for (let t = 0; t < uIntervals.length; t++) agg[t] += uIntervals[t];
@@ -1250,7 +1252,7 @@ function App() {
           }
         } else {
           if (!_sqft || _sqft < 50) { setStatus("error"); return; }
-          intervals = generateIntervals(_sqft, _occupants, _bedrooms, _climateZone, _buildingType, _fuelConfig, _year, _hasPool, _hasSpa, _efficiencyPct, _evCount, _evMiles, _evEfficiency, _evChargeMode);
+          intervals = generateIntervals(_sqft, _occupants, _bedrooms, _climateZone, _buildingType, _fuelChoices, _year, _hasPool, _hasSpa, _efficiencyPct, _evCount, _evMiles, _evEfficiency, _evChargeMode);
         }
 
         setProgress(60);
@@ -1260,8 +1262,8 @@ function App() {
 
         const btLabel = BUILDING_TYPES[_buildingType].label;
         const fcLabel = _isMF
-          ? `Mixed (${[...new Set(_units.map(u => FUEL_CONFIGS[u.fuelConfig].label))].join(", ")})`
-          : FUEL_CONFIGS[_fuelConfig].label;
+          ? `Mixed (${[...new Set(_units.map(u => fuelLabel(u.waterHeater, u.spaceHeating, u.cooking)))].join(" / ")})`
+          : fuelLabel(_waterHeater, _spaceHeating, _cooking);
         const unitDesc = _isMF
           ? `${_units.length} units: ${_units.map(u => `${u.label} ${u.sqft}sqft`).join(" | ")}`
           : `${_sqft} sq ft | Occupants: ${_occupants}`;
@@ -1301,7 +1303,7 @@ function App() {
         setStatus("error");
       }
     }, 50);
-  }, [address, sqft, bedrooms, occupants, climateZone, buildingType, fuelConfig, year, hasPool, hasSpa, efficiencyPct, evCount, evMiles, evEfficiency, evChargeMode, units]);
+  }, [address, sqft, bedrooms, occupants, climateZone, buildingType, waterHeater, spaceHeating, cooking, year, hasPool, hasSpa, efficiencyPct, evCount, evMiles, evEfficiency, evChargeMode, units]);
 
   const safeName = address.replace(/[^a-zA-Z0-9]/g,'_').slice(0,40);
 
@@ -1429,13 +1431,13 @@ function App() {
               {/* Unit table */}
               <div style={{ overflowX: "auto" }}>
                 {/* Header */}
-                <div style={{ display: "grid", gridTemplateColumns: "90px 60px 60px 60px 1fr", gap: 6, marginBottom: 6 }}>
-                  {["Unit","Sq Ft","BR","Occ","Fuel"].map(h=>(
+                <div style={{ display: "grid", gridTemplateColumns: "90px 55px 40px 50px 1fr 1fr 1fr", gap: 5, marginBottom: 6 }}>
+                  {["Unit","Sq Ft","BR","Occ","Water Htr","Heat","Cook"].map(h=>(
                     <div key={h} style={{ fontSize: 9, color: C.muted, fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase" }}>{h}</div>
                   ))}
                 </div>
                 {units.map((u) => (
-                  <div key={u.id} style={{ display: "grid", gridTemplateColumns: "90px 60px 60px 60px 1fr", gap: 6, marginBottom: 6, alignItems: "center" }}>
+                  <div key={u.id} style={{ display: "grid", gridTemplateColumns: "90px 55px 40px 50px 1fr 1fr 1fr", gap: 5, marginBottom: 6, alignItems: "center" }}>
                     <input
                       style={{ ...inputStyle, padding: "5px 7px", fontSize: 11 }}
                       value={u.label}
@@ -1457,13 +1459,29 @@ function App() {
                       onChange={e=>setUnits(prev=>updateUnit(prev, u.id, "occupants", e.target.value))}
                     />
                     <select
-                      style={{ ...selectStyle, padding: "5px 4px", fontSize: 10 }}
-                      value={u.fuelConfig}
-                      onChange={e=>setUnits(prev=>updateUnit(prev, u.id, "fuelConfig", e.target.value))}
+                      style={{ ...selectStyle, padding: "4px 3px", fontSize: 10 }}
+                      value={u.waterHeater || "hpwh"}
+                      onChange={e=>setUnits(prev=>updateUnit(prev, u.id, "waterHeater", e.target.value))}
                     >
-                      {Object.entries(FUEL_CONFIGS).map(([k,v])=>(
-                        <option key={k} value={k}>{v.label.split(" (")[0]}</option>
-                      ))}
+                      <option value="hpwh">HP WH</option>
+                      <option value="electric_resistance">Res WH</option>
+                      <option value="gas">Gas WH</option>
+                    </select>
+                    <select
+                      style={{ ...selectStyle, padding: "4px 3px", fontSize: 10 }}
+                      value={u.spaceHeating || "heat_pump"}
+                      onChange={e=>setUnits(prev=>updateUnit(prev, u.id, "spaceHeating", e.target.value))}
+                    >
+                      <option value="heat_pump">HP</option>
+                      <option value="gas">Gas</option>
+                    </select>
+                    <select
+                      style={{ ...selectStyle, padding: "4px 3px", fontSize: 10 }}
+                      value={u.cooking || "electric"}
+                      onChange={e=>setUnits(prev=>updateUnit(prev, u.id, "cooking", e.target.value))}
+                    >
+                      <option value="electric">Elec</option>
+                      <option value="gas">Gas</option>
                     </select>
                   </div>
                 ))}
@@ -1486,23 +1504,32 @@ function App() {
               <div style={{ fontSize: 11, color: C.faint, marginTop: 4 }}>{cz.description}</div>
             </div>
 
-            <div>
-              <label style={labelStyle}>Fuel Configuration</label>
-              {isMF ? (
-                <div style={{ fontSize: 11, color: C.faint, padding: "7px 0" }}>
-                  Set per unit in the Unit Configuration panel above.
-                </div>
-              ) : (
-                <>
-                  <select style={selectStyle} value={fuelConfig} onChange={e=>setFuelConfig(e.target.value)}>
-                    {Object.entries(FUEL_CONFIGS).map(([k,v])=><option key={k} value={k}>{v.label}</option>)}
+            {isMF ? (
+              <div style={{ fontSize: 11, color: C.faint, padding: "7px 0" }}>
+                Fuel choices set per unit in the Unit Configuration panel above.
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                <div>
+                  <label style={labelStyle}>Water Heater</label>
+                  <select style={selectStyle} value={waterHeater} onChange={e=>setWaterHeater(e.target.value)}>
+                    {Object.entries(WATER_HEATER_OPTIONS).map(([k,v])=><option key={k} value={k}>{v.label}</option>)}
                   </select>
-                  <div style={{ fontSize: 11, color: C.faint, marginTop: 4 }}>
-                    Affects water heating, cooking, and space heating electricity load fractions.
-                  </div>
-                </>
-              )}
-            </div>
+                </div>
+                <div>
+                  <label style={labelStyle}>Space Heating</label>
+                  <select style={selectStyle} value={spaceHeating} onChange={e=>setSpaceHeating(e.target.value)}>
+                    {Object.entries(SPACE_HEATING_OPTIONS).map(([k,v])=><option key={k} value={k}>{v.label}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label style={labelStyle}>Cooking</label>
+                  <select style={selectStyle} value={cooking} onChange={e=>setCooking(e.target.value)}>
+                    {Object.entries(COOKING_OPTIONS).map(([k,v])=><option key={k} value={k}>{v.label}</option>)}
+                  </select>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Efficiency & Amenities */}
@@ -1729,7 +1756,7 @@ function App() {
                   isMF ? ["Units", `${units.length} (${units.reduce((a,u)=>a+(parseFloat(u.sqft)||0),0).toLocaleString()} sq ft total)`] : ["Floor area", `${sqft} sq ft`],
                   isMF ? null : ["Occupants", occupants],
                   ["Climate zone", climateZone],
-                  isMF ? ["Fuel configs", [...new Set(units.map(u=>FUEL_CONFIGS[u.fuelConfig].label.split(" (")[0]))].join(", ")] : ["Fuel config", FUEL_CONFIGS[fuelConfig].label],
+                  isMF ? ["Fuel configs", [...new Set(units.map(u=>fuelLabel(u.waterHeater, u.spaceHeating, u.cooking)))].join(" / ")] : ["Fuel config", fuelLabel(waterHeater, spaceHeating, cooking)],
                   parseFloat(efficiencyPct) > 0 ? ["Efficiency premium", `${efficiencyPct}% (HVAC + water heating)`] : null,
                   hasPool ? ["Pool", "~1,800 kWh/yr"] : null,
                   hasSpa  ? ["Spa/hot tub", "~2,400 kWh/yr"] : null,
