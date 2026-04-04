@@ -3553,10 +3553,16 @@ function App() {
 
       {/* Top bar */}
       <div style={S.topBar}>
-        <span style={S.orgName}>Center for Community Energy</span>
-        <span style={S.toolTitle}>MOD-06 Island Dispatch Sizer</span>
+        <span style={S.orgName}>CCE / Makello</span>
+        <span style={S.toolTitle}>Off-Grid Optimizer</span>
         <span style={S.version}>v0.4.68</span>
-        <span style={S.tagline}>Off-grid solar + battery + EV sizing for worst-case weather survival</span>
+        <span style={S.version}>MOD-06</span>
+        <span style={{...S.tagline, marginLeft:"auto"}}>
+          <a href="https://tools.cc-energy.org/index.html"
+             style={{color:"rgba(255,255,255,0.7)",textDecoration:"none",fontSize:"12px"}}>
+            ← All Tools
+          </a>
+        </span>
       </div>
 
       <div style={S.container}>

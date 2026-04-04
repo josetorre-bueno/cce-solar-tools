@@ -771,11 +771,20 @@ function App() {
         {/* Header */}
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:22}}>
           <div>
+            <div style={{display:"flex",alignItems:"baseline",gap:10,marginBottom:6}}>
+              <span style={{fontSize:11,fontFamily:"'Inter',monospace",color:C.blue,letterSpacing:"0.12em",fontWeight:600}}>CCE / MAKELLO</span>
+              <span style={{width:1,height:11,background:C.border,display:"inline-block"}}/>
+              <span style={{fontSize:11,fontFamily:"'Inter',monospace",color:C.muted,letterSpacing:"0.10em"}}>DUAL-AXIS TRACKER ANALYZER</span>
+              <span style={{width:1,height:11,background:C.border,display:"inline-block"}}/>
+              <span style={{fontSize:11,fontFamily:"'Inter',monospace",color:C.faint,letterSpacing:"0.08em"}}>v6.17</span>
+              <span style={{width:1,height:11,background:C.border,display:"inline-block"}}/>
+              <span style={{fontSize:11,fontFamily:"'Inter',monospace",color:C.faint,letterSpacing:"0.08em"}}>MOD-09</span>
+            </div>
             <h1 style={{fontSize:20,fontWeight:700,color:C.text,margin:0}}>
-              Dual-Axis Tracker — TOU Value Analyzer
+              Dual-Axis Tracker Analyzer
             </h1>
             <p style={{color:C.muted,fontSize:13,marginTop:5}}>
-              NREL PVWatts v8 · Carport {tilt}° tilt / {azimuth}° az · Dual-axis tracker · 14% losses · v6.17
+              NREL PVWatts v8 · Carport {tilt}° tilt / {azimuth}° az · Dual-axis tracker · 14% losses
             </p>
           </div>
           <a href="https://tools.cc-energy.org/index.html"

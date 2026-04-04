@@ -1330,11 +1330,13 @@ function App() {
       <div style={{ maxWidth: 860, margin: "0 auto 28px" }}>
         <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 6 }}>
           <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
-            <div style={{ fontSize: 11, fontFamily: "'DM Mono', monospace", color: C.accent, letterSpacing: "0.14em", fontWeight: 500 }}>WIPOMO</div>
+            <div style={{ fontSize: 11, fontFamily: "'DM Mono', monospace", color: C.accent, letterSpacing: "0.14em", fontWeight: 500 }}>CCE / MAKELLO</div>
             <div style={{ width: 1, height: 12, background: C.faint }}/>
             <div style={{ fontSize: 11, fontFamily: "'DM Mono', monospace", color: C.muted, letterSpacing: "0.10em" }}>GREEN BUTTON EMULATOR</div>
             <div style={{ width: 1, height: 12, background: C.faint }}/>
             <div style={{ fontSize: 11, fontFamily: "'DM Mono', monospace", color: C.faint, letterSpacing: "0.08em" }}>v{VERSION}</div>
+            <div style={{ width: 1, height: 12, background: C.faint }}/>
+            <div style={{ fontSize: 11, fontFamily: "'DM Mono', monospace", color: C.faint, letterSpacing: "0.08em" }}>MOD-02b</div>
           </div>
           <a
             href="https://tools.cc-energy.org"
