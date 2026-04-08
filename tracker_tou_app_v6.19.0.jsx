@@ -608,6 +608,33 @@ function buildSummaryCSV({ addressInput, geocodedLat, geocodedLon, utility, unit
   ).join("\n");
 }
 
+// ─── SUMMARY CSV PARSER (Restore Parameters) ─────────────────────────────────
+// Reads a tracker summary CSV written by buildSummaryCSV and returns a params
+// object. Only the INPUTS section key-value pairs are used.
+function parseSummaryCSV(text) {
+  const kv = {};
+  for (const line of text.split(/\r?\n/)) {
+    if (line.startsWith('#') || line.startsWith('-') || line.trim() === '') continue;
+    const comma = line.indexOf(',');
+    if (comma < 0) continue;
+    const key = line.slice(0, comma).trim();
+    const val = line.slice(comma + 1).trim().replace(/^"|"$/g, '');
+    kv[key] = val;
+  }
+  const result = {};
+  if (kv['Address input'])                     result.addressInput    = kv['Address input'];
+  if (kv['Rate schedule'])                     result.utility         = kv['Rate schedule'];
+  if (kv['System DC capacity (kW)'])           result.units           = parseFloat(kv['System DC capacity (kW)']);
+  if (kv['Tracker DC:AC ratio'])               result.trackerDcAc     = parseFloat(kv['Tracker DC:AC ratio']);
+  if (kv['Tracker bifacial gain (%)'])         result.trackerBifacial = parseFloat(kv['Tracker bifacial gain (%)']);
+  if (kv['Carport DC:AC ratio'])               result.carportDcAc     = parseFloat(kv['Carport DC:AC ratio']);
+  if (kv['Carport bifacial gain (%)'])         result.carportBifacial = parseFloat(kv['Carport bifacial gain (%)']);
+  if (kv['Carport tilt (deg)'])                result.tilt            = parseFloat(kv['Carport tilt (deg)']);
+  if (kv['Carport azimuth (deg)'])             result.azimuth         = parseFloat(kv['Carport azimuth (deg)']);
+  if (kv['Tracker min elevation limit (deg)']) result.minElev         = parseFloat(kv['Tracker min elevation limit (deg)']);
+  return result;
+}
+
 // ─── VALIDATED INPUT COMPONENT ────────────────────────────────────────────────
 function ValidatedInput({ label, value, unit, min, max, step, hint, onChange }) {
   const num = parseFloat(value);
@@ -730,7 +757,7 @@ const TRACKER_MANUAL = [
   },
   {
     heading: "TOU PREMIUM EXPLAINED",
-    body: "A dual-axis tracker earns a TOU premium because it generates extra kWh disproportionately during high-rate hours. Fixed carports face south at a fixed angle — their peak output occurs near solar noon, which falls entirely within the off-peak window (before 4 PM). A tracker extends production into the late afternoon, capturing the on-peak window (4–9 PM) that a fixed array almost entirely misses.",
+    body: "A dual-axis tracker earns a TOU premium because it generates extra kWh disproportionately during high-rate hours. A fixed-tilt carport is locked at its configured tilt and azimuth — regardless of orientation, its peak output occurs near solar noon, which falls entirely within the off-peak window (before 4 PM). A tracker extends production into the late afternoon, capturing the on-peak window (4–9 PM) that a fixed array almost entirely misses.",
     body2: "The TOU premium is site- and rate-specific. High-rate schedules with large peak/off-peak differentials (e.g. SDG&E AL-TOU-2) produce larger premiums than flat or low-differential rates.",
   },
   {
