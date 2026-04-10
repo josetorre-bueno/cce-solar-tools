@@ -95,6 +95,8 @@
       </div>
     `;
     document.body.appendChild(gate);
+    // Gate covers the full viewport — safe to restore visibility now
+    document.documentElement.style.visibility = '';
 
     const input = document.getElementById('auth-input');
     const btn = document.getElementById('auth-btn');
@@ -129,6 +131,4 @@
   } else {
     document.addEventListener('DOMContentLoaded', buildGate);
   }
-
-  document.documentElement.style.visibility = 'hidden';
 })();
