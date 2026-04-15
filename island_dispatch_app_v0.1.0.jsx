@@ -1,5 +1,6 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.68
+// Version: v0.4.71
+// Updated: 2026-04-14 22:30 PT
 // Part of: Wipomo / CCE Solar Tools
 
 "use strict";
@@ -129,13 +130,18 @@ function evConfigToDispatch(ev) {
     dcfcPlannedPerYear = ev.dcfcPlannedPerYear   || 0;
   }
 
+  // EV efficiency — explicit user parameter; falls back to global constant if not set.
+  // Used for all driving energy calculations and per-EV emergency-range minimum.
+  const efficiency = ev.evEfficiency ?? EV_EFFICIENCY;
+
   const roundTripMiles = tripMiles * 2;
-  const roundTripKwh   = roundTripMiles / EV_EFFICIENCY;
+  const roundTripKwh   = roundTripMiles / efficiency;
   // One-way range check with 25% buffer — used for departure eligibility
-  const tripCheckKwh   = tripMiles * 1.25 / EV_EFFICIENCY;
+  const tripCheckKwh   = tripMiles * 1.25 / efficiency;
 
   return {
     kwh:                 ev.kwh,
+    efficiency,
     tripsPerWeek,
     tripMiles,
     roundTripMiles,
@@ -145,7 +151,6 @@ function evConfigToDispatch(ev) {
     destChargeRate,
     dcfcPlannedPerYear,
     canV2G:              ev.canV2G === true,
-    // For road-trip load reduction (keep existing logic)
     roadTripDays: 10,
     rtLoadFactor: 0.6,
   };
@@ -217,9 +222,11 @@ function extractWindow(arr8760, spinupStartDoy, nHours) {
 
 // ── EV HELPERS ────────────────────────────────────────────────────────────────
 
-// Site-level ER min (computed from erDistanceMiles parameter passed into dispatch)
-// ev.tripCheckKwh = tripMiles * 1.25 / EV_EFFICIENCY (one-way range with buffer)
-// ev.roundTripKwh = tripMiles * 2 / EV_EFFICIENCY
+// Per-EV energy parameters (all use ev.efficiency, not the global constant)
+// ev.tripCheckKwh = tripMiles * 1.25 / ev.efficiency (one-way range check with buffer)
+// ev.roundTripKwh = tripMiles * 2 / ev.efficiency
+// erMinKwh passed to dispatch is the site reference (computed at EV_EFFICIENCY default);
+// dispatch scales it per-EV as: evMn[i] = erMinKwh * EV_EFFICIENCY / ev.efficiency
 
 // isTripDay: Bresenham-style deterministic trip schedule from tripsPerWeek decimal.
 // seqDay is 0-based sequential day index within the simulation window.
@@ -269,6 +276,13 @@ function dispatch(solarH, loadH, batKwh, batKw, evScenario, weather, dcfcCostPer
   let wwUns            = 0.0;
   const traceRows  = returnTrace ? [] : null;
 
+  // Per-EV emergency-range minimum (kWh).
+  // erMinKwh is the site reference computed at EV_EFFICIENCY (e.g. 3.5 mi/kWh).
+  // Each EV's actual floor is scaled by its own efficiency so the guaranteed
+  // ER distance is identical for every vehicle regardless of consumption.
+  const siteErKwh = erMinKwh ?? 8.57;
+  const evMn = evs.map(ev => siteErKwh * EV_EFFICIENCY / (ev.efficiency || EV_EFFICIENCY));
+
   // Build sequence-day index
   let seqDay = 0;
   let prevDate = null;
@@ -295,7 +309,6 @@ function dispatch(solarH, loadH, batKwh, batKw, evScenario, weather, dcfcCostPer
 
     const triggerFired = new Array(n).fill(false);
     let dcfcThisHour = false;
-    const mn = erMinKwh ?? 8.57; // ER minimum — same for all EVs in this fleet
 
     // Snapshots for energy balance tracing
     const evKwhStart  = [...evE];
@@ -317,7 +330,7 @@ function dispatch(solarH, loadH, batKwh, batKw, evScenario, weather, dcfcCostPer
       if (!evAway[i] && !evOnTrip[i] && sol > 0.5 && ev.canV2G) {
         const batNeed   = batMax - batE;
         const evTarget  = ev.kwh * 0.90;
-        const evFloor   = Math.max(mn, evTarget);
+        const evFloor   = Math.max(evMn[i], evTarget);
         const evSurplus = Math.max(0, evE[i] - evFloor) * V2G_RTE;
         if (batNeed > 0.05 && evSurplus > 0.05) {
           const tr = Math.min(batNeed / BATTERY_RTE, evSurplus, EVSE_KW);
@@ -339,13 +352,13 @@ function dispatch(solarH, loadH, batKwh, batKw, evScenario, weather, dcfcCostPer
           const shortfall = Math.max(0, todayLd - todaySol) + Math.max(0, tomLd - tomSol);
           const availBat = batE - batMin;
           // Fleet total V2G capacity — same trip-aware floors as the discharge loop:
-          // WFH bidi floor = mn; commuter bidi floor = max(mn, roundTripKwh) only if trip tomorrow
+          // WFH bidi floor = evMn[j]; commuter bidi floor = max(evMn[j], roundTripKwh) if trip tomorrow
           let availEvFleet = 0;
           for (let j = 0; j < n; j++) {
             if (!evs[j].canV2G || evAway[j] || evOnTrip[j]) continue;
             const jIsWfh        = evs[j].tripsPerWeek === 0;
             const jTomorrowTrip = isTripDay(evs[j].tripsPerWeek, sd + 1);
-            const jFloor        = (!jIsWfh && jTomorrowTrip) ? Math.max(mn, evs[j].roundTripKwh) : mn;
+            const jFloor        = (!jIsWfh && jTomorrowTrip) ? Math.max(evMn[j], evs[j].roundTripKwh) : evMn[j];
             availEvFleet += Math.max(0, evE[j] - jFloor) * V2G_RTE;
           }
           const houseShortfall = shortfall > (availBat + availEvFleet);
@@ -357,7 +370,7 @@ function dispatch(solarH, loadH, batKwh, batKw, evScenario, weather, dcfcCostPer
           } else if (ev.tripsPerWeek === 0) {
             // Home-based EV: check if daily errand driving will drop below erMinKwh
             const evNeedKwh = ev.roundTripKwh * (ev.tripsPerWeek / 7); // expected daily driving kWh
-            const evHeadroom = evE[i] - mn - evNeedKwh;
+            const evHeadroom = evE[i] - evMn[i] - evNeedKwh;
             const todaySurplus = Math.max(0, todaySol - todayLd);
             evTransportShortfall = evHeadroom < 0 && (todaySurplus * CHARGE_RTE) < -evHeadroom;
           }
@@ -369,15 +382,85 @@ function dispatch(solarH, loadH, batKwh, batKw, evScenario, weather, dcfcCostPer
       }
 
       // Road trip departure hr===7
+      // Trips cannot be skipped. If the home system hasn't charged the EV enough,
+      // the driver stops at a DCFC before leaving — counted as en-route (enabling a
+      // scheduled trip, cost concern) not emergency (special trip just to charge).
+      // Target: charge to cover the full round trip if possible (≤ 80%), otherwise
+      // just enough for the one-way drive; the return leg will handle the rest.
       if (hr === 7 && roadTrip && !evAway[i] && !evOnTrip[i]) {
-        if (evE[i] >= mn) {
-          evOnTrip[i] = true;
-          evAway[i]   = true;
+        const rtOneWayKwh = ev.tripMiles / ev.efficiency;
+        const rtRoundTripNeeded = rtOneWayKwh * 2 + evMn[i];
+        const rtDcfcCeil = ev.kwh * 0.80;
+        if (evE[i] < rtOneWayKwh + evMn[i]) {
+          // Not enough to depart — pre-departure DCFC (en-route category)
+          const dcfcTo = Math.min(rtDcfcCeil, Math.max(rtRoundTripNeeded, rtOneWayKwh + evMn[i]));
+          const added  = Math.max(0, dcfcTo - evE[i]);
+          if (added > 0.1) {
+            dcfcKwh   += added / CHARGE_RTE;
+            dcfcCount += 1;
+            dcfcThisHour = true;
+            if (inWw) { wwDcfcKwh += added / CHARGE_RTE; wwDcfcCount += 1; }
+            enrouteDcfcKwh   += added / CHARGE_RTE;
+            enrouteDcfcCount += 1;
+            if (inWw) wwEnrouteDcfcCount += 1;
+            evE[i] = dcfcTo;
+          }
+        } else if (evE[i] < rtRoundTripNeeded) {
+          // Enough for departure but not the full round trip — opportunistic DCFC top-up
+          const dcfcTo = Math.min(rtDcfcCeil, rtRoundTripNeeded);
+          const added  = Math.max(0, dcfcTo - evE[i]);
+          if (added > 0.5) {
+            dcfcKwh   += added / CHARGE_RTE;
+            dcfcCount += 1;
+            dcfcThisHour = true;
+            if (inWw) { wwDcfcKwh += added / CHARGE_RTE; wwDcfcCount += 1; }
+            enrouteDcfcKwh   += added / CHARGE_RTE;
+            enrouteDcfcCount += 1;
+            if (inWw) wwEnrouteDcfcCount += 1;
+            evE[i] = dcfcTo;
+          }
         }
+        evE[i] -= rtOneWayKwh; // energy consumed driving to destination
+        evOnTrip[i] = true;
+        evAway[i]   = true;
       }
       // Road trip return hr===20
+      // EV has been at destination all day (may have charged at L2 or via DCFC on return leg).
+      // Model: check if the EV can drive home on current charge; if not, add a DCFC stop.
+      // If even charging to 80% doesn't cover the one-way return + emergency reserve, flag
+      // this configuration as infeasible (trip too long for the battery).
       if (hr === 20 && evOnTrip[i]) {
-        evE[i]      = mn;
+        const rtOneWayKwh = ev.tripMiles / ev.efficiency;
+        const rtDcfcTarget = ev.kwh * 0.80;
+        if (evE[i] >= rtOneWayKwh + evMn[i]) {
+          // Enough charge — drive home without DCFC
+          evE[i] -= rtOneWayKwh;
+        } else if (rtDcfcTarget >= rtOneWayKwh + evMn[i]) {
+          // En-route DCFC stop: charge to 80% then drive home
+          const added = Math.max(0, rtDcfcTarget - evE[i]);
+          dcfcKwh   += added / CHARGE_RTE;
+          dcfcCount += 1;
+          dcfcThisHour = true;
+          if (inWw) { wwDcfcKwh += added / CHARGE_RTE; wwDcfcCount += 1; }
+          enrouteDcfcKwh   += added / CHARGE_RTE;
+          enrouteDcfcCount += 1;
+          if (inWw) wwEnrouteDcfcCount += 1;
+          evE[i] = rtDcfcTarget - rtOneWayKwh; // arrive home after DCFC + return drive
+        } else {
+          // Infeasible: trip distance exceeds what 80% charge can cover.
+          // Drive home anyway on whatever charge is available; log as emergency DCFC.
+          const added = Math.max(0, rtDcfcTarget - evE[i]);
+          if (added > 0.1) {
+            dcfcKwh   += added / CHARGE_RTE;
+            dcfcCount += 1;
+            dcfcThisHour = true;
+            if (inWw) { wwDcfcKwh += added / CHARGE_RTE; wwDcfcCount += 1; }
+            emergencyDcfcKwh   += added / CHARGE_RTE;
+            emergencyDcfcCount += 1;
+            if (inWw) wwEmergencyDcfcCount += 1;
+          }
+          evE[i] = Math.max(evE[i] + added - rtOneWayKwh, 0);
+        }
         evAway[i]   = false;
         evOnTrip[i] = false;
       }
@@ -398,8 +481,8 @@ function dispatch(solarH, loadH, batKwh, batKw, evScenario, weather, dcfcCostPer
             const preDrive = evE[i];
             evE[i] = ev.kwh * 0.90;
             if (ev.destCharging === "l2_paid" && ev.destChargeRate > 0) {
-              const drivingUsed = ev.tripMiles / EV_EFFICIENCY; // one-way drive to work
-              const preWork = Math.max(preDrive - drivingUsed, mn);
+              const drivingUsed = ev.tripMiles / ev.efficiency; // one-way drive to work
+              const preWork = Math.max(preDrive - drivingUsed, evMn[i]);
               const addedAtWork = Math.max(0, ev.kwh * 0.90 - preWork);
               workChargeCostTotal += addedAtWork * ev.destChargeRate;
             }
@@ -499,9 +582,9 @@ function dispatch(solarH, loadH, batKwh, batKw, evScenario, weather, dcfcCostPer
     }
 
     // Deficit discharge priority:
-    //   1. WFH bidi EVs (tripsPerWeek===0) — floor = mn (ER range)
-    //   2. Commuter bidi EVs, no trip tomorrow — floor = mn (free to V2H tonight)
-    //   3. Commuter bidi EVs, trip tomorrow — floor = max(mn, roundTripKwh)
+    //   1. WFH bidi EVs (tripsPerWeek===0) — floor = evMn[ci] (ER range)
+    //   2. Commuter bidi EVs, no trip tomorrow — floor = evMn[ci]
+    //   3. Commuter bidi EVs, trip tomorrow — floor = max(evMn[ci], roundTripKwh)
     //   4. Stationary battery last
     // Within each group: higher SOC discharges first (most to give).
     const bidiOrder = [];
@@ -512,7 +595,7 @@ function dispatch(solarH, loadH, batKwh, batKw, evScenario, weather, dcfcCostPer
       const tomorrowTrip = isTripDay(evs[ci].tripsPerWeek, sd + 1);
       // sortKey: 0=WFH, 1=commuter-no-trip-tomorrow, 2=commuter-trip-tomorrow
       const sortKey = isWfh ? 0 : (tomorrowTrip ? 2 : 1);
-      const floor   = (!isWfh && tomorrowTrip) ? Math.max(mn, evs[ci].roundTripKwh) : mn;
+      const floor   = (!isWfh && tomorrowTrip) ? Math.max(evMn[ci], evs[ci].roundTripKwh) : evMn[ci];
       bidiOrder.push({ ci, sortKey, floor, socRatio: evE[ci] / evs[ci].kwh });
     }
     bidiOrder.sort((a, b) => {
@@ -563,7 +646,7 @@ function dispatch(solarH, loadH, batKwh, batKw, evScenario, weather, dcfcCostPer
         if (evE[c] >= commTarget - 0.1) continue;
         for (const { w, tomorrowTripBidi } of bidiSources) {
           if (w === c) continue;
-          const wfhMin = tomorrowTripBidi ? Math.max(mn, evs[w].roundTripKwh) : mn;
+          const wfhMin = tomorrowTripBidi ? Math.max(evMn[w], evs[w].roundTripKwh) : evMn[w];
           const wfhAvl = Math.max(0, evE[w] - wfhMin) * V2G_RTE;
           const evNeed = Math.max(0, commTarget - evE[c]) / CHARGE_RTE;
           const xfer   = Math.min(evNeed, wfhAvl, EVSE_KW);
@@ -591,7 +674,7 @@ function dispatch(solarH, loadH, batKwh, batKw, evScenario, weather, dcfcCostPer
       if (evAway[ci] || evOnTrip[ci]) continue;
       const evTarget     = evs[ci].kwh * 0.90;
       if (evE[ci] >= evTarget - 0.1) continue;
-      const belowMin     = evE[ci] < mn;
+      const belowMin     = evE[ci] < evMn[ci];
       const tomorrowTrip = isTripDay(evs[ci].tripsPerWeek, sd + 1);
       const belowTripChk = tomorrowTrip && evE[ci] < evs[ci].roundTripKwh * 1.10;
       const prio = belowMin ? 0 : belowTripChk ? 1 : 2;
@@ -695,7 +778,8 @@ function findOptimum(params) {
     evseCost = 3500,
     npvYears = 10,
     discountRate = 0.06,
-    maxEmergencyDcfc = 5,      // global Z: unplanned stops across fleet
+    maxEmergencyDcfc = 5,      // fleet max for unplanned stops (inconvenience limit)
+    maxEnrouteDcfc,            // fleet max for en-route stops (cost limit); default = per-EV sum
     erMinKwh = 10.71,          // 10.71 = 30mi * 1.25 / 3.5 mi/kWh (30-mile ER default)
     stressData,
     codePvKw = 0,      // Title 24 §150.1-C minimum — skip configs below this
@@ -708,15 +792,21 @@ function findOptimum(params) {
 
   const nEvs = evScenario.length;
 
-  // En-route DCFC budget: sum of dcfcPlannedPerYear across all EVs that accept planned stops
-  const fleetEnrouteLimit = evScenario
+  // En-route DCFC budget: sum of dcfcPlannedPerYear across all EVs that accept planned stops,
+  // or the explicit site-level maxEnrouteDcfc if provided (whichever is tighter).
+  // En-route = DCFC added to an already-scheduled trip; primary concern is cost.
+  const perEvEnrouteSum = evScenario
     .filter(ev => ev.dcfcPlannedPerYear > 0)
     .reduce((sum, ev) => sum + ev.dcfcPlannedPerYear, 0);
-  const hasEnrouteEv = fleetEnrouteLimit > 0;
+  const fleetEnrouteLimit = maxEnrouteDcfc !== undefined
+    ? Math.min(maxEnrouteDcfc, perEvEnrouteSum > 0 ? perEvEnrouteSum : maxEnrouteDcfc)
+    : perEvEnrouteSum;
+  const hasEnrouteEv = perEvEnrouteSum > 0;
 
-  // Emergency DCFC budget: fleet-wide limit (not per-EV sum).
-  // maxEmergencyDcfc is the global allowance for unplanned DCFC stops across the entire fleet.
+  // Emergency DCFC budget: fleet-wide limit for special trips made solely to charge.
+  // Primary concern is inconvenience — driver must make an unplanned trip.
   const effectiveEmergencyLimit = maxEmergencyDcfc;
+  const effectiveEnrouteLimit   = maxEnrouteDcfc !== undefined ? maxEnrouteDcfc : fleetEnrouteLimit;
 
   const { cell, cellKey, distKm } = nearestCell(stressData, lat, lon);
   const weather  = expandStressWindow(cell);
@@ -780,11 +870,13 @@ function findOptimum(params) {
     }
   }
 
-  // Pass filter uses separate en-route and emergency DCFC limits.
-  // En-route DCFC still enters totalCost so optimizer prefers home charging.
+  // Pass filter: two separate DCFC thresholds with different concerns.
+  // En-route: DCFC added to an already-scheduled trip — cost concern, higher tolerance.
+  // Emergency: special trip made solely to charge — inconvenience concern, stricter limit.
+  // Both still enter totalCost so the optimizer always prefers more solar/battery.
   const passing = allResults.filter(r =>
     r.wwPass &&
-    r.nonWwAnnualEnrouteDcfc   <= fleetEnrouteLimit &&
+    r.nonWwAnnualEnrouteDcfc   <= effectiveEnrouteLimit &&
     r.nonWwAnnualEmergencyDcfc <= effectiveEmergencyLimit
   );
   const optimum = passing.length > 0
@@ -801,7 +893,9 @@ function findOptimum(params) {
     spinupStartDoy:     spinupDoy,
     nHours:             cell.n_hours,
     maxEmergencyDcfc,
+    maxEnrouteDcfc,
     fleetEnrouteLimit,
+    effectiveEnrouteLimit,
     effectiveEmergencyLimit,
     hasEnrouteEv,
     nTotal:             allResults.length,
@@ -1672,6 +1766,7 @@ function App() {
   const [dcfcCostPerKwh, setDcfcCostPerKwh] = useState(0.40);
   const [evseCost, setEvseCost]             = useState(3500);
   const [maxEmergencyDcfc, setMaxEmergencyDcfc] = useState(5);
+  const [maxEnrouteDcfc,   setMaxEnrouteDcfc]   = useState(26); // ~biweekly; cost concern
   const [erDistanceMiles, setErDistanceMiles] = useState(30);
 
   // Financial
@@ -1884,7 +1979,7 @@ function App() {
     setPvSizesStr("5,8,10,12,15,18,20,25");
     setSelectedBatteries(new Set(["1x Powerwall 3", "2x Powerwall 3", "1x Enphase 10C", "2x Enphase 10C", "3x Enphase 10C"]));
     setEvList([]); setDcfcCostPerKwh(0.40);
-    setEvseCost(3500); setMaxEmergencyDcfc(5);
+    setEvseCost(3500); setMaxEmergencyDcfc(5); setMaxEnrouteDcfc(26);
     setNpvYears(10); setDiscountRate(6);
     setGenSizesStr("10"); setFuelCostPerHour(0.50); setGenLookaheadDays(4); setGenInstalledCost(12000);
     setGenHrLimit(52); setEmergencyGenHrLimit(200); setClimateZone(10); setCfa(1626); setNdu(1); setCriticalLoadKwhPerDay(15);
@@ -2027,7 +2122,7 @@ function App() {
       uploadedLoad: (loadMode === "upload" && uploadedLoad) ? uploadedLoad : null,
       uploadedFileName: (loadMode === "upload" && uploadedLoad) ? uploadedFileName : "",
       selectedBatteries: Array.from(selectedBatteries),
-      evList, dcfcCostPerKwh, evseCost, maxEmergencyDcfc,
+      evList, dcfcCostPerKwh, evseCost, maxEmergencyDcfc, maxEnrouteDcfc,
       npvYears, discountRate,
       genSizesStr, fuelCostPerHour, genLookaheadDays, genInstalledCost, genHrLimit, emergencyGenHrLimit,
       climateZone, cfa, ndu, criticalLoadKwhPerDay,
@@ -2036,7 +2131,7 @@ function App() {
     setLastSavedTime(timeStr);
     setBtnFeedback("saved"); setTimeout(() => setBtnFeedback(""), 2000);
   }, [siteName, lat, lon, geoAddress, mounts, pvSizesStr, loadMode, annualKwh, daytimeShiftPct, uploadedLoad, selectedBatteries,
-      evList, dcfcCostPerKwh, evseCost, maxEmergencyDcfc, npvYears, discountRate,
+      evList, dcfcCostPerKwh, evseCost, maxEmergencyDcfc, maxEnrouteDcfc, npvYears, discountRate,
       genSizesStr, fuelCostPerHour, genLookaheadDays, genInstalledCost, genHrLimit, emergencyGenHrLimit,
       climateZone, cfa, ndu, criticalLoadKwhPerDay, uploadedFileName]);
 
@@ -2059,6 +2154,7 @@ function App() {
       if (p.evseCost          !== undefined) setEvseCost(p.evseCost);
       if (p.maxEmergencyDcfc  !== undefined) setMaxEmergencyDcfc(p.maxEmergencyDcfc);
       else if (p.maxDcfcTrips !== undefined) setMaxEmergencyDcfc(p.maxDcfcTrips); // migrate old saves
+      if (p.maxEnrouteDcfc    !== undefined) setMaxEnrouteDcfc(p.maxEnrouteDcfc);
       if (p.npvYears          !== undefined) setNpvYears(p.npvYears);
       if (p.discountRate      !== undefined) setDiscountRate(p.discountRate);
       // genSizesStr: migrate old saves that included sub-10 kW sizes (no soundproofing)
@@ -2168,7 +2264,7 @@ function App() {
         const tripsPerWeek = disp.tripsPerWeek;
         const tripMiles    = disp.tripMiles;
         const annualMiles  = Math.round(tripsPerWeek * 52 * tripMiles * 2);
-        const annualKwhEv  = Math.round(annualMiles / EV_EFFICIENCY);
+        const annualKwhEv  = Math.round(annualMiles / disp.efficiency);
         return { label: ev?.label || `EV`, topology, topologyDesc, tripsPerWeek, tripMiles, annualMiles, annualKwhEv };
       });
       const hasCommuter = fleetSummary.some(e => e.tripsPerWeek > 0);
@@ -2188,6 +2284,7 @@ function App() {
         npvYears,
         discountRate:       discountRate / 100,
         maxEmergencyDcfc:   maxEmergencyDcfc,
+        maxEnrouteDcfc:     maxEnrouteDcfc,
         erMinKwh,
         stressData,
         codePvKw,
@@ -2246,7 +2343,8 @@ function App() {
         impact.nonWwAnnualEnrouteDcfc   = evOpt.nonWwAnnualEnrouteDcfc    || 0;
         impact.nonWwAnnualEmergencyDcfc = evOpt.nonWwAnnualEmergencyDcfc  || 0;
         impact.effectiveEmergencyLimit  = evOptResult.effectiveEmergencyLimit || maxEmergencyDcfc;
-        impact.fleetEnrouteLimit        = evOptResult.fleetEnrouteLimit    || 0;
+        impact.effectiveEnrouteLimit    = evOptResult.effectiveEnrouteLimit  || maxEnrouteDcfc || 0;
+        impact.fleetEnrouteLimit        = evOptResult.fleetEnrouteLimit      || 0;
       }
 
       setEvImpact(impact);   // single combined object, not an array
@@ -2573,7 +2671,7 @@ function App() {
         uploadedLoad: (loadMode === "upload" && uploadedLoad) ? uploadedLoad : null,
       uploadedFileName: (loadMode === "upload" && uploadedLoad) ? uploadedFileName : "",
         selectedBatteries: Array.from(selectedBatteries),
-        evList, dcfcCostPerKwh, evseCost, maxEmergencyDcfc,
+        evList, dcfcCostPerKwh, evseCost, maxEmergencyDcfc, maxEnrouteDcfc,
         npvYears, discountRate,
         genSizesStr, fuelCostPerHour, genLookaheadDays, genInstalledCost, genHrLimit, emergencyGenHrLimit,
         climateZone, cfa, ndu, criticalLoadKwhPerDay,
@@ -2799,7 +2897,8 @@ function App() {
           borderColor: "#7b2d8b", backgroundColor: "rgba(123,45,139,0.15)", fill: true, tension: 0.15, pointRadius: 0, borderWidth: 1.5,
         });
         if (evList.length > 0) {
-          const evMinKwh = erDistanceMiles * 1.25 / EV_EFFICIENCY;
+          // Use first EV's efficiency for the fleet min-SOC reference line
+          const evMinKwh = erDistanceMiles * 1.25 / (evList[0]?.evEfficiency ?? EV_EFFICIENCY);
           batDatasets.push({
             label: `EV min SOC (${evMinKwh.toFixed(1)} kWh)`,
             data: new Array(slice.length).fill(evMinKwh),
@@ -2974,7 +3073,7 @@ function App() {
       const evLabel   = evImpact.fleetSummary[i]?.label || ev?.label || `EV ${i+1}`;
       const topo      = evImpact.fleetSummary[i]?.topology || "";
       const evKwh     = ev?.kwh || 0;
-      const evMinKwh  = erDistanceMiles * 1.25 / EV_EFFICIENCY;
+      const evMinKwh  = erDistanceMiles * 1.25 / (ev?.evEfficiency ?? EV_EFFICIENCY);
       const evSocDs   = slice.map(r => r.evAway?.[i] ? null : (r.evKwhEnd?.[i] ?? null));
       // "Away" background plugin: shade hours when EV is away
       const awayArr = slice.map(r => r.evAway?.[i] || false);
@@ -3156,7 +3255,7 @@ function App() {
       const ev       = evList[i];
       const color    = EV_COLORS[i % 4];
       const evLabel  = evImpact.fleetSummary[i]?.label || ev?.label || `EV ${i+1}`;
-      const evMinKwh = erDistanceMiles * 1.25 / EV_EFFICIENCY;
+      const evMinKwh = erDistanceMiles * 1.25 / (ev?.evEfficiency ?? EV_EFFICIENCY);
       const evSocDs  = slice.map(r => r.evAway?.[i] ? null : (r.evKwhEnd?.[i] ?? null));
       const awayArr  = slice.map(r => r.evAway?.[i] || false);
       function makeAwayPlugin(pid) {
@@ -3787,6 +3886,11 @@ function App() {
                     <input style={{ ...S.input, width: "60px" }} type="number" step="1" min="0"
                       value={ev.tripMiles ?? 15}
                       onChange={e => updateEv(i, "tripMiles", parseFloat(e.target.value) || 0)} />
+                    <label style={{ ...S.label, minWidth: "auto" }}>Efficiency mi/kWh</label>
+                    <input style={{ ...S.input, width: "64px" }} type="number" step="0.1" min="1" max="8"
+                      value={ev.evEfficiency ?? 3.5}
+                      onChange={e => updateEv(i, "evEfficiency", parseFloat(e.target.value) || 3.5)}
+                      title="Vehicle efficiency in miles per kWh (e.g. 3.5 = ~286 Wh/mi). Used for driving energy and emergency-range minimum." />
                     <button style={{ ...S.btnSmall, marginLeft: "auto", background: "#721c24", color: "#fff", padding: "2px 8px", fontSize: "11px" }}
                       onClick={() => removeEv(i)}>Remove</button>
                   </div>
@@ -3832,8 +3936,9 @@ function App() {
                       const disp = evConfigToDispatch(ev);
                       const ann  = Math.round(disp.tripsPerWeek * 52 * disp.tripMiles * 2);
                       const rtKwh = (disp.roundTripKwh).toFixed(1);
-                      if (disp.tripsPerWeek === 0) return "Always home — no scheduled trips";
-                      return `≈ ${ann.toLocaleString()} mi/yr · ${rtKwh} kWh/trip round-trip · departs 07:00, returns 18:00`;
+                      const erMin = (erDistanceMiles * 1.25 / disp.efficiency).toFixed(1);
+                      if (disp.tripsPerWeek === 0) return `Always home — ER min ${erMin} kWh`;
+                      return `≈ ${ann.toLocaleString()} mi/yr · ${rtKwh} kWh/trip round-trip · ER min ${erMin} kWh · departs 07:00`;
                     })()}
                   </div>
                 </div>
@@ -3850,10 +3955,17 @@ function App() {
             <div style={S.card}>
               <div style={S.cardTitle}>EV Charging Parameters</div>
               <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-                <div style={{ ...S.fieldRow, flex: 1, minWidth: "110px" }}>
+                <div style={{ ...S.fieldRow, flex: 1, minWidth: "130px" }}>
+                  <label style={S.label}>En-route DCFC stops/yr (fleet max)</label>
+                  <input style={S.input} type="number" step="1" min="0" value={maxEnrouteDcfc}
+                    onChange={e => setMaxEnrouteDcfc(parseInt(e.target.value) || 0)}
+                    title="DCFC added to an already-scheduled trip (cost concern). Default 26 ≈ biweekly." />
+                </div>
+                <div style={{ ...S.fieldRow, flex: 1, minWidth: "130px" }}>
                   <label style={S.label}>Emergency DCFC stops/yr (fleet max)</label>
                   <input style={S.input} type="number" step="1" min="0" value={maxEmergencyDcfc}
-                    onChange={e => setMaxEmergencyDcfc(parseInt(e.target.value) || 0)} />
+                    onChange={e => setMaxEmergencyDcfc(parseInt(e.target.value) || 0)}
+                    title="Special trip made solely to charge (inconvenience concern). Default 5." />
                 </div>
                 <div style={{ ...S.fieldRow, flex: 1, minWidth: "110px" }}>
                   <label style={S.label}>DCFC cost $/kWh</label>
@@ -3872,8 +3984,9 @@ function App() {
                 </div>
               </div>
               <div style={{ fontSize: "11px", color: "#888", marginTop: "4px" }}>
-                Unplanned stops on trips or beyond en-route budget. En-route budgets are set per EV above.
-                The EV impact sweep finds the minimum additional PV to stay within these limits.
+                En-route: DCFC added to a trip already underway — primary concern is cost.
+                Emergency: special trip made solely to charge — primary concern is inconvenience.
+                The EV impact sweep finds the minimum additional PV to stay within both limits.
                 ER distance (×1.25 safety buffer) = minimum charge required for an emergency return trip.
               </div>
             </div>
@@ -4506,9 +4619,11 @@ function App() {
                                     <td style={S.td(1, false)}>{fmtCurrency(evOpt.systemCost)}</td>
                                     {imp.hasEnrouteEv ? (
                                       <>
-                                        <td style={{ ...S.td(1, false), color: "#555" }}>
+                                        <td style={{ ...S.td(1, false),
+                                          fontWeight: imp.nonWwAnnualEnrouteDcfc > (imp.effectiveEnrouteLimit || imp.fleetEnrouteLimit) ? 700 : 400,
+                                          color: imp.nonWwAnnualEnrouteDcfc > (imp.effectiveEnrouteLimit || imp.fleetEnrouteLimit) ? "#721c24" : "#555" }}>
                                           {imp.nonWwAnnualEnrouteDcfc}
-                                          <span style={{ color: "#888", fontSize: "10px" }}> / {imp.fleetEnrouteLimit} limit</span>
+                                          <span style={{ color: "#888", fontSize: "10px" }}> / {imp.effectiveEnrouteLimit ?? imp.fleetEnrouteLimit} limit</span>
                                         </td>
                                         <td style={{ ...S.td(1, false),
                                           fontWeight: imp.nonWwAnnualEmergencyDcfc > 0 ? 700 : 400,
