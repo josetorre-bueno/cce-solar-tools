@@ -1,4 +1,5 @@
 // CCE / Wipomo Tools — Access Gate
+// Version: v1.0.1
 // To change the password: compute SHA-256 of the new password and replace HASH below.
 // Quick way: open browser console on any page and run:
 //   crypto.subtle.digest('SHA-256', new TextEncoder().encode('newpassword'))
