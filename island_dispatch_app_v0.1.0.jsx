@@ -1,6 +1,6 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.78
-// Updated: 2026-04-15 17:03 PT
+// Version: v0.4.79
+// Updated: 2026-04-15 17:28 PT
 // Part of: Wipomo / CCE Solar Tools
 
 "use strict";
@@ -2977,30 +2977,33 @@ function App() {
       });
     }
 
-    // Panel 2: Battery SOC + EV SOC on same kWh scale; generator-run shading as background
+    // Panel 2: Battery SOC + EV SOC — both normalised to 0–100 % of capacity.
+    // Stationary battery only: batKwhEnd = batE (not summed with EV).
     {
-      const allEvKwh = evList.map(ev => ev.kwh || 0);
-      const yMax = Math.max(batKwhCap, ...allEvKwh, ...batDs) * 1.08;
+      const ev0Kwh = evList[0]?.kwh || 1;
+      const batSocDs  = batDs.map(v => batKwhCap > 0 ? v / batKwhCap * 100 : 0);
+      const minSocPct = BATTERY_MIN_SOC * 100;
       const opts = commonOpts(true); // bottom panel — show x-axis
       opts.scales.y = {
-        title: { display: true, text: "Energy (kWh)", font: { size: 10 } },
-        beginAtZero: true, max: yMax, grid: { color: "#f0f0f0" }, afterFit: yFit,
+        title: { display: true, text: "SOC (%)", font: { size: 10 } },
+        beginAtZero: true, min: 0, max: 100, grid: { color: "#f0f0f0" }, afterFit: yFit,
       };
       const batDatasets = [
-        { label: `Battery SOC (${batKwhCap} kWh)`, data: batDs,      borderColor: "#107040", backgroundColor: "rgba(32,160,96,0.35)",   fill: true, tension: 0.15, pointRadius: 0, borderWidth: 1.5 },
-        { label: `Bat min SOC (${(BATTERY_MIN_SOC*100).toFixed(0)}%)`, data: minSocLine, borderColor: "#107040", borderDash: [4, 3], backgroundColor: "transparent", fill: false, pointRadius: 0, borderWidth: 1 },
+        { label: `Battery SOC (${batKwhCap} kWh)`, data: batSocDs, borderColor: "#107040", backgroundColor: "rgba(32,160,96,0.35)", fill: true, tension: 0.15, pointRadius: 0, borderWidth: 1.5 },
+        { label: `Bat min (${minSocPct.toFixed(0)}%)`, data: new Array(slice.length).fill(minSocPct), borderColor: "#107040", borderDash: [4, 3], backgroundColor: "transparent", fill: false, pointRadius: 0, borderWidth: 1 },
       ];
       if (evDs) {
+        const evSocPctDs = evDs.map(v => ev0Kwh > 0 ? v / ev0Kwh * 100 : 0);
         batDatasets.push({
-          label: `EV SOC (${evKwhCap} kWh)`, data: evDs,
+          label: `EV SOC (${ev0Kwh} kWh)`, data: evSocPctDs,
           borderColor: "#7b2d8b", backgroundColor: "rgba(123,45,139,0.15)", fill: true, tension: 0.15, pointRadius: 0, borderWidth: 1.5,
         });
         if (evList.length > 0) {
-          // Use first EV's efficiency for the fleet min-SOC reference line
-          const evMinKwh = erDistanceMiles * 1.25 / (evList[0]?.evEfficiency ?? EV_EFFICIENCY);
+          const evMinKwh   = erDistanceMiles * 1.25 / (evList[0]?.evEfficiency ?? EV_EFFICIENCY);
+          const evMinSocPct = ev0Kwh > 0 ? evMinKwh / ev0Kwh * 100 : 0;
           batDatasets.push({
-            label: `EV min SOC (${evMinKwh.toFixed(1)} kWh)`,
-            data: new Array(slice.length).fill(evMinKwh),
+            label: `EV min (${evMinSocPct.toFixed(0)}%)`,
+            data: new Array(slice.length).fill(evMinSocPct),
             borderColor: "#7b2d8b", borderDash: [4, 3], backgroundColor: "transparent",
             fill: false, pointRadius: 0, borderWidth: 1,
           });
@@ -3051,10 +3054,9 @@ function App() {
     const solarBotDs = solarDs.map((s, i) => Math.max(0, s - curtDs[i]));
     const dcfcIdx = slice.reduce((a, r, i) => { if (r.dcfcEvent) a.push(i); return a; }, []);
 
-    // Common y-axis max: stationary battery + all EV capacities on same scale
-    const evKwhCaps = evList.slice(0, 4).map(ev => ev.kwh || 0);
-    const socYMax = Math.max(batKwhCap, ...evKwhCaps) * 1.1;
-    const minSocLine = new Array(slice.length).fill(batKwhCap * BATTERY_MIN_SOC);
+    // All SOC panels normalised to 0–100 % of each device's own capacity.
+    const evKwhCaps = evList.slice(0, 4).map(ev => ev.kwh || 1);
+    const minSocPct = BATTERY_MIN_SOC * 100;
 
     const EV_COLORS = ["#7b2d8b", "#1a6696", "#b05a00", "#1a7a40"];
 
@@ -3148,32 +3150,34 @@ function App() {
       });
     }
 
-    // Panel 2: Battery SOC (common scale)
+    // Panel 2: Battery SOC — 0–100 % scale
     {
+      const batSocDs = batDs.map(v => batKwhCap > 0 ? v / batKwhCap * 100 : 0);
       const opts = commonOpts(nEvs === 0);
-      opts.scales.y = { title: { display: true, text: "Energy (kWh)", font: { size: 10 } }, beginAtZero: true, max: socYMax, grid: { color: "#f0f0f0" }, afterFit: yFit };
+      opts.scales.y = { title: { display: true, text: "SOC (%)", font: { size: 10 } }, beginAtZero: true, min: 0, max: 100, grid: { color: "#f0f0f0" }, afterFit: yFit };
       opts.plugins.legend = buildLegend([LEG_WW]);
       evImpBatInst.current = new Chart(evImpBatRef.current, {
         type: "line",
         data: { labels, datasets: [
-          { label: `Battery SOC (${batKwhCap} kWh)`, data: batDs, borderColor: "#107040", backgroundColor: "rgba(32,160,96,0.35)", fill: true, tension: 0.15, pointRadius: 0, borderWidth: 1.5 },
-          { label: `Bat min (${(BATTERY_MIN_SOC*100).toFixed(0)}%)`, data: minSocLine, borderColor: "#107040", borderDash: [4,3], backgroundColor: "transparent", fill: false, pointRadius: 0, borderWidth: 1 },
+          { label: `Battery SOC (${batKwhCap} kWh)`, data: batSocDs, borderColor: "#107040", backgroundColor: "rgba(32,160,96,0.35)", fill: true, tension: 0.15, pointRadius: 0, borderWidth: 1.5 },
+          { label: `Bat min (${minSocPct.toFixed(0)}%)`, data: new Array(slice.length).fill(minSocPct), borderColor: "#107040", borderDash: [4,3], backgroundColor: "transparent", fill: false, pointRadius: 0, borderWidth: 1 },
         ]},
         options: opts,
         plugins: [WHITE_BG, makeWwPlugin2("ww_imp2"), dcfcPlugin2, makeImpCrosshair("ch_imp2")],
       });
     }
 
-    // Panels 3..N: one per EV SOC
+    // Panels 3..N: one per EV SOC — 0–100 % scale using each EV's own capacity
     for (let i = 0; i < nEvs; i++) {
       if (!evImpSocRefs[i].current) continue;
       const ev        = evList[i];
       const color     = EV_COLORS[i % 4];
       const evLabel   = evImpact.fleetSummary[i]?.label || ev?.label || `EV ${i+1}`;
       const topo      = evImpact.fleetSummary[i]?.topology || "";
-      const evKwh     = ev?.kwh || 0;
+      const evKwh     = ev?.kwh || 1;
       const evMinKwh  = erDistanceMiles * 1.25 / (ev?.evEfficiency ?? EV_EFFICIENCY);
-      const evSocDs   = slice.map(r => r.evAway?.[i] ? null : (r.evKwhEnd?.[i] ?? null));
+      const evMinPct  = evKwh > 0 ? evMinKwh / evKwh * 100 : 0;
+      const evSocDs   = slice.map(r => r.evAway?.[i] ? null : (r.evKwhEnd?.[i] != null ? r.evKwhEnd[i] / evKwh * 100 : null));
       // "Away" background plugin: shade hours when EV is away
       const awayArr = slice.map(r => r.evAway?.[i] || false);
       function makeAwayPlugin(pid) {
@@ -3196,15 +3200,15 @@ function App() {
       const isLast = (i === nEvs - 1);
       const opts = commonOpts(isLast);
       opts.scales.y = {
-        title: { display: true, text: `EV ${i+1} — ${evLabel}`, font: { size: 10 } },
-        beginAtZero: true, max: socYMax, grid: { color: "#f0f0f0" }, afterFit: yFit,
+        title: { display: true, text: `EV ${i+1} — ${evLabel} (${evKwh} kWh)`, font: { size: 10 } },
+        beginAtZero: true, min: 0, max: 100, grid: { color: "#f0f0f0" }, afterFit: yFit,
       };
       opts.plugins.legend = buildLegend([]);
       evImpSocInsts[i].current = new Chart(evImpSocRefs[i].current, {
         type: "line",
         data: { labels, datasets: [
           { label: `${evLabel} SOC`, data: evSocDs, borderColor: color, backgroundColor: color.replace(")", ",0.18)").replace("rgb","rgba"), fill: true, tension: 0.15, pointRadius: 0, borderWidth: 1.5, spanGaps: false },
-          { label: `${evLabel} min`, data: new Array(slice.length).fill(evMinKwh), borderColor: color, borderDash: [4,3], backgroundColor: "transparent", fill: false, pointRadius: 0, borderWidth: 1 },
+          { label: `${evLabel} min (${evMinPct.toFixed(0)}%)`, data: new Array(slice.length).fill(evMinPct), borderColor: color, borderDash: [4,3], backgroundColor: "transparent", fill: false, pointRadius: 0, borderWidth: 1 },
         ]},
         options: opts,
         plugins: [WHITE_BG, makeWwPlugin2(`ww_ev${i}`), makeAwayPlugin(`away_ev${i}`), dcfcPlugin2, makeImpCrosshair(`ch_ev${i}`)],
@@ -3248,9 +3252,8 @@ function App() {
     const solarBotDs = solarDs.map((s, i) => Math.max(0, s - curtDs[i]));
     const dcfcIdx    = slice.reduce((a, r, i) => { if (r.dcfcEvent) a.push(i); return a; }, []);
 
-    const evKwhCaps = evList.slice(0, 4).map(ev => ev.kwh || 0);
-    const socYMax   = Math.max(batKwhCap, ...evKwhCaps) * 1.1;
-    const minSocLine = new Array(slice.length).fill(batKwhCap * BATTERY_MIN_SOC);
+    const evKwhCaps = evList.slice(0, 4).map(ev => ev.kwh || 1);
+    const minSocPct = BATTERY_MIN_SOC * 100;
     const EV_COLORS = ["#7b2d8b", "#1a6696", "#b05a00", "#1a7a40"];
     const yFit = scale => { scale.width = 62; };
 
@@ -3333,29 +3336,32 @@ function App() {
         plugins: [WHITE_BG, centerPlugin, dcfcPlugin, makeDiagCrosshair("ch_evd1")],
       });
     }
-    // Panel 2: Battery SOC
+    // Panel 2: Battery SOC — 0–100 % scale
     {
+      const batSocDs = batDs.map(v => batKwhCap > 0 ? v / batKwhCap * 100 : 0);
       const opts = commonOpts(nEvs === 0);
-      opts.scales.y = { title: { display: true, text: "Energy (kWh)", font: { size: 10 } }, beginAtZero: true, max: socYMax, grid: { color: "#f0f0f0" }, afterFit: yFit };
+      opts.scales.y = { title: { display: true, text: "SOC (%)", font: { size: 10 } }, beginAtZero: true, min: 0, max: 100, grid: { color: "#f0f0f0" }, afterFit: yFit };
       opts.plugins.legend = buildLegend([]);
       evImpDiagBatInst.current = new Chart(evImpDiagBatRef.current, {
         type: "line",
         data: { labels, datasets: [
-          { label: `Battery (${batKwhCap} kWh)`, data: batDs, borderColor: "#107040", backgroundColor: "rgba(32,160,96,0.35)", fill: true, tension: 0.15, pointRadius: 0, borderWidth: 1.5 },
-          { label: "Bat min", data: minSocLine, borderColor: "#107040", borderDash: [4,3], backgroundColor: "transparent", fill: false, pointRadius: 0, borderWidth: 1 },
+          { label: `Battery SOC (${batKwhCap} kWh)`, data: batSocDs, borderColor: "#107040", backgroundColor: "rgba(32,160,96,0.35)", fill: true, tension: 0.15, pointRadius: 0, borderWidth: 1.5 },
+          { label: `Bat min (${minSocPct.toFixed(0)}%)`, data: new Array(slice.length).fill(minSocPct), borderColor: "#107040", borderDash: [4,3], backgroundColor: "transparent", fill: false, pointRadius: 0, borderWidth: 1 },
         ]},
         options: opts,
         plugins: [WHITE_BG, centerPlugin, dcfcPlugin, makeDiagCrosshair("ch_evd2")],
       });
     }
-    // Panels 3..N: per-EV SOC
+    // Panels 3..N: per-EV SOC — 0–100 % using each EV's own capacity
     for (let i = 0; i < nEvs; i++) {
       if (!evImpDiagSocRefs[i].current) continue;
       const ev       = evList[i];
       const color    = EV_COLORS[i % 4];
       const evLabel  = evImpact.fleetSummary[i]?.label || ev?.label || `EV ${i+1}`;
+      const evKwh    = ev?.kwh || 1;
       const evMinKwh = erDistanceMiles * 1.25 / (ev?.evEfficiency ?? EV_EFFICIENCY);
-      const evSocDs  = slice.map(r => r.evAway?.[i] ? null : (r.evKwhEnd?.[i] ?? null));
+      const evMinPct = evKwh > 0 ? evMinKwh / evKwh * 100 : 0;
+      const evSocDs  = slice.map(r => r.evAway?.[i] ? null : (r.evKwhEnd?.[i] != null ? r.evKwhEnd[i] / evKwh * 100 : null));
       const awayArr  = slice.map(r => r.evAway?.[i] || false);
       function makeAwayPlugin(pid) {
         return {
@@ -3375,13 +3381,13 @@ function App() {
       }
       const isLast = (i === nEvs - 1);
       const opts = commonOpts(isLast);
-      opts.scales.y = { title: { display: true, text: `EV ${i+1} — ${evLabel}`, font: { size: 10 } }, beginAtZero: true, max: socYMax, grid: { color: "#f0f0f0" }, afterFit: yFit };
+      opts.scales.y = { title: { display: true, text: `EV ${i+1} — ${evLabel} (${evKwh} kWh)`, font: { size: 10 } }, beginAtZero: true, min: 0, max: 100, grid: { color: "#f0f0f0" }, afterFit: yFit };
       opts.plugins.legend = buildLegend([]);
       evImpDiagSocInsts[i].current = new Chart(evImpDiagSocRefs[i].current, {
         type: "line",
         data: { labels, datasets: [
           { label: `${evLabel} SOC`, data: evSocDs, borderColor: color, backgroundColor: color.replace(")", ",0.18)").replace("rgb","rgba"), fill: true, tension: 0.15, pointRadius: 0, borderWidth: 1.5, spanGaps: false },
-          { label: `${evLabel} min`, data: new Array(slice.length).fill(evMinKwh), borderColor: color, borderDash: [4,3], backgroundColor: "transparent", fill: false, pointRadius: 0, borderWidth: 1 },
+          { label: `${evLabel} min (${evMinPct.toFixed(0)}%)`, data: new Array(slice.length).fill(evMinPct), borderColor: color, borderDash: [4,3], backgroundColor: "transparent", fill: false, pointRadius: 0, borderWidth: 1 },
         ]},
         options: opts,
         plugins: [WHITE_BG, centerPlugin, makeAwayPlugin(`away_evd${i}`), dcfcPlugin, makeDiagCrosshair(`ch_evd${i+2}`)],
@@ -3753,7 +3759,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.78</span>
+        <span style={S.version}>v0.4.79</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto"}}>
           <a href="https://tools.cc-energy.org/index.html"
