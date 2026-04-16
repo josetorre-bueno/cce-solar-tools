@@ -1,6 +1,6 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.76
-// Updated: 2026-04-15 16:22 PT
+// Version: v0.4.77
+// Updated: 2026-04-15 16:41 PT
 // Part of: Wipomo / CCE Solar Tools
 
 "use strict";
@@ -699,10 +699,13 @@ function dispatch(solarH, loadH, batKwh, batKw, evScenario, weather, dcfcCostPer
     for (const { ci, prio } of evChargeOrder) {
       if (sol > 0.5 && prio > 0) continue;  // daytime: prio-1/2 skipped — solar surplus handles
       if (sol <= 0.5 && prio >= 2) continue; // nighttime: prio-2 skipped — solar surplus only
-      // Bidi EVs are excluded from prio-1 and prio-2 battery charging: peer charging (WFH bidi
-      // → commuter bidi) handles their regular top-up, and V2H ensures stationary battery is
-      // preserved. Only prio-0 (below erMinKwh emergency) can pull from the stationary battery.
-      if (prio >= 1 && evs[ci].canV2G) continue;
+      // Bidi EVs are excluded from prio-2 battery charging: peer charging (WFH bidi → commuter
+      // bidi) and solar surplus handle general top-up. Prio-1 (transport-critical: tomorrow IS a
+      // trip day and EV is below roundTrip threshold) is NOT excluded — peer charging is
+      // opportunistic and may not fully charge a commuter bidi EV overnight, leaving it in the
+      // dangerous zone above tripCheckKwh (can depart) but below roundTripKwh×1.10 (can't finish
+      // round trip), which triggers emergency DCFC on return. Battery prio-1 is the fallback.
+      if (prio >= 2 && evs[ci].canV2G) continue;
       // Prio-0/1: conservative target to avoid draining stationary battery overnight.
       // Three candidates; take the largest:
       //   1. evMn × 1.5 — clear the emergency floor with margin
@@ -3725,7 +3728,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.76</span>
+        <span style={S.version}>v0.4.77</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto"}}>
           <a href="https://tools.cc-energy.org/index.html"
