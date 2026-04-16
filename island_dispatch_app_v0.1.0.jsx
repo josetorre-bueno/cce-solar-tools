@@ -1,6 +1,6 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.81
-// Updated: 2026-04-16 10:00 PT
+// Version: v0.4.82
+// Updated: 2026-04-16 11:00 PT
 // Part of: Wipomo / CCE Solar Tools
 
 "use strict";
@@ -1257,74 +1257,32 @@ function dispatchGenerator(solarH, loadH, batKwh, batKw, genKw, weather, lookahe
 // Uses the same dispatch logic as dispatchGenerator but without a weather object —
 // hour-of-day is derived as h % 24.  No worst-window tracking.
 // Returns { annualGenHours, annualGenCost }.
-function countAnnualGenHours(solarH, loadH, batKwh, batKw, genKw, lookaheadDays, fuelCostPerKwHr) {
+// countAnnualGenHours uses only the EMERGENCY floor trigger (battery ≤ 20%), NOT the
+// afternoon-lookahead planning trigger used in dispatchGenerator.
+// Rationale: the generator is an emergency-only device. In a typical TMY year with adequate PV,
+// the battery handles all load without help; the generator should fire only if the battery truly
+// hits the floor. The planning trigger is appropriate for the stress-window (where we know solar
+// will be scarce for days), but in a typical year it fires during ordinary cloudy spells, inflating
+// annual hours and forcing the optimizer to require more PV than the battery-only path — wrong.
+// Using floor-only here means typical-year hours stay near zero, the 52 hr/yr ordinance limit
+// passes easily, and battery+generator always needs ≤ the same PV as battery-only.
+function countAnnualGenHours(solarH, loadH, batKwh, batKw, genKw, fuelCostPerKwHr) {
   const N = solarH.length;
   const batMin = batKwh * BATTERY_MIN_SOC;
   const batMax = batKwh;
   let batE = batKwh * 0.5;
   let genRunning = false;
   let genHours = 0;
-  const planThresh = batMax * 0.25;
-
-  function shortageExpected(h) {
-    let projE = batE;
-    const hrNow = h % 24;
-    const maxHrs = (24 - hrNow) + lookaheadDays * 24;
-    let pastSolar = solarH[Math.min(h, N-1)] < loadH[Math.min(h, N-1)];
-    let seenDark = pastSolar;
-    for (let j = 0; j < maxHrs; j++) {
-      const idx = Math.min(h + j, N - 1);
-      const net = solarH[idx] - loadH[idx];
-      if (solarH[idx] === 0) seenDark = true;
-      if (!pastSolar && net < 0) pastSolar = true;
-      projE += net > 0 ? net * BATTERY_RTE : net;
-      projE = Math.min(projE, batMax);
-      if (projE < planThresh) return true;
-      if (pastSolar && seenDark && net >= 0) return false;
-    }
-    return false;
-  }
-
-  function canStop(h) {
-    let projE = batE;
-    let pastSolar = solarH[Math.min(h, N-1)] < loadH[Math.min(h, N-1)];
-    let seenDark = pastSolar;
-    let recovIdx = -1;
-    for (let j = 0; j < 48; j++) {
-      const idx = Math.min(h + j, N - 1);
-      const net = solarH[idx] - loadH[idx];
-      if (solarH[idx] === 0) seenDark = true;
-      if (!pastSolar && net < 0) pastSolar = true;
-      projE += net > 0 ? net * BATTERY_RTE : net;
-      projE = Math.min(projE, batMax);
-      if (projE < planThresh) return false;
-      if (pastSolar && seenDark && net >= 0) { recovIdx = idx; break; }
-    }
-    if (recovIdx < 0) return false;
-    let tmrCharge = 0;
-    for (let j = 0; j < 20; j++) {
-      const idx = Math.min(recovIdx + j, N - 1);
-      const net = solarH[idx] - loadH[idx];
-      if (net > 0) tmrCharge += net * BATTERY_RTE;
-      else if (j > 4) break;
-    }
-    return Math.min(projE + tmrCharge, batMax) >= batMax * 0.90;
-  }
 
   for (let h = 0; h < N; h++) {
-    const hr  = h % 24;
     const sol = solarH[h];
     const ld  = loadH[h];
 
+    // Stop: battery recharged or solar covers load
     if (genRunning && batE >= batMax * 0.95) genRunning = false;
     if (genRunning && sol >= ld)             genRunning = false;
-    if (genRunning && canStop(h))            genRunning = false;
+    // Start: true emergency — battery hit floor
     if (!genRunning && batE <= batMax * 0.20) genRunning = true;
-
-    const afternoonTrigger = (hr >= 12 && sol < ld) || hr === 18;
-    if (afternoonTrigger && !genRunning) {
-      if (shortageExpected(h)) genRunning = true;
-    }
 
     const genOut = genRunning ? genKw : 0;
     if (genRunning) genHours++;
@@ -1357,7 +1315,7 @@ function sweepGenerators(solarH, loadH, batKwh, batKw, weather, genSizesKw, fuel
   const results = genSizesKw.map(genKw => {
     const r = dispatchGenerator(solarH, loadH, batKwh, batKw, genKw, weather, lookaheadDays, fuelCostPerKwHr);
     if (annualSolarH && annualLoadH) {
-      const ann = countAnnualGenHours(annualSolarH, annualLoadH, batKwh, batKw, genKw, lookaheadDays, fuelCostPerKwHr);
+      const ann = countAnnualGenHours(annualSolarH, annualLoadH, batKwh, batKw, genKw, fuelCostPerKwHr);
       r.annualGenHours = ann.annualGenHours;
       r.annualGenCost  = ann.annualGenCost;
     }
@@ -1374,12 +1332,14 @@ function sweepGenerators(solarH, loadH, batKwh, batKw, weather, genSizesKw, fuel
 // loadAnnual: full 8760-h load array.  When provided, annual gen hours and
 // fuel cost are derived from a full-year dispatch rather than the stress window,
 // giving a more realistic estimate of annual fuel expenditure for NPV.
-// genHrLimit          = max generator hours for the Title 24 §150.1-C 3-day critical-load CAPACITY TEST — default 52 hrs
-//                       (used only for criterion1Pass; NOT a hard filter on the optimizer)
+// genHrLimit        = max generator hours in a NORMAL (non-emergency) year — default 52 hrs (CA typical ordinance)
+//                     Also used for the Title 24 §150.1-C 3-day critical-load capacity test (criterion1Pass).
+//                     The generator is emergency-only; countAnnualGenHours uses only the floor trigger so
+//                     typical-year hours stay near zero. This limit enforces that design intent.
 // emergencyGenHrLimit = max generator hours during a worst-window EMERGENCY event — default 200 hrs
-//                       (hard optimizer filter: configurations exceeding this are rejected)
-// Annual fuel cost is already internalized via NPV (fuelNpv) — no separate annual-hours filter is applied.
-// Adding a generator can only relax or maintain the PV requirement for the same battery size.
+// The two limits are checked independently:
+//   wwGenHours (hours running only within the worst 10-day window) must be ≤ emergencyGenHrLimit
+//   annualGenHours (full TMY annual sim) must be ≤ genHrLimit
 function findOptimumGenerator({ mountOptions, pvSizesKw, batteryOptions, genSizesKw, genInstalledCost,
                                  loadSw, loadAnnual, weather, cell, spinupDoy,
                                  fuelCostPerKwHr, lookaheadDays, npvYears, discountRate,
@@ -1406,11 +1366,9 @@ function findOptimumGenerator({ mountOptions, pvSizesKw, batteryOptions, genSize
           if (r.wwGenHours > emergencyGenHrLimit) continue;
           // Normal-year limit: full-year TMY dispatch (typical year, no worst-window event)
           const ann = (annualSolarH && loadAnnual)
-            ? countAnnualGenHours(annualSolarH, loadAnnual, bat.kwh, bat.kw, genKw, lookaheadDays, fuelCostPerKwHr)
+            ? countAnnualGenHours(annualSolarH, loadAnnual, bat.kwh, bat.kw, genKw, fuelCostPerKwHr)
             : { annualGenHours: r.simGenHours, annualGenCost: r.annualGenCost };
-          // Annual gen hours are reported and internalized via fuelNpv — not a hard filter.
-          // (Hard-filtering on genHrLimit here caused battery+generator to require MORE PV than
-          //  battery-only with the same battery size, which is physically impossible.)
+          if (ann.annualGenHours > genHrLimit) continue; // exceeds normal-year ordinance limit
           const pvCost    = Math.round(pvKw  * mount.pvCostPerKw);
           const batCost   = Math.round(bat.kwh * bat.costPerKwh);
           const genCap    = genInstalledCost; // fixed installed cost regardless of kW size
@@ -3830,7 +3788,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.81</span>
+        <span style={S.version}>v0.4.82</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto"}}>
           <a href="https://tools.cc-energy.org/index.html"
@@ -3957,7 +3915,7 @@ function App() {
                       &nbsp;Battery-only: <strong>{batMin} kWh</strong>
                       &nbsp;·&nbsp; With {minGen} kW gen: <strong>{batWithGen} kWh</strong>
                     </div>
-                    <div>③ Generator: Title 24 capacity test ≤ {genHrLimit} hr · emergency worst-window ≤ {emergencyGenHrLimit} hr</div>
+                    <div>③ Generator: ≤ {genHrLimit} hr/yr normal · ≤ {emergencyGenHrLimit} hr worst-window</div>
                   </div>
                 );
               })()}
@@ -4278,7 +4236,7 @@ function App() {
                     onChange={e => setGenInstalledCost(parseInt(e.target.value) || 0)} />
                 </div>
                 <div style={{ ...S.fieldRow, flex: 1 }}>
-                  <label style={S.label}>Title 24 gen hr limit</label>
+                  <label style={S.label}>Normal-year limit (hrs/yr)</label>
                   <input style={S.input} type="number" step="4" min="0" value={genHrLimit}
                     onChange={e => setGenHrLimit(parseInt(e.target.value) || 0)} />
                 </div>
