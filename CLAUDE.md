@@ -28,7 +28,7 @@ Three use cases:
 | MOD-03 | `nsrdb` | **Complete** (data + aggregation script) | `nsrdb_aggregate_v2_1.py`, `nsrdb_daily_summary.json`, `nsrdb_stress_window.json` |
 | MOD-04 | `rate_engine` | **Stage 2 v1.4.0** — residential + commercial SDG&E rates, browser UI | `rate_engine_v1.3.0.js` + `rate_engine_app_v1.4.0.jsx` + `rate_engine.html` |
 | MOD-05 | `bill_modeler` | Partial (removed from MOD-02b v1.9.0, pending standalone) | — |
-| MOD-06 | `island_dispatch` | **Deployed v0.4.72** (browser UI + Python prototype) | `island_dispatch_app_v0.1.0.jsx` + `island_dispatch.html` + `mod06_island_dispatch_v11.py` |
+| MOD-06 | `island_dispatch` | **Deployed v0.4.73** (browser UI + Python prototype) | `island_dispatch_app_v0.1.0.jsx` + `island_dispatch.html` + `mod06_island_dispatch_v11.py` |
 | MOD-06b | `grid_battery_dispatch` | Planned | — |
 | MOD-07 | `ev_simulator` | Not built (commercial fleet) | — |
 | MOD-08 | `financial_model` | Partial (payback/NPV in MOD-10) | — |

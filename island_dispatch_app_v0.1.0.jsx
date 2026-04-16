@@ -1,6 +1,6 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.72
-// Updated: 2026-04-15 12:00 PT
+// Version: v0.4.73
+// Updated: 2026-04-15 12:30 PT
 // Part of: Wipomo / CCE Solar Tools
 
 "use strict";
@@ -894,6 +894,15 @@ function findOptimum(params) {
     ? passing.reduce((best, r) => r.totalCost < best.totalCost ? r : best, passing[0])
     : null;
 
+  // Diagnostic breakdown: count configs failing at each filter stage
+  const nWwPass        = allResults.filter(r => r.wwPass).length;
+  const nWwPassEnRoute = allResults.filter(r => r.wwPass && r.nonWwAnnualEnrouteDcfc <= effectiveEnrouteLimit).length;
+  const bestWwPct      = allResults.reduce((best, r) => Math.max(best, r.wwPct), 0);
+  const bestEnroute    = allResults.filter(r => r.wwPass).reduce((best, r) => Math.min(best, r.nonWwAnnualEnrouteDcfc), Infinity);
+  const bestEmergency  = allResults.filter(r => r.wwPass).reduce((best, r) => Math.min(best, r.nonWwAnnualEmergencyDcfc), Infinity);
+  const diagBestEnroute   = isFinite(bestEnroute)  ? bestEnroute  : null;
+  const diagBestEmergency = isFinite(bestEmergency) ? bestEmergency : null;
+
   return {
     cellKey,
     cellLat:            cell.fetch_lat,
@@ -911,6 +920,11 @@ function findOptimum(params) {
     hasEnrouteEv,
     nTotal:             allResults.length,
     nPassing:           passing.length,
+    nWwPass,
+    nWwPassEnRoute,
+    bestWwPct:          Math.round(bestWwPct * 10) / 10,
+    diagBestEnroute,
+    diagBestEmergency,
     optimum,
     allPassing:         [...passing].sort((a, b) => a.totalCost - b.totalCost),
     sweep:              allResults,
@@ -2327,8 +2341,13 @@ function App() {
         hasCommuter,
         hasEnrouteEv: evOptResult.hasEnrouteEv || false,
         evOptResult,
-        nPassing: evOptResult.nPassing,
-        nTotal:   evOptResult.nTotal,
+        nPassing:          evOptResult.nPassing,
+        nTotal:            evOptResult.nTotal,
+        nWwPass:           evOptResult.nWwPass,
+        nWwPassEnRoute:    evOptResult.nWwPassEnRoute,
+        bestWwPct:         evOptResult.bestWwPct,
+        diagBestEnroute:   evOptResult.diagBestEnroute,
+        diagBestEmergency: evOptResult.diagBestEmergency,
         noEvOpt,
         evOpt,
         pathLabel,
@@ -2336,6 +2355,10 @@ function App() {
         baselineMinPvKw:    baseline?.pvKw      || 0,
         baselineBatFamily:  baselineBatFamily   || null,
         baselineMinBatKwh:  baseline?.batteryKwh || 0,
+        // Always available (even when no solution found) — used in diagnostic message
+        effectiveEmergencyLimit: evOptResult.effectiveEmergencyLimit ?? maxEmergencyDcfc,
+        effectiveEnrouteLimit:   evOptResult.effectiveEnrouteLimit   ?? maxEnrouteDcfc ?? 0,
+        fleetEnrouteLimit:       evOptResult.fleetEnrouteLimit       ?? 0,
       };
 
       if (noEvOpt && evOpt) {
@@ -3665,7 +3688,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.72</span>
+        <span style={S.version}>v0.4.73</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto"}}>
           <a href="https://tools.cc-energy.org/index.html"
@@ -4588,12 +4611,37 @@ function App() {
                             </div>
                           </div>
 
-                          {noSolution ? (
-                            <div style={{ background: "#f8d7da", border: "1px solid #f5c6cb", borderRadius: "4px", padding: "8px 10px", fontSize: "11px", color: "#721c24" }}>
-                              ⚠ No passing configuration found for this fleet in the available PV/battery range.
-                              {imp.hasCommuter && " Commuter EVs charging overnight from stationary battery may need larger batteries. Try enabling 4×–6× Powerwall 3, adding more PV sizes, or increasing the emergency DCFC stop tolerance."}
-                            </div>
-                          ) : (
+                          {noSolution ? (() => {
+                            const nTot  = imp.nTotal || 0;
+                            const nWw   = imp.nWwPass ?? 0;
+                            const nEnr  = imp.nWwPassEnRoute ?? 0;
+                            const nFull = imp.nPassing ?? 0;
+                            // Identify the binding constraint
+                            let reason = "";
+                            if (nTot === 0) {
+                              reason = "No PV/battery combinations were evaluated — check that PV sizes and battery options are enabled.";
+                            } else if (nWw === 0) {
+                              reason = `All ${nTot} configurations fail the worst-10-day load coverage test (best coverage: ${imp.bestWwPct}%). ` +
+                                "Add more PV, larger batteries, or enable a generator. " +
+                                (imp.hasCommuter ? "Commuter EVs charging overnight drain the battery — consider enabling DCFC (dcfcPlannedPerYear > 0) so EVs charge externally on low-solar days." : "");
+                            } else if (nEnr < nWw) {
+                              reason = `${nWw} configurations pass worst-window coverage but ${nWw - nEnr} fail the en-route DCFC limit ` +
+                                `(best annual en-route: ${imp.diagBestEnroute ?? "?"} vs limit ${imp.effectiveEnrouteLimit ?? imp.fleetEnrouteLimit}). ` +
+                                "Increase the 'En-route DCFC/yr (fleet max)' setting.";
+                            } else if (nFull < nEnr) {
+                              reason = `${nEnr} configurations pass en-route DCFC but ${nEnr - nFull} fail the emergency DCFC limit ` +
+                                `(best annual emergency: ${imp.diagBestEmergency ?? "?"} vs limit ${imp.effectiveEmergencyLimit ?? imp.maxEmergencyDcfc}). ` +
+                                "Increase the 'Emergency DCFC/yr' setting.";
+                            } else {
+                              reason = `${nTot} total configurations evaluated; none passed all filters.`;
+                            }
+                            return (
+                              <div style={{ background: "#f8d7da", border: "1px solid #f5c6cb", borderRadius: "4px", padding: "8px 10px", fontSize: "11px", color: "#721c24" }}>
+                                <div><strong>⚠ No passing configuration found</strong> ({nTot} evaluated, {nWw} pass worst-window, {nEnr} pass en-route limit, {nFull} pass all)</div>
+                                <div style={{ marginTop: "4px" }}>{reason}</div>
+                              </div>
+                            );
+                          })() : (
                             <>
                               <table style={{ ...S.table, fontSize: "12px", minWidth: "500px" }}>
                                 <thead>
