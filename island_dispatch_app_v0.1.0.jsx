@@ -1,6 +1,6 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.80
-// Updated: 2026-04-15 PT
+// Version: v0.4.81
+// Updated: 2026-04-16 10:00 PT
 // Part of: Wipomo / CCE Solar Tools
 
 "use strict";
@@ -1374,11 +1374,12 @@ function sweepGenerators(solarH, loadH, batKwh, batKw, weather, genSizesKw, fuel
 // loadAnnual: full 8760-h load array.  When provided, annual gen hours and
 // fuel cost are derived from a full-year dispatch rather than the stress window,
 // giving a more realistic estimate of annual fuel expenditure for NPV.
-// genHrLimit        = max generator hours in a NORMAL (non-emergency) year — default 52 hrs (CA typical ordinance)
+// genHrLimit          = max generator hours for the Title 24 §150.1-C 3-day critical-load CAPACITY TEST — default 52 hrs
+//                       (used only for criterion1Pass; NOT a hard filter on the optimizer)
 // emergencyGenHrLimit = max generator hours during a worst-window EMERGENCY event — default 200 hrs
-// The two limits are checked independently:
-//   wwGenHours (hours running only within the worst 10-day window) must be ≤ emergencyGenHrLimit
-//   annualGenHours (full TMY annual sim) must be ≤ genHrLimit
+//                       (hard optimizer filter: configurations exceeding this are rejected)
+// Annual fuel cost is already internalized via NPV (fuelNpv) — no separate annual-hours filter is applied.
+// Adding a generator can only relax or maintain the PV requirement for the same battery size.
 function findOptimumGenerator({ mountOptions, pvSizesKw, batteryOptions, genSizesKw, genInstalledCost,
                                  loadSw, loadAnnual, weather, cell, spinupDoy,
                                  fuelCostPerKwHr, lookaheadDays, npvYears, discountRate,
@@ -1407,7 +1408,9 @@ function findOptimumGenerator({ mountOptions, pvSizesKw, batteryOptions, genSize
           const ann = (annualSolarH && loadAnnual)
             ? countAnnualGenHours(annualSolarH, loadAnnual, bat.kwh, bat.kw, genKw, lookaheadDays, fuelCostPerKwHr)
             : { annualGenHours: r.simGenHours, annualGenCost: r.annualGenCost };
-          if (ann.annualGenHours > genHrLimit) continue; // exceeds normal-year ordinance limit
+          // Annual gen hours are reported and internalized via fuelNpv — not a hard filter.
+          // (Hard-filtering on genHrLimit here caused battery+generator to require MORE PV than
+          //  battery-only with the same battery size, which is physically impossible.)
           const pvCost    = Math.round(pvKw  * mount.pvCostPerKw);
           const batCost   = Math.round(bat.kwh * bat.costPerKwh);
           const genCap    = genInstalledCost; // fixed installed cost regardless of kW size
@@ -3827,7 +3830,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.80</span>
+        <span style={S.version}>v0.4.81</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto"}}>
           <a href="https://tools.cc-energy.org/index.html"
@@ -3954,7 +3957,7 @@ function App() {
                       &nbsp;Battery-only: <strong>{batMin} kWh</strong>
                       &nbsp;·&nbsp; With {minGen} kW gen: <strong>{batWithGen} kWh</strong>
                     </div>
-                    <div>③ Generator: ≤ {genHrLimit} hr/yr normal · ≤ {emergencyGenHrLimit} hr worst-window</div>
+                    <div>③ Generator: Title 24 capacity test ≤ {genHrLimit} hr · emergency worst-window ≤ {emergencyGenHrLimit} hr</div>
                   </div>
                 );
               })()}
@@ -4275,7 +4278,7 @@ function App() {
                     onChange={e => setGenInstalledCost(parseInt(e.target.value) || 0)} />
                 </div>
                 <div style={{ ...S.fieldRow, flex: 1 }}>
-                  <label style={S.label}>Normal-year limit (hrs/yr)</label>
+                  <label style={S.label}>Title 24 gen hr limit</label>
                   <input style={S.input} type="number" step="4" min="0" value={genHrLimit}
                     onChange={e => setGenHrLimit(parseInt(e.target.value) || 0)} />
                 </div>
