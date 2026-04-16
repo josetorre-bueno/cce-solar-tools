@@ -28,14 +28,14 @@ Three use cases:
 | MOD-03 | `nsrdb` | **Complete** (data + aggregation script) | `nsrdb_aggregate_v2_1.py`, `nsrdb_daily_summary.json`, `nsrdb_stress_window.json` |
 | MOD-04 | `rate_engine` | **Stage 2 v1.4.0** — residential + commercial SDG&E rates, browser UI | `rate_engine_v1.3.0.js` + `rate_engine_app_v1.4.0.jsx` + `rate_engine.html` |
 | MOD-05 | `bill_modeler` | Partial (removed from MOD-02b v1.9.0, pending standalone) | — |
-| MOD-06 | `island_dispatch` | **Deployed v0.4.79** (browser UI + Python prototype) | `island_dispatch_app_v0.1.0.jsx` + `island_dispatch.html` + `mod06_island_dispatch_v11.py` |
+| MOD-06 | `island_dispatch` | **Deployed v0.4.80** (browser UI + Python prototype) | `island_dispatch_app_v0.1.0.jsx` + `island_dispatch.html` + `mod06_island_dispatch_v11.py` |
 | MOD-06b | `grid_battery_dispatch` | Planned | — |
 | MOD-07 | `ev_simulator` | Not built (commercial fleet) | — |
 | MOD-08 | `financial_model` | Partial (payback/NPV in MOD-10) | — |
 | MOD-09 | `tracker_analyzer` | **Deployed v6.17** | `tracker_tou_app_v6.17.jsx` + `tracker_tou.html` |
 | MOD-10 | `nem3_optimizer` | Partial v3 | `pv_sizing_tool.html` |
 
-**Reference specs exist for:** MOD-02b (`MOD-02b_reference_spec.md`), MOD-06 (`MOD-06_island_dispatch_reference_spec_v0.4.68.md` — spec at v0.4.68, tool now at v0.4.79), MOD-09 (`MOD-09_tracker_analyzer_reference_spec.md`)
+**Reference specs exist for:** MOD-02b (`MOD-02b_reference_spec.md`), MOD-06 (`MOD-06_island_dispatch_reference_spec_v0.4.68.md` — spec at v0.4.68, tool now at v0.4.80), MOD-09 (`MOD-09_tracker_analyzer_reference_spec.md`)
 **Reference specs pending:** MOD-03, MOD-04
 
 ---
@@ -239,6 +239,7 @@ This is required SOP — never omit it when files have been written or modified.
 *MOD-06 browser UI (v0.4.77) — Fixes emergency DCFC for V2G commuter EVs. Previous code excluded bidi EVs from prio-1 AND prio-2 battery charging (assuming peer charging covers them), but peer charging is opportunistic and may leave a V2G commuter in the dangerous zone: above tripCheckKwh (can depart) but below roundTripKwh×1.10 (can't finish round trip) → emergency on return. Fix: exclude V2G from prio-2 only; prio-1 (transport-critical) is now allowed as battery fallback for bidi commuters.*
 *MOD-06 browser UI (v0.4.78) — Implements correct priority spec: EV battery is LAST drained and FIRST charged. (1) V2H discharge order reversed: stationary battery now covers load deficit first, bidi EVs discharge as backup only when battery is insufficient. Previous order (EVs first) was draining V2G commuters during the day, causing emergency DCFC. (2) Solar surplus charging restructured into 3 phases: EVs below transport minimum first, then battery, then EVs general top-up. Phase 1 is a targeted no-op when EVs are already transport-ready.*
 *MOD-06 browser UI (v0.4.79) — All SOC/battery charts now scale to 0–100 % of each device's own capacity (y-axis "SOC %" instead of "Energy kWh", fixed max=100). Confirmed stationary battery is shown alone (batKwhEnd = batE only, not summed with EVs). Also fixed undeclared evKwhCap variable in main result chart label (was undefined; now uses evList[0].kwh). Min-SOC dashed reference lines updated to show % values. Applied to all four chart sections: main result, EV impact, EV detail (±24h).*
+*MOD-06 browser UI (v0.4.80) — Travel-frequency dispatch priority: EVs with more trips/week are charged first and discharged last (protecting the most-traveled commuter's range). evSolarOrder sort uses tripsPerWeek descending; bidiOrder (V2H discharge) uses tripsPerWeek ascending (least-traveled V2G EV gives energy first); bidiSources (peer charging) also sorted by tripsPerWeek ascending. Dual y-axis charts: all battery/EV SOC panels now show kWh on the left axis (common scale = max device capacity × 1.05) and %SOC on the right axis, calibrated per device so 100% always aligns with full capacity. Data stays in kWh; right axis shows only 0/25/50/75/100% ticks.*
 
 ---
 
