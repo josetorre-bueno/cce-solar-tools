@@ -1,6 +1,6 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.73
-// Updated: 2026-04-15 12:30 PT
+// Version: v0.4.74
+// Updated: 2026-04-15 13:00 PT
 // Part of: Wipomo / CCE Solar Tools
 
 "use strict";
@@ -696,9 +696,15 @@ function dispatch(solarH, loadH, batKwh, batKw, evScenario, weather, dcfcCostPer
       // preserved. Only prio-0 (below erMinKwh emergency) can pull from the stationary battery.
       if (prio >= 1 && evs[ci].canV2G) continue;
       // Prio-0/1: conservative target to avoid draining stationary battery overnight.
+      // Three candidates; take the largest:
+      //   1. evMn × 1.5 — clear the emergency floor with margin
+      //   2. roundTripKwh × 1.10 — enough for tomorrow's commute round trip
+      //   3. tripCheckKwh + evMn — guarantees road-trip pre-departure threshold is cleared
+      //      (rtOneWayKwh + evMn). Without this, short-trip EVs (~30 mi) can sit below
+      //      the road-trip departure floor and generate spurious pre-departure DCFC stops.
       // Prio-2: full 90% target, gated by 70% battery reserve below.
       const evTarget = (prio <= 1)
-        ? Math.max(evMn[ci] * 1.5, evs[ci].roundTripKwh * 1.10)
+        ? Math.max(evMn[ci] * 1.5, evs[ci].roundTripKwh * 1.10, evs[ci].tripCheckKwh + evMn[ci])
         : evs[ci].kwh * 0.90;
       const evNeed   = Math.max(0, evTarget - evE[ci]) / CHARGE_RTE;
       // Prio-2 top-up: only use battery capacity above 70% to avoid single-hour drain to minimum
@@ -3688,7 +3694,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.73</span>
+        <span style={S.version}>v0.4.74</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto"}}>
           <a href="https://tools.cc-energy.org/index.html"
