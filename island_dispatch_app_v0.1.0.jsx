@@ -1,6 +1,6 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.82
-// Updated: 2026-04-16 11:00 PT
+// Version: v0.4.83
+// Updated: 2026-04-16 12:00 PT
 // Part of: Wipomo / CCE Solar Tools
 
 "use strict";
@@ -1216,6 +1216,7 @@ function dispatchGenerator(solarH, loadH, batKwh, batKw, genKw, weather, lookahe
 
     const genOut = genRunning ? genKw : 0;
     if (genRunning) genHours++;
+    if (inWW && genRunning) wwGenHours++;   // count worst-window generator hours separately
 
     const totalSupply = sol + genOut;
     const direct = Math.min(totalSupply, ld);
@@ -1332,14 +1333,12 @@ function sweepGenerators(solarH, loadH, batKwh, batKw, weather, genSizesKw, fuel
 // loadAnnual: full 8760-h load array.  When provided, annual gen hours and
 // fuel cost are derived from a full-year dispatch rather than the stress window,
 // giving a more realistic estimate of annual fuel expenditure for NPV.
-// genHrLimit        = max generator hours in a NORMAL (non-emergency) year — default 52 hrs (CA typical ordinance)
-//                     Also used for the Title 24 §150.1-C 3-day critical-load capacity test (criterion1Pass).
-//                     The generator is emergency-only; countAnnualGenHours uses only the floor trigger so
-//                     typical-year hours stay near zero. This limit enforces that design intent.
-// emergencyGenHrLimit = max generator hours during a worst-window EMERGENCY event — default 200 hrs
-// The two limits are checked independently:
-//   wwGenHours (hours running only within the worst 10-day window) must be ≤ emergencyGenHrLimit
-//   annualGenHours (full TMY annual sim) must be ≤ genHrLimit
+// genHrLimit          = max generator hours within the worst 10-day window — default 52 hrs
+//                       (also used for the Title 24 §150.1-C 3-day critical-load capacity test)
+// emergencyGenHrLimit = secondary safety ceiling on wwGenHours — default 200 hrs (rarely binding)
+// Annual fuel cost is captured via fuelNpv; no separate annual-hours hard filter is applied.
+// The optimizer uses wwGenHours ≤ genHrLimit as the binding constraint, which ensures that
+// adding a generator never forces a larger PV array than the battery-only path with the same battery.
 function findOptimumGenerator({ mountOptions, pvSizesKw, batteryOptions, genSizesKw, genInstalledCost,
                                  loadSw, loadAnnual, weather, cell, spinupDoy,
                                  fuelCostPerKwHr, lookaheadDays, npvYears, discountRate,
@@ -1362,13 +1361,12 @@ function findOptimumGenerator({ mountOptions, pvSizesKw, batteryOptions, genSize
         for (const genKw of [...genSizesKw].sort((a, b) => a - b)) {
           const r = dispatchGenerator(solarH, loadSw, bat.kwh, bat.kw, genKw, weather, lookaheadDays, fuelCostPerKwHr);
           if (!r.wwPass) continue;
-          // Emergency limit: generator hours within the worst 10-day window only
-          if (r.wwGenHours > emergencyGenHrLimit) continue;
-          // Normal-year limit: full-year TMY dispatch (typical year, no worst-window event)
+          // Worst-window hard filter: generator hours during the 10-day window ≤ genHrLimit (52 hr)
+          if (r.wwGenHours > genHrLimit) continue;
+          // Annual hours computed for fuel NPV and display — not a hard optimizer filter
           const ann = (annualSolarH && loadAnnual)
             ? countAnnualGenHours(annualSolarH, loadAnnual, bat.kwh, bat.kw, genKw, fuelCostPerKwHr)
             : { annualGenHours: r.simGenHours, annualGenCost: r.annualGenCost };
-          if (ann.annualGenHours > genHrLimit) continue; // exceeds normal-year ordinance limit
           const pvCost    = Math.round(pvKw  * mount.pvCostPerKw);
           const batCost   = Math.round(bat.kwh * bat.costPerKwh);
           const genCap    = genInstalledCost; // fixed installed cost regardless of kW size
@@ -3788,7 +3786,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.82</span>
+        <span style={S.version}>v0.4.83</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto"}}>
           <a href="https://tools.cc-energy.org/index.html"
@@ -3915,7 +3913,7 @@ function App() {
                       &nbsp;Battery-only: <strong>{batMin} kWh</strong>
                       &nbsp;·&nbsp; With {minGen} kW gen: <strong>{batWithGen} kWh</strong>
                     </div>
-                    <div>③ Generator: ≤ {genHrLimit} hr/yr normal · ≤ {emergencyGenHrLimit} hr worst-window</div>
+                    <div>③ Generator: ≤ {genHrLimit} hr worst-window · typical-year hrs shown for reference</div>
                   </div>
                 );
               })()}
@@ -4236,7 +4234,7 @@ function App() {
                     onChange={e => setGenInstalledCost(parseInt(e.target.value) || 0)} />
                 </div>
                 <div style={{ ...S.fieldRow, flex: 1 }}>
-                  <label style={S.label}>Normal-year limit (hrs/yr)</label>
+                  <label style={S.label}>Worst-window limit (hrs)</label>
                   <input style={S.input} type="number" step="4" min="0" value={genHrLimit}
                     onChange={e => setGenHrLimit(parseInt(e.target.value) || 0)} />
                 </div>
@@ -4422,16 +4420,16 @@ function App() {
                                 &nbsp;of {result._genHrLimit} hr limit
                               </div>
                               <div>
-                                {g.annualGenHours <= result._genHrLimit ? "✓" : "⚠"}&nbsp;
-                                <strong>Criterion 2</strong> (typical year):&nbsp;
+                                ℹ️&nbsp;
+                                <strong>Criterion 2</strong> (typical year, reference):&nbsp;
                                 gen runs <strong>{g.annualGenHours} hr/yr</strong>
-                                &nbsp;of {result._genHrLimit} hr/yr limit
+                                &nbsp;(not a hard limit — fuel cost included in NPV)
                               </div>
                               <div>
-                                {(g.wwGenHours ?? 0) <= result._emergencyGenHrLimit ? "✓" : "⚠"}&nbsp;
+                                {(g.wwGenHours ?? 0) <= result._genHrLimit ? "✓" : "⚠"}&nbsp;
                                 <strong>Criterion 3</strong> (worst 10-day window):&nbsp;
                                 gen runs <strong>{g.wwGenHours ?? "—"} hr</strong>
-                                &nbsp;of {result._emergencyGenHrLimit} hr limit
+                                &nbsp;of {result._genHrLimit} hr limit
                               </div>
                               <div style={{ marginTop: "3px", borderTop: "1px solid #ddb", paddingTop: "3px" }}>
                                 Fuel: {fmtCurrency(g.annualFuelCost)}/yr
@@ -4449,8 +4447,8 @@ function App() {
                               onClick={() => {
                                 const ts = new Date().toLocaleString();
                                 const c1Pass = g.criterion1Pass !== false;
-                                const c2Pass = g.annualGenHours <= result._genHrLimit;
-                                const c3Pass = (g.wwGenHours ?? 0) <= result._emergencyGenHrLimit;
+                                const c2Pass = true; // typical-year hours are informational, not a pass/fail criterion
+                                const c3Pass = (g.wwGenHours ?? 0) <= result._genHrLimit;
                                 const lines = [
                                   "CCE Solar Tools — Battery + Generator System Design Report",
                                   `Generated: ${ts}`,
@@ -4471,8 +4469,8 @@ function App() {
                                   "",
                                   "═══ Design Criteria ═══",
                                   `Criterion 1 (3-day critical load): ${c1Pass ? "PASS" : "FAIL"} — gen ${g.criterion1GenHours ?? "—"} hr of ${result._genHrLimit} hr limit`,
-                                  `Criterion 2 (typical year): ${c2Pass ? "PASS" : "FAIL"} — gen ${g.annualGenHours} hr/yr of ${result._genHrLimit} hr/yr limit`,
-                                  `Criterion 3 (worst 10-day window): ${c3Pass ? "PASS" : "FAIL"} — gen ${g.wwGenHours ?? "—"} hr of ${result._emergencyGenHrLimit} hr limit`,
+                                  `Criterion 2 (typical year, reference): gen ${g.annualGenHours} hr/yr (informational — fuel cost captured in NPV)`,
+                                  `Criterion 3 (worst 10-day window): ${c3Pass ? "PASS" : "FAIL"} — gen ${g.wwGenHours ?? "—"} hr of ${result._genHrLimit} hr limit`,
                                 ];
                                 downloadTextReport(`battery_gen_report_${(siteName||"site").replace(/\s+/g,"_")}.txt`, lines.join("\n"));
                               }}>
