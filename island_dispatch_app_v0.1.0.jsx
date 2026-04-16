@@ -1,6 +1,6 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.77
-// Updated: 2026-04-15 16:41 PT
+// Version: v0.4.78
+// Updated: 2026-04-15 17:03 PT
 // Part of: Wipomo / CCE Solar Tools
 
 "use strict";
@@ -566,12 +566,12 @@ function dispatch(solarH, loadH, batKwh, batKw, evScenario, weather, dcfcCostPer
     let excess  = sol - direct;
     let res     = effectiveLd - direct;
 
-    // Surplus: stationary battery first
-    const batChg = Math.min(excess, (batMax - batE) / BATTERY_RTE);
-    batE   += batChg * BATTERY_RTE;
-    excess -= batChg;
-
-    // Surplus: EVs at home — tomorrow-trip EVs first (need charge for tomorrow), then others; lowest SOC first within group
+    // Surplus dispatch — spec: EV battery is FIRST charged.
+    // Three-phase order: (1) EVs up to transport minimum, (2) stationary battery, (3) EVs top-up.
+    // Phase 1 is a small, targeted step: only EVs below their round-trip threshold get priority.
+    // This ensures a commuter returning home on a solar afternoon recovers transport charge before
+    // the battery absorbs all the surplus. On days when EVs are already above threshold, phase 1
+    // is a no-op and battery charges normally.
     const evSolarOrder = [];
     for (let i = 0; i < n; i++) {
       if (evAway[i] || evOnTrip[i]) continue;
@@ -584,6 +584,26 @@ function dispatch(solarH, loadH, batKwh, batKw, evScenario, weather, dcfcCostPer
       if (a.tomorrowTrip !== b.tomorrowTrip) return a.tomorrowTrip ? -1 : 1; // tomorrow-trip EVs first
       return a.soc - b.soc; // lower SOC first within same group
     });
+
+    // Phase 1: EV transport minimum — only fill EVs below roundTripKwh×1.10 (commuters) or evMn (WFH)
+    for (const { i } of evSolarOrder) {
+      if (excess <= 0) break;
+      const tripMin = evs[i].tripsPerWeek > 0
+        ? evs[i].roundTripKwh * 1.10
+        : evMn[i] * 1.5;
+      if (evE[i] >= tripMin) continue;                 // already transport-ready, skip phase 1
+      const head = (tripMin - evE[i]) / CHARGE_RTE;
+      const chg  = Math.min(excess, Math.max(0, head));
+      evE[i] += chg * CHARGE_RTE;
+      excess -= chg;
+    }
+
+    // Phase 2: stationary battery
+    const batChg = Math.min(excess, (batMax - batE) / BATTERY_RTE);
+    batE   += batChg * BATTERY_RTE;
+    excess -= batChg;
+
+    // Phase 3: EVs general top-up to 95%
     for (const { i } of evSolarOrder) {
       if (excess <= 0) break;
       const head = (evs[i].kwh * 0.95 - evE[i]) / CHARGE_RTE;
@@ -592,11 +612,15 @@ function dispatch(solarH, loadH, batKwh, batKw, evScenario, weather, dcfcCostPer
       excess -= chg;
     }
 
-    // Deficit discharge priority:
+    // Deficit discharge — spec: EV battery is LAST drained, stationary battery is FIRST.
+    // Enabling V2G should not degrade EV transport charge relative to a non-V2G EV.
+    // Stationary battery (designed for cycling) covers load first; bidi EVs serve as
+    // a backup layer only when the battery cannot cover the remaining deficit.
+    //
+    // Bidi EV discharge order (when battery is insufficient):
     //   1. WFH bidi EVs (tripsPerWeek===0) — floor = evMn[ci] (ER range)
     //   2. Commuter bidi EVs, no trip tomorrow — floor = evMn[ci]
     //   3. Commuter bidi EVs, trip tomorrow — floor = max(evMn[ci], roundTripKwh)
-    //   4. Stationary battery last
     // Within each group: higher SOC discharges first (most to give).
     const bidiOrder = [];
     for (let ci = 0; ci < n; ci++) {
@@ -614,6 +638,13 @@ function dispatch(solarH, loadH, batKwh, batKw, evScenario, weather, dcfcCostPer
       return b.socRatio - a.socRatio; // higher SOC first within group
     });
 
+    // Stationary battery FIRST
+    const availBat = Math.min(Math.max(0, batE - batMin), batKw);
+    const bd = Math.min(res, availBat);
+    batE -= bd;
+    res  -= bd;
+
+    // Bidi EVs SECOND — only discharge EVs when stationary battery cannot cover remaining deficit
     for (const { ci, floor } of bidiOrder) {
       if (res <= 0) break;
       const avail = Math.max(0, evE[ci] - floor) * V2G_RTE;
@@ -621,12 +652,6 @@ function dispatch(solarH, loadH, batKwh, batKw, evScenario, weather, dcfcCostPer
       evE[ci] -= vd / V2G_RTE;
       res    -= vd;
     }
-
-    // Stationary battery LAST (must preserve capacity for emergency refill trips)
-    const availBat = Math.min(Math.max(0, batE - batMin), batKw);
-    const bd = Math.min(res, availBat);
-    batE -= bd;
-    res  -= bd;
 
     // Bidi EV → EV peer charging at night. Large/WFH bidi EVs with surplus charge depleted
     // EVs before the stationary battery is used. No-trip-tomorrow bidi sources discharge
@@ -3728,7 +3753,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.77</span>
+        <span style={S.version}>v0.4.78</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto"}}>
           <a href="https://tools.cc-energy.org/index.html"
