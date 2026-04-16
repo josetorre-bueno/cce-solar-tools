@@ -28,14 +28,14 @@ Three use cases:
 | MOD-03 | `nsrdb` | **Complete** (data + aggregation script) | `nsrdb_aggregate_v2_1.py`, `nsrdb_daily_summary.json`, `nsrdb_stress_window.json` |
 | MOD-04 | `rate_engine` | **Stage 2 v1.4.0** — residential + commercial SDG&E rates, browser UI | `rate_engine_v1.3.0.js` + `rate_engine_app_v1.4.0.jsx` + `rate_engine.html` |
 | MOD-05 | `bill_modeler` | Partial (removed from MOD-02b v1.9.0, pending standalone) | — |
-| MOD-06 | `island_dispatch` | **Deployed v0.4.68** (browser UI + Python prototype) | `island_dispatch_app_v0.1.0.jsx` + `island_dispatch.html` + `mod06_island_dispatch_v11.py` |
+| MOD-06 | `island_dispatch` | **Deployed v0.4.72** (browser UI + Python prototype) | `island_dispatch_app_v0.1.0.jsx` + `island_dispatch.html` + `mod06_island_dispatch_v11.py` |
 | MOD-06b | `grid_battery_dispatch` | Planned | — |
 | MOD-07 | `ev_simulator` | Not built (commercial fleet) | — |
 | MOD-08 | `financial_model` | Partial (payback/NPV in MOD-10) | — |
 | MOD-09 | `tracker_analyzer` | **Deployed v6.17** | `tracker_tou_app_v6.17.jsx` + `tracker_tou.html` |
 | MOD-10 | `nem3_optimizer` | Partial v3 | `pv_sizing_tool.html` |
 
-**Reference specs exist for:** MOD-02b (`MOD-02b_reference_spec.md`), MOD-06 (`MOD-06_island_dispatch_reference_spec_v0.4.68.md`), MOD-09 (`MOD-09_tracker_analyzer_reference_spec.md`)
+**Reference specs exist for:** MOD-02b (`MOD-02b_reference_spec.md`), MOD-06 (`MOD-06_island_dispatch_reference_spec_v0.4.68.md` — spec at v0.4.68, tool now at v0.4.71), MOD-09 (`MOD-09_tracker_analyzer_reference_spec.md`)
 **Reference specs pending:** MOD-03, MOD-04
 
 ---
@@ -88,44 +88,58 @@ Each browser tool = thin HTML wrapper + versioned JSX module. Both files must be
 - The wrapper's `<script src>` tag must reference the current JSX version
 
 ### Version numbering rule
-Every edit that changes behavior or output must increment **at least the minor version** (e.g. v6.16 → v6.17). Always use full **major.minor.patch** format — never abbreviate (e.g. always `v1.4.0`, never `v1.4`).
+**Every edit to any file, no matter how small (including comments, whitespace, and single-character fixes), must:**
+1. Increment the minor version (e.g. v0.4.70 → v0.4.71)
+2. Update the `// Updated:` timestamp to the current date and time in `YYYY-MM-DD HH:MM PT` format
+
+This is non-negotiable. A file that was edited but whose version or timestamp did not change cannot be distinguished from the copy already on GitHub. Tracking which version is deployed becomes impossible.
+
+Always use full **major.minor.patch** format — never abbreviate (e.g. always `v1.4.0`, never `v1.4`).
 
 The version number must appear **identically** in all of the following locations — if any one is missing, stale, or uses an abbreviated format, the file is not correctly versioned:
 
 **For the JSX/JS computation module:**
 1. **Filename** — e.g. `rate_engine_app_v1.4.0.jsx`
 2. **File header comment line 2** — `// Version: v1.4.0`
-3. **On-screen UI** — visible in the top bar at all times (e.g. subtitle line under the tool title)
-4. **Every output file** — all CSVs, XMLs, and any other generated file must carry the version in a header comment or metadata field
+3. **File header comment line 3** — `// Updated: YYYY-MM-DD HH:MM PT`
+4. **On-screen UI display string** — hardcoded version literal visible in the top bar (e.g. `<span style={S.version}>v0.4.71</span>`). This is a **separate literal** from the header comment — both must be updated. Missing this is the most common versioning mistake.
+5. **Every output file** — all CSVs, XMLs, and any other generated file must carry the version in a header comment or metadata field
 
 **For the HTML wrapper:**
-5. **`<!-- Version: vX.Y.Z -->` comment** — line 3 of the wrapper (must match JSX version exactly)
-6. **`<title>` tag** — e.g. `Rate Engine v1.4.0 — CCE / Makello`
-7. **`<script src>` tag** — filename and `?v=` cache-bust parameter must both match, e.g. `src="rate_engine_app_v1.4.0.jsx?v=1.4.0"`
+6. **`<!-- Version: vX.Y.Z -->` comment** — line 3 of the wrapper (must match JSX version exactly)
+7. **`<!-- Updated: YYYY-MM-DD HH:MM PT -->` comment** — line 4 of the wrapper
+8. **`<title>` tag** — e.g. `Rate Engine v1.4.0 — CCE / Makello`
+9. **`<script src>` tag** — filename and `?v=` cache-bust parameter must both match, e.g. `src="rate_engine_app_v1.4.0.jsx?v=1.4.0"`
 
 When bumping a version:
 - Rename the JSX file (e.g. `rate_engine_app_v1.4.0.jsx` → `rate_engine_app_v1.5.0.jsx`)
 - Update the HTML wrapper `<script src>` filename and `?v=` parameter
-- Update the HTML wrapper `<!-- Version: -->` comment
+- Update the HTML wrapper `<!-- Version: -->` comment and `<!-- Updated: -->` comment
 - Update the HTML `<title>` tag
-- Update the on-screen UI version string inside the JSX
-- Update the JSX file header comment line 2
+- Update the **on-screen UI version string** inside the JSX (the hardcoded literal, not just the header comment)
+- Update the JSX file header comment lines 2 and 3 (Version + Updated)
 - Search both files for all occurrences of the old version string and update every one
 
 ### Required file header (every source file)
+Every file must include a timestamp on the line after the version. This makes it unambiguous which version is deployed on GitHub vs. what is local — the timestamp is the ground truth.
+
 JSX/JS modules (`.jsx` for React UI, `.js` for Stage 1 pure-computation):
 ```
 // MOD-{XX} {canonical_name} — module
 // Version: v{X.Y.Z}
+// Updated: YYYY-MM-DD HH:MM PT
 // Part of: Wipomo / CCE Solar Tools
 ```
 HTML wrappers:
 ```html
 <!-- MOD-{XX} {canonical_name} — wrapper -->
 <!-- Version: v{X.Y.Z} -->
+<!-- Updated: YYYY-MM-DD HH:MM PT -->
 <!-- Module file: {jsx_filename} -->
 <!-- Part of: Wipomo / CCE Solar Tools -->
 ```
+
+Use Pacific Time (PT). Format exactly as shown — `YYYY-MM-DD HH:MM PT`.
 
 **File extension convention:** Stage 1 pure-computation modules with no React dependency use `.js`. Modules with React UI use `.jsx`. Both are loaded identically via `<script>` tags.
 
@@ -219,7 +233,7 @@ This is required SOP — never omit it when files have been written or modified.
 5. **MOD-06b grid_battery_dispatch** — planned; complement to MOD-06 for grid-tied battery dispatch
 
 *MOD-04 rate_engine (v1.4.0) — Stage 2 complete. API: `computeNetIntervals()`, `computeBill()`, `computeSavings()`, `listRates()`, `selfTest()`. SDG&E residential rates (TOU-DR1, EV-TOU-5, DR-SES, DR) + CARE variants + commercial rates (TOU-A, AL-TOU, AL-TOU-2). Some commercial demand charges approximate (⚠-flagged in source). Reference spec pending.*
-*MOD-06 browser UI (v0.4.68) — COMPLETE. Features: haversine nearest-cell lookup, 1,680-hour stress window dispatch, EV impact analysis, report generation, Title 24 compliance checks, optional generator dispatch.*
+*MOD-06 browser UI (v0.4.72) — COMPLETE. Features: haversine nearest-cell lookup, 1,680-hour stress window dispatch, EV impact analysis, report generation, Title 24 compliance checks, optional generator dispatch. v0.4.72 fixes prio-0/1 battery→EV charging to use conservative trip-sized targets (not 90%) and adds road trip destination L2 charging, preventing battery depletion in multi-EV worst-window scenarios.*
 
 ---
 
@@ -254,6 +268,8 @@ More subdirectories will be added as the project grows (e.g. rate documents by u
 NSRDB raw hourly CSVs (~270 MB) are local machine only — too large for GitHub or Claude project knowledge and not needed at runtime.
 
 `nsrdb_stress_window.json` (16.5 MB) **is deployed to GitHub** alongside `island_dispatch.html` — MOD-06 fetches it at runtime and cannot function without it. It is too large for Claude project knowledge but is within GitHub's 25 MB web-upload limit. Do not treat it as local-only.
+
+`pvwatts_config.json` **must be deployed to GitHub** — MOD-06 and MOD-09 fetch it at startup to load the NREL API key. Without it, tools fall back to localStorage and show "key not set." ⚠️ This file contains the API key in plain text. JavaScript-based auth (auth.js) does not protect static files from direct URL access — the key is technically readable at `tools.cc-energy.org/pvwatts_config.json` without a password. Risk is low (NREL keys are free, rate-limited, easy to rotate) but the limitation is known.
 
 ---
 

@@ -1,6 +1,6 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.71
-// Updated: 2026-04-14 22:30 PT
+// Version: v0.4.72
+// Updated: 2026-04-15 12:00 PT
 // Part of: Wipomo / CCE Solar Tools
 
 "use strict";
@@ -425,13 +425,17 @@ function dispatch(solarH, loadH, batKwh, batKw, evScenario, weather, dcfcCostPer
         evAway[i]   = true;
       }
       // Road trip return hr===20
-      // EV has been at destination all day (may have charged at L2 or via DCFC on return leg).
-      // Model: check if the EV can drive home on current charge; if not, add a DCFC stop.
+      // EV has been at destination all day. Model: destination L2 charging brings EV to 80%
+      // (hotel, family, destination charger — normal road-trip behavior; no home energy cost).
+      // If EV already has more than 80%, keep its natural level.
+      // After destination charge, check if it can drive home; if not, add a DCFC stop.
       // If even charging to 80% doesn't cover the one-way return + emergency reserve, flag
       // this configuration as infeasible (trip too long for the battery).
       if (hr === 20 && evOnTrip[i]) {
         const rtOneWayKwh = ev.tripMiles / ev.efficiency;
         const rtDcfcTarget = ev.kwh * 0.80;
+        // Destination L2 top-up (external energy, no home battery cost)
+        evE[i] = Math.max(evE[i], rtDcfcTarget);
         if (evE[i] >= rtOneWayKwh + evMn[i]) {
           // Enough charge — drive home without DCFC
           evE[i] -= rtOneWayKwh;
@@ -664,10 +668,13 @@ function dispatch(solarH, loadH, batKwh, batKw, evScenario, weather, dcfcCostPer
     // Priority 1 = tomorrow IS a trip day AND below tripCheckKwh (pre-departure minimum)
     // Priority 2 = below 90% target (general top-up — only when battery > 70% capacity)
     //
-    // The 70% reserve guard on prio-2 prevents the stationary battery from being drained
-    // to minimum in a single hour just to top up EVs to 90%. Prio-0/1 are urgent needs
-    // and are not reserve-gated. Solar surplus handles top-up above 90% via evSolarOrder.
+    // IMPORTANT: Prio-0 and prio-1 charge to a CONSERVATIVE target, not 90%.
+    // Charging a fleet of 3 EVs to 90% from battery overnight (~70 kWh per EV) would
+    // deplete even a large stationary battery, leaving home load unserved in the worst window.
+    // Prio-0/1 target = max(evMn×1.5, roundTripKwh×1.10): enough to exit emergency state and
+    // make tomorrow's trip. Solar surplus (free energy) handles top-up to 95% via evSolarOrder.
     //
+    // Prio-2 keeps the 90% target but is gated by the 70% battery reserve.
     // DAYTIME RESTRICTION (sol > 0.5 kW): skip priority 1 and 2 (solar surplus handles them).
     const evChargeOrder = [];
     for (let ci = 0; ci < n; ci++) {
@@ -688,7 +695,11 @@ function dispatch(solarH, loadH, batKwh, batKw, evScenario, weather, dcfcCostPer
       // → commuter bidi) handles their regular top-up, and V2H ensures stationary battery is
       // preserved. Only prio-0 (below erMinKwh emergency) can pull from the stationary battery.
       if (prio >= 1 && evs[ci].canV2G) continue;
-      const evTarget = evs[ci].kwh * 0.90;
+      // Prio-0/1: conservative target to avoid draining stationary battery overnight.
+      // Prio-2: full 90% target, gated by 70% battery reserve below.
+      const evTarget = (prio <= 1)
+        ? Math.max(evMn[ci] * 1.5, evs[ci].roundTripKwh * 1.10)
+        : evs[ci].kwh * 0.90;
       const evNeed   = Math.max(0, evTarget - evE[ci]) / CHARGE_RTE;
       // Prio-2 top-up: only use battery capacity above 70% to avoid single-hour drain to minimum
       const batReserve = prio === 2 ? Math.max(batMin, batMax * 0.70) : batMin;
@@ -3654,7 +3665,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.71</span>
+        <span style={S.version}>v0.4.72</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto"}}>
           <a href="https://tools.cc-energy.org/index.html"
