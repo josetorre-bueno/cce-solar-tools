@@ -28,14 +28,14 @@ Three use cases:
 | MOD-03 | `nsrdb` | **Complete** (data + aggregation script) | `nsrdb_aggregate_v2_1.py`, `nsrdb_daily_summary.json`, `nsrdb_stress_window.json` |
 | MOD-04 | `rate_engine` | **Stage 2 v1.4.0** — residential + commercial SDG&E rates, browser UI | `rate_engine_v1.3.0.js` + `rate_engine_app_v1.4.0.jsx` + `rate_engine.html` |
 | MOD-05 | `bill_modeler` | Partial (removed from MOD-02b v1.9.0, pending standalone) | — |
-| MOD-06 | `island_dispatch` | **Deployed v0.4.75** (browser UI + Python prototype) | `island_dispatch_app_v0.1.0.jsx` + `island_dispatch.html` + `mod06_island_dispatch_v11.py` |
+| MOD-06 | `island_dispatch` | **Deployed v0.4.76** (browser UI + Python prototype) | `island_dispatch_app_v0.1.0.jsx` + `island_dispatch.html` + `mod06_island_dispatch_v11.py` |
 | MOD-06b | `grid_battery_dispatch` | Planned | — |
 | MOD-07 | `ev_simulator` | Not built (commercial fleet) | — |
 | MOD-08 | `financial_model` | Partial (payback/NPV in MOD-10) | — |
 | MOD-09 | `tracker_analyzer` | **Deployed v6.17** | `tracker_tou_app_v6.17.jsx` + `tracker_tou.html` |
 | MOD-10 | `nem3_optimizer` | Partial v3 | `pv_sizing_tool.html` |
 
-**Reference specs exist for:** MOD-02b (`MOD-02b_reference_spec.md`), MOD-06 (`MOD-06_island_dispatch_reference_spec_v0.4.68.md` — spec at v0.4.68, tool now at v0.4.75), MOD-09 (`MOD-09_tracker_analyzer_reference_spec.md`)
+**Reference specs exist for:** MOD-02b (`MOD-02b_reference_spec.md`), MOD-06 (`MOD-06_island_dispatch_reference_spec_v0.4.68.md` — spec at v0.4.68, tool now at v0.4.76), MOD-09 (`MOD-09_tracker_analyzer_reference_spec.md`)
 **Reference specs pending:** MOD-03, MOD-04
 
 ---
@@ -235,6 +235,7 @@ This is required SOP — never omit it when files have been written or modified.
 *MOD-04 rate_engine (v1.4.0) — Stage 2 complete. API: `computeNetIntervals()`, `computeBill()`, `computeSavings()`, `listRates()`, `selfTest()`. SDG&E residential rates (TOU-DR1, EV-TOU-5, DR-SES, DR) + CARE variants + commercial rates (TOU-A, AL-TOU, AL-TOU-2). Some commercial demand charges approximate (⚠-flagged in source). Reference spec pending.*
 *MOD-06 browser UI (v0.4.72) — COMPLETE. Features: haversine nearest-cell lookup, 1,680-hour stress window dispatch, EV impact analysis, report generation, Title 24 compliance checks, optional generator dispatch. v0.4.72 fixes prio-0/1 battery→EV charging to use conservative trip-sized targets (not 90%) and adds road trip destination L2 charging, preventing battery depletion in multi-EV worst-window scenarios.*
 *MOD-06 browser UI (v0.4.75) — Fixes emergency DCFC over-counting caused by prio-2 battery→EV charging at night after road trip days. Prio-2 (general top-up) is now restricted to solar-surplus hours only; nighttime battery→EV is prio-0/1 only. Also adds diagnostic breakdown in no-solution error message (worst-window pass count, en-route/emergency DCFC best values vs limits).*
+*MOD-06 browser UI (v0.4.76) — Adds per-category emergency DCFC breakdown in no-solution diagnostic: road-trip infeasible, commute-return chargeToday, home-based EV — each shown as raw sim count and annualized, with ×annualScale shown. Tracks three sub-counters in dispatch() and aggregates in findOptimum() from the best-emergency config.*
 
 ---
 

@@ -1,6 +1,6 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.75
-// Updated: 2026-04-15 15:47 PT
+// Version: v0.4.76
+// Updated: 2026-04-15 16:22 PT
 // Part of: Wipomo / CCE Solar Tools
 
 "use strict";
@@ -271,6 +271,10 @@ function dispatch(solarH, loadH, batKwh, batKw, evScenario, weather, dcfcCostPer
   let emergencyDcfcKwh  = 0.0;  // everything else: weekends, WFH, home_only (unplanned)
   let emergencyDcfcCount = 0;
   let wwEmergencyDcfcCount = 0;
+  // Emergency sub-categories for diagnostics
+  let emergencyRoadTripInfeasible = 0; // road trip > 80% range (line ~454)
+  let emergencyCommuteReturn = 0;      // chargeToday triggered, no dcfcPlanned (line ~510)
+  let emergencyHomeBased = 0;          // tripsPerWeek===0 EV at hr=18 (line ~531)
   let workChargeCostTotal = 0.0; // l2_paid: cumulative cost of charging at work
   let wwLoad           = 0.0;
   let wwUns            = 0.0;
@@ -461,6 +465,7 @@ function dispatch(solarH, loadH, batKwh, batKw, evScenario, weather, dcfcCostPer
             if (inWw) { wwDcfcKwh += added / CHARGE_RTE; wwDcfcCount += 1; }
             emergencyDcfcKwh   += added / CHARGE_RTE;
             emergencyDcfcCount += 1;
+            emergencyRoadTripInfeasible += 1;
             if (inWw) wwEmergencyDcfcCount += 1;
           }
           evE[i] = Math.max(evE[i] + added - rtOneWayKwh, 0);
@@ -516,6 +521,7 @@ function dispatch(solarH, loadH, batKwh, batKw, evScenario, weather, dcfcCostPer
                 if (inWw) { wwDcfcKwh += added / CHARGE_RTE; wwDcfcCount += 1; }
                 emergencyDcfcKwh   += added / CHARGE_RTE;
                 emergencyDcfcCount += 1;
+                emergencyCommuteReturn += 1;
                 if (inWw) wwEmergencyDcfcCount += 1;
                 evE[i] = ev.kwh * 0.90;
               }
@@ -537,6 +543,7 @@ function dispatch(solarH, loadH, batKwh, batKw, evScenario, weather, dcfcCostPer
           if (inWw) { wwDcfcKwh += added / CHARGE_RTE; wwDcfcCount += 1; }
           emergencyDcfcKwh   += added / CHARGE_RTE;
           emergencyDcfcCount += 1;
+          emergencyHomeBased += 1;
           if (inWw) wwEmergencyDcfcCount += 1;
           evE[i]         = ev.kwh * 0.90;
           chargeToday[i] = false;
@@ -776,6 +783,10 @@ function dispatch(solarH, loadH, batKwh, batKw, evScenario, weather, dcfcCostPer
     annualEmergencyDcfcCost:  Math.round(emergencyDcfcKwh    * dcfcCostPerKwh * annualScale * 100) / 100,
     simEmergencyDcfcTrips:    emergencyDcfcCount,
     wwEmergencyDcfcTrips:     wwEmergencyDcfcCount,
+    // Emergency sub-category raw counts (sim window, not annualized)
+    simEmergencyRoadTripInfeasible: emergencyRoadTripInfeasible,
+    simEmergencyCommuteReturn:      emergencyCommuteReturn,
+    simEmergencyHomeBased:          emergencyHomeBased,
     annualWorkChargeCost:     Math.round(workChargeCostTotal * annualScale * 100) / 100,
   };
   if (returnTrace) result.trace = traceRows;
@@ -856,6 +867,10 @@ function findOptimum(params) {
         const nonWwEmergencySim   = r.simEmergencyDcfcTrips - (r.wwEmergencyDcfcTrips || 0);
         const nonWwEnrouteAnnual  = Math.round(nonWwEnrouteSim   * annualScale);
         const nonWwEmergencyAnnual= Math.round(nonWwEmergencySim * annualScale);
+        // Emergency sub-categories (spinup only — raw sim counts)
+        const simNonWwRoadTripInfeasible = r.simEmergencyRoadTripInfeasible || 0;
+        const simNonWwCommuteReturn      = r.simEmergencyCommuteReturn      || 0;
+        const simNonWwHomeBased          = r.simEmergencyHomeBased          || 0;
 
         allResults.push({
           mountLabel:                  mount.label,
@@ -877,6 +892,9 @@ function findOptimum(params) {
           annualEmergencyDcfcTrips:    r.annualEmergencyDcfcTrips,
           annualEmergencyDcfcCost:     r.annualEmergencyDcfcCost,
           annualWorkChargeCost:        r.annualWorkChargeCost,
+          simNonWwRoadTripInfeasible,
+          simNonWwCommuteReturn,
+          simNonWwHomeBased,
           pvCost,
           batteryCost:                 batCost,
           evseCost:                    eCost,
@@ -909,6 +927,16 @@ function findOptimum(params) {
   const bestEmergency  = allResults.filter(r => r.wwPass).reduce((best, r) => Math.min(best, r.nonWwAnnualEmergencyDcfc), Infinity);
   const diagBestEnroute   = isFinite(bestEnroute)  ? bestEnroute  : null;
   const diagBestEmergency = isFinite(bestEmergency) ? bestEmergency : null;
+  // Sub-category breakdown from the config that achieves bestEmergency
+  const bestEmergencyConfig = isFinite(bestEmergency)
+    ? allResults.filter(r => r.wwPass).find(r => r.nonWwAnnualEmergencyDcfc === bestEmergency)
+    : null;
+  const diagEmergencyBreakdown = bestEmergencyConfig ? {
+    roadTripInfeasible: bestEmergencyConfig.simNonWwRoadTripInfeasible,
+    commuteReturn:      bestEmergencyConfig.simNonWwCommuteReturn,
+    homeBased:          bestEmergencyConfig.simNonWwHomeBased,
+    annualScale:        Math.round(annualScale * 100) / 100,
+  } : null;
 
   return {
     cellKey,
@@ -932,6 +960,7 @@ function findOptimum(params) {
     bestWwPct:          Math.round(bestWwPct * 10) / 10,
     diagBestEnroute,
     diagBestEmergency,
+    diagEmergencyBreakdown,
     optimum,
     allPassing:         [...passing].sort((a, b) => a.totalCost - b.totalCost),
     sweep:              allResults,
@@ -2355,6 +2384,7 @@ function App() {
         bestWwPct:         evOptResult.bestWwPct,
         diagBestEnroute:   evOptResult.diagBestEnroute,
         diagBestEmergency: evOptResult.diagBestEmergency,
+        diagEmergencyBreakdown: evOptResult.diagEmergencyBreakdown ?? null,
         noEvOpt,
         evOpt,
         pathLabel,
@@ -3695,7 +3725,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.75</span>
+        <span style={S.version}>v0.4.76</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto"}}>
           <a href="https://tools.cc-energy.org/index.html"
@@ -4636,9 +4666,22 @@ function App() {
                                 `(best annual en-route: ${imp.diagBestEnroute ?? "?"} vs limit ${imp.effectiveEnrouteLimit ?? imp.fleetEnrouteLimit}). ` +
                                 "Increase the 'En-route DCFC/yr (fleet max)' setting.";
                             } else if (nFull < nEnr) {
+                              const bd = imp.diagEmergencyBreakdown;
+                              const scale = bd?.annualScale ?? 5.21;
+                              let bdDetail = "";
+                              if (bd) {
+                                const rtRaw  = bd.roadTripInfeasible;
+                                const cmRaw  = bd.commuteReturn;
+                                const hbRaw  = bd.homeBased;
+                                const parts = [];
+                                if (rtRaw > 0)  parts.push(`road-trip infeasible: ${rtRaw} raw (${Math.round(rtRaw*scale)}/yr)`);
+                                if (cmRaw > 0)  parts.push(`commute-return chargeToday: ${cmRaw} raw (${Math.round(cmRaw*scale)}/yr)`);
+                                if (hbRaw > 0)  parts.push(`home-based EV: ${hbRaw} raw (${Math.round(hbRaw*scale)}/yr)`);
+                                if (parts.length) bdDetail = " — breakdown: " + parts.join(", ") + ` (annualScale ×${scale})`;
+                              }
                               reason = `${nEnr} configurations pass en-route DCFC but ${nEnr - nFull} fail the emergency DCFC limit ` +
-                                `(best annual emergency: ${imp.diagBestEmergency ?? "?"} vs limit ${imp.effectiveEmergencyLimit ?? imp.maxEmergencyDcfc}). ` +
-                                "Increase the 'Emergency DCFC/yr' setting.";
+                                `(best annual emergency: ${imp.diagBestEmergency ?? "?"} vs limit ${imp.effectiveEmergencyLimit ?? imp.maxEmergencyDcfc}${bdDetail}). ` +
+                                "Increase the 'Emergency DCFC/yr' setting, or see breakdown above to address root cause.";
                             } else {
                               reason = `${nTot} total configurations evaluated; none passed all filters.`;
                             }
