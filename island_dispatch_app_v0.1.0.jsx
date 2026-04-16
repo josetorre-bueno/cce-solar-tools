@@ -1,6 +1,6 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.74
-// Updated: 2026-04-15 13:00 PT
+// Version: v0.4.75
+// Updated: 2026-04-15 15:47 PT
 // Part of: Wipomo / CCE Solar Tools
 
 "use strict";
@@ -690,7 +690,8 @@ function dispatch(solarH, loadH, batKwh, batKw, evScenario, weather, dcfcCostPer
     evChargeOrder.sort((a, b) => a.prio !== b.prio ? a.prio - b.prio : a.soc - b.soc);
 
     for (const { ci, prio } of evChargeOrder) {
-      if (sol > 0.5 && prio > 0) continue; // daytime: only emergency from battery
+      if (sol > 0.5 && prio > 0) continue;  // daytime: prio-1/2 skipped — solar surplus handles
+      if (sol <= 0.5 && prio >= 2) continue; // nighttime: prio-2 skipped — solar surplus only
       // Bidi EVs are excluded from prio-1 and prio-2 battery charging: peer charging (WFH bidi
       // → commuter bidi) handles their regular top-up, and V2H ensures stationary battery is
       // preserved. Only prio-0 (below erMinKwh emergency) can pull from the stationary battery.
@@ -3694,7 +3695,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.74</span>
+        <span style={S.version}>v0.4.75</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto"}}>
           <a href="https://tools.cc-energy.org/index.html"
