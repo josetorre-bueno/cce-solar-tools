@@ -1,5 +1,5 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.95
+// Version: v0.4.96
 // Updated: 2026-04-16 PT
 // Part of: Wipomo / CCE Solar Tools
 
@@ -1288,7 +1288,14 @@ function dispatchGenerator(solarH, loadH, batKwh, batKw, genKw, weather, lookahe
 // annual hours and forcing the optimizer to require more PV than the battery-only path — wrong.
 // Using floor-only here means typical-year hours stay near zero, the 52 hr/yr ordinance limit
 // passes easily, and battery+generator always needs ≤ the same PV as battery-only.
-function countAnnualGenHours(solarH, loadH, batKwh, batKw, genKw, fuelCostPerKwHr) {
+// wwStartH: first hour index (0-based, in the 8760 TMY array) of the worst-window period.
+// wwLenH:   length of that period in hours (typically 10 × 24 = 240).
+// Generator hours during the worst window are treated as emergency operation — they are
+// excluded from the 52 hr/yr ordinance count (annualGenHours) but still accumulate in
+// genHoursTotal so that fuel cost (which is real money spent) is calculated correctly.
+// Pass wwStartH = -1 (default) to count all hours (backward-compatible).
+function countAnnualGenHours(solarH, loadH, batKwh, batKw, genKw, fuelCostPerKwHr,
+                             wwStartH = -1, wwLenH = 0) {
   const N = solarH.length;
   const batMin = batKwh * BATTERY_MIN_SOC;
   const batMax = batKwh;
@@ -1302,7 +1309,8 @@ function countAnnualGenHours(solarH, loadH, batKwh, batKw, genKw, fuelCostPerKwH
   // correct initial condition for a well-operated off-grid system.
   let batE = batKwh;
   let genRunning = false;
-  let genHours = 0;
+  let genHoursTotal = 0;  // all hours — for fuel cost
+  let genHoursNonWw = 0;  // hours outside worst window — for 52 hr/yr ordinance check
 
   for (let h = 0; h < N; h++) {
     const sol = solarH[h];
@@ -1319,7 +1327,18 @@ function countAnnualGenHours(solarH, loadH, batKwh, batKw, genKw, fuelCostPerKwH
     if (!genRunning && batE <= batMax * BATTERY_MIN_SOC && sol < ld) genRunning = true;
 
     const genOut = genRunning ? genKw : 0;
-    if (genRunning) genHours++;
+    if (genRunning) {
+      genHoursTotal++;
+      // Determine whether this hour falls inside the worst window.
+      // wwStartH < 0 means no mask provided — count all hours.
+      // Handles year-wrap (e.g. worst window spans Dec → Jan).
+      const inWw = wwStartH >= 0 && wwLenH > 0 && (
+        wwStartH + wwLenH <= N
+          ? (h >= wwStartH && h < wwStartH + wwLenH)
+          : (h >= wwStartH || h < (wwStartH + wwLenH) - N)
+      );
+      if (!inWw) genHoursNonWw++;
+    }
 
     const totalSupply = sol + genOut;
     const direct = Math.min(totalSupply, ld);
@@ -1336,20 +1355,23 @@ function countAnnualGenHours(solarH, loadH, batKwh, batKw, genKw, fuelCostPerKwH
   }
 
   return {
-    annualGenHours: genHours,
-    annualGenCost:  Math.round(genHours * fuelCostPerKwHr * genKw),
+    annualGenHours: genHoursNonWw,                                    // ordinance-countable hours (outside worst window)
+    annualGenCost:  Math.round(genHoursTotal * fuelCostPerKwHr * genKw), // fuel cost on ALL hours (real expenditure)
   };
 }
 
 // annualSolarH and annualLoadH are the full 8760-h arrays; when provided,
 // annual gen hours and fuel cost are derived from the full-year sim rather
 // than the stress-window sim.
+// wwStartH, wwLenH: passed through to countAnnualGenHours so worst-window hours are
+// excluded from the 52 hr/yr ordinance count.  Default -1/0 = no mask (count all).
 function sweepGenerators(solarH, loadH, batKwh, batKw, weather, genSizesKw, fuelCostPerKwHr, lookaheadDays,
-                         annualSolarH, annualLoadH) {
+                         annualSolarH, annualLoadH, wwStartH = -1, wwLenH = 0) {
   const results = genSizesKw.map(genKw => {
     const r = dispatchGenerator(solarH, loadH, batKwh, batKw, genKw, weather, lookaheadDays, fuelCostPerKwHr);
     if (annualSolarH && annualLoadH) {
-      const ann = countAnnualGenHours(annualSolarH, annualLoadH, batKwh, batKw, genKw, fuelCostPerKwHr);
+      const ann = countAnnualGenHours(annualSolarH, annualLoadH, batKwh, batKw, genKw, fuelCostPerKwHr,
+                                      wwStartH, wwLenH);
       r.annualGenHours = ann.annualGenHours;
       r.annualGenCost  = ann.annualGenCost;
     }
@@ -1373,7 +1395,9 @@ function sweepGenerators(solarH, loadH, batKwh, batKw, weather, genSizesKw, fuel
 // emergencyGenHrLimit = max generator hours during the worst 10-day EMERGENCY window — default 200 hrs
 // The two limits are checked independently:
 //   wwGenHours (worst 10-day window) must be ≤ emergencyGenHrLimit  (permissive — emergency use OK)
-//   annualGenHours (full TMY sim)    must be ≤ genHrLimit           (restrictive — ordinance limit)
+//   annualGenHours (full TMY sim, NON-worst-window hours only) must be ≤ genHrLimit (ordinance limit)
+// Generator hours during the worst window are exempt from the ordinance limit (emergency operation).
+// Criterion 1 (3-day no-solar test) is also an emergency scenario — compared against emergencyGenHrLimit.
 function findOptimumGenerator({ mountOptions, pvSizesKw, batteryOptions, genSizesKw, genInstalledCost,
                                  loadSw, loadAnnual, weather, cell, spinupDoy,
                                  fuelCostPerKwHr, lookaheadDays, npvYears, discountRate,
@@ -1383,6 +1407,11 @@ function findOptimumGenerator({ mountOptions, pvSizesKw, batteryOptions, genSize
   const npvFactor = discountRate > 0
     ? (1.0 - Math.pow(1.0 + discountRate, -npvYears)) / discountRate
     : npvYears;
+  // Worst-window start hour in the TMY 8760-h array.
+  // The spinup starts at DOY spinupDoy; the worst window begins spinup_days later.
+  // These hours are exempt from the 52 hr/yr ordinance limit in countAnnualGenHours.
+  const wwStartH8760 = ((spinupDoy - 1) + (cell.spinup_days || 0)) * 24 % 8760;
+  const wwLenH8760   = (cell.window_days || 10) * 24;  // typically 240 h (10 days)
   let best = null, bestTrace = null;
   for (const mount of mountOptions) {
     const solarSw = extractWindow(mount.solarNormalized, spinupDoy, cell.n_hours);
@@ -1408,10 +1437,12 @@ function findOptimumGenerator({ mountOptions, pvSizesKw, batteryOptions, genSize
           // Annual gen hours — Criterion 2 hard filter.
           // If battery-only already passes the stress window, the generator never fires in a typical
           // year → annual hours = 0.  Otherwise, run the full TMY simulation.
+          // Hours during the worst window are excluded from the ordinance count (emergency exemption).
           const ann = batAlreadyPasses
             ? { annualGenHours: 0, annualGenCost: 0 }
             : (annualSolarH && loadAnnual)
-              ? countAnnualGenHours(annualSolarH, loadAnnual, bat.kwh, bat.kw, genKw, fuelCostPerKwHr)
+              ? countAnnualGenHours(annualSolarH, loadAnnual, bat.kwh, bat.kw, genKw, fuelCostPerKwHr,
+                                    wwStartH8760, wwLenH8760)
               : { annualGenHours: r.simGenHours, annualGenCost: r.annualGenCost };
           if (ann.annualGenHours > genHrLimit) continue;
           const pvCost    = Math.round(pvKw  * mount.pvCostPerKw);
@@ -1427,7 +1458,9 @@ function findOptimumGenerator({ mountOptions, pvSizesKw, batteryOptions, genSize
               genKw, wwGenHours: r.wwGenHours,
               annualGenHours: ann.annualGenHours, annualFuelCost: ann.annualGenCost,
               criterion1GenHours: Math.round(c1hrs * 10) / 10,  // hrs needed for 3-day critical load test
-              criterion1Pass: c1hrs <= genHrLimit,
+              // Criterion 1 is a no-solar emergency test — compared against the emergency limit,
+              // not the 52 hr/yr ordinance limit (which applies only to normal-year operation).
+              criterion1Pass: c1hrs <= emergencyGenHrLimit,
               pvCost, batCost, genCap, fuelNpv, totalCost,
             };
             bestTrace = r.trace;
@@ -2514,10 +2547,13 @@ function App() {
         const solarH       = solarSw.map(x => x * codePvKw);
         const annualSolarH = mount.solarNormalized.map(x => x * codePvKw);
 
+        // Compute worst-window start in the TMY 8760-h array for the emergency-hours exemption.
+        const _wwStartH = ((result.spinupStartDoy - 1) + (result._cell.spinup_days || 0)) * 24 % 8760;
+        const _wwLenH   = (result._cell.window_days || 10) * 24;
         const sweep = sweepGenerators(
           solarH, result._loadSw, codeBat.kwh, codeBat.kw, result._weather,
           genSizes, fuelCostPerHour, genLookaheadDays,
-          annualSolarH, loadHourly
+          annualSolarH, loadHourly, _wwStartH, _wwLenH
         );
 
         const resultsWithLimit = sweep.results.map(r => ({
@@ -2721,7 +2757,10 @@ function App() {
           // Annual arrays for full-year gen hours estimation
           const annualSolarH = optMount.solarNormalized.map(x => x * opt.pvKw);
 
-          const genSweep1 = sweepGenerators(solarH, noEvLoad, optBat.kwh, optBat.kw, res._weather, genSizes, fuelCostPerHour, genLookaheadDays, annualSolarH, loadHourly);
+          // Worst-window start in the TMY 8760-h array — for the emergency-hours exemption.
+          const _wwStartH1 = ((res.spinupStartDoy - 1) + (res._cell.spinup_days || 0)) * 24 % 8760;
+          const _wwLenH1   = (res._cell.window_days || 10) * 24;
+          const genSweep1 = sweepGenerators(solarH, noEvLoad, optBat.kwh, optBat.kw, res._weather, genSizes, fuelCostPerHour, genLookaheadDays, annualSolarH, loadHourly, _wwStartH1, _wwLenH1);
           res._genSweep1 = genSweep1;
 
 
@@ -3924,7 +3963,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.95</span>
+        <span style={S.version}>v0.4.96</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto"}}>
           <a href="https://tools.cc-energy.org/index.html"
@@ -4569,11 +4608,11 @@ function App() {
                                 {g.criterion1Pass !== false ? "✓" : "⚠"}&nbsp;
                                 <strong>Criterion 1</strong> (3-day critical load, no solar):&nbsp;
                                 gen runs <strong>{g.criterion1GenHours ?? "—"} hr</strong>
-                                &nbsp;of {result._genHrLimit} hr limit
+                                &nbsp;of {result._emergencyGenHrLimit} hr emergency limit
                               </div>
                               <div>
                                 {g.annualGenHours <= result._genHrLimit ? "✓" : "⚠"}&nbsp;
-                                <strong>Criterion 2</strong> (typical year):&nbsp;
+                                <strong>Criterion 2</strong> (typical year, excl. worst window):&nbsp;
                                 gen runs <strong>{g.annualGenHours} hr/yr</strong>
                                 &nbsp;of {result._genHrLimit} hr/yr limit
                               </div>
@@ -4620,8 +4659,8 @@ function App() {
                                   `Total NPV (${npvYears} yr): ${fmtCurrency(g.totalCost)}`,
                                   "",
                                   "═══ Design Criteria ═══",
-                                  `Criterion 1 (3-day critical load): ${c1Pass ? "PASS" : "FAIL"} — gen ${g.criterion1GenHours ?? "—"} hr of ${result._genHrLimit} hr limit`,
-                                  `Criterion 2 (typical year): ${c2Pass ? "PASS" : "FAIL"} — gen ${g.annualGenHours} hr/yr of ${result._genHrLimit} hr/yr limit`,
+                                  `Criterion 1 (3-day critical load, no solar): ${c1Pass ? "PASS" : "FAIL"} — gen ${g.criterion1GenHours ?? "—"} hr of ${result._emergencyGenHrLimit} hr emergency limit`,
+                                  `Criterion 2 (typical year, excl. worst window): ${c2Pass ? "PASS" : "FAIL"} — gen ${g.annualGenHours} hr/yr of ${result._genHrLimit} hr/yr limit`,
                                   `Criterion 3 (worst 10-day window): ${c3Pass ? "PASS" : "FAIL"} — gen ${g.wwGenHours ?? "—"} hr of ${result._emergencyGenHrLimit} hr limit`,
                                 ];
                                 downloadTextReport(`battery_gen_report_${(siteName||"site").replace(/\s+/g,"_")}.txt`, lines.join("\n"));
