@@ -1,6 +1,6 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.111
-// Updated: 2026-04-17 17:30 PT
+// Version: v0.4.112
+// Updated: 2026-04-17 18:00 PT
 // Part of: Wipomo / CCE Solar Tools
 
 "use strict";
@@ -2059,6 +2059,7 @@ function App() {
   // Phase 2: EV impact analysis (runs after Phase 1, on demand)
   const [evImpact, setEvImpact]       = useState(null);
   const [evImpactRunning, setEvImpactRunning] = useState(false);
+  const [sweepEvList, setSweepEvList] = useState([]); // snapshot of evList when Run Sweep was last pressed
   const [chosenPath, setChosenPath]   = useState(null); // null | "battery_only" | "battery_gen"
 
   // UI toggle state for collapsible sections
@@ -2833,26 +2834,45 @@ function App() {
         ? Math.max(...batteryOptions.map(b => b.kwh)) : 0;
       const codeBatShortfall = Math.max(0, Math.round((codeMinBatKwh - maxSelectedBatKwh) * 10) / 10);
 
-      // Phase 1: no-EV battery-only sweep (primary optimization)
+      // Snapshot EVs at sweep time.  V2G EVs factor into criteria 2 & 3 (worst-window + annual
+      // coverage).  Criterion 1 (3-day no-solar) uses stationary battery only — enforced by
+      // codeMinBatKwh which is computed from building load with no EV credit (see above).
+      setSweepEvList(evList);
+      const sweepFleetScen = evList.map(ev => evConfigToDispatch(ev));
+      const hasV2gAtSweep  = sweepFleetScen.some(ev => ev.canV2G);
+      const erMinKwhSweep  = evList.length > 0 ? erDistanceMiles * 1.25 / EV_EFFICIENCY : 0;
+
+      // V2G effective kWh available as supplemental storage (approximation for annual check).
+      // Per V2G EV: usable capacity above min SOC, minus half-range DCFC reserve.
+      const v2gEffKwh = sweepFleetScen
+        .filter(ev => ev.canV2G)
+        .reduce((sum, ev) => {
+          const halfRange = ev.tripMiles > 0 ? ev.tripMiles / (2 * ev.efficiency) : 0;
+          return sum + Math.max(0, ev.kwh * (1 - BATTERY_MIN_SOC) - halfRange);
+        }, 0);
+
+      // Phase 1: battery-only sweep (EVs included; V2G contributes to criteria 2 & 3)
       const totalCombos = mountOptions.length * pvSizes.length * batteryOptions.length;
-      setRunStatus(`Phase 1 — battery-only sweep (code min: PV ≥ ${codePvKw} kW, bat ≥ ${codeMinBatKwh} kWh; generator path bat ≥ ${codeMinBatKwhWithGen} kWh)...`);
+      setRunStatus(`Phase 1 — battery-only sweep (code min: PV ≥ ${codePvKw} kW, bat ≥ ${codeMinBatKwh} kWh; generator path bat ≥ ${codeMinBatKwhWithGen} kWh)${hasV2gAtSweep ? " — V2G EVs included" : ""}...`);
       await new Promise(resolve => setTimeout(resolve, 50));
 
       const params = {
         lat, lon,
         mountOptions,
         loadHourly,
-        evScenario:         [],   // No EV in primary optimization
-        pvSizesKw:          pvSizes,
+        evScenario:       sweepFleetScen,   // V2G + non-V2G EVs — criteria 2 & 3 benefit from V2G
+        pvSizesKw:        pvSizes,
         batteryOptions,
-        dcfcCostPerKwh:     0,
-        evseCost:           0,
+        dcfcCostPerKwh:   evList.length > 0 ? dcfcCostPerKwh : 0,
+        evseCost:         evList.length > 0 ? 3500 : 0,
         npvYears,
-        discountRate:       discountRate / 100,
-        maxEmergencyDcfc:   0,
+        discountRate:     discountRate / 100,
+        maxEmergencyDcfc: evList.length > 0 ? maxEmergencyDcfc : 0,
+        maxEnrouteDcfc:   evList.length > 0 ? maxEnrouteDcfc : undefined,
+        erMinKwh:         erMinKwhSweep,
         stressData,
         codePvKw,
-        codeMinBatKwh,
+        codeMinBatKwh,    // criterion 1 floor: stationary battery only, no EV credit
       };
 
       const res = findOptimum(params);
@@ -2871,8 +2891,11 @@ function App() {
           const candMount = mountOptions.find(m => m.label === candidate.mountLabel);
           if (!candMount) continue;
           const candSolar = candMount.solarNormalized.map(x => x * candidate.pvKw);
+          // Boost effective battery with V2G available kWh (approximation: treats V2G as
+          // always-available storage; actual availability depends on EV schedule).
+          const effBatKwh = candidate.batteryKwh + v2gEffKwh;
           const candAnn = countAnnualGenHours(
-            candSolar, loadHourly, candidate.batteryKwh, candidate.batteryKw,
+            candSolar, loadHourly, effBatKwh, candidate.batteryKw,
             0, 0, -1, 0, 4, false
           );
           if (candAnn.unservedKwh === 0) { annualOptimum = candidate; break; }
@@ -2881,6 +2904,8 @@ function App() {
         // always has a fixed PV+battery point to sweep generators against.
         res._wwOnlyOptimum = res.optimum;
         res.optimum = annualOptimum;   // null → no battery-only config covers full year
+        res._v2gEffKwh   = Math.round(v2gEffKwh);
+        res._sweepHasV2g = hasV2gAtSweep;
       }
 
       // Phase 2a base config: use annual-valid optimum if it exists, else fall back
@@ -2909,8 +2934,9 @@ function App() {
           // any hours where load is shed (should be zero for an annual-valid config).
           if (loadHourly) {
             const annSolar8760 = optMount.solarNormalized.map(x => x * opt.pvKw);
+            const annEffBatKwh = optBat.kwh + (v2gEffKwh || 0);
             const batAnnTr = countAnnualGenHours(
-              annSolar8760, loadHourly, optBat.kwh, optBat.kw, 0, 0, -1, 0, 4, true
+              annSolar8760, loadHourly, annEffBatKwh, optBat.kw, 0, 0, -1, 0, 4, true
             );
             res._annualTrace = {
               bat:          batAnnTr.traceBat,
@@ -2918,6 +2944,7 @@ function App() {
               sol:          new Float32Array(annSolar8760),
               ld:           new Float32Array(loadHourly),
               batKwh:       optBat.kwh,
+              v2gEffKwh:    Math.round(v2gEffKwh || 0),
               annUnservedKwh:   batAnnTr.unservedKwh,
               annUnservedHours: batAnnTr.unservedHours,
             };
@@ -4506,7 +4533,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.111</span>
+        <span style={S.version}>v0.4.112</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto"}}>
           <a href="https://tools.cc-energy.org/index.html"
@@ -5001,16 +5028,30 @@ function App() {
               {running ? "Running..." : "Run Sweep"}
             </button>
 
-            {/* L) Analyze EV Impact button (shown when result && evList.length > 0) */}
-            {result !== null && evList.length > 0 && (
-              <button
-                style={{ ...S.btnPrimary, background: evImpactRunning ? "#6c757d" : "#1a6b3a",
-                         opacity: evImpactRunning ? 0.7 : 1, marginTop: "2px" }}
-                disabled={evImpactRunning}
-                onClick={handleAnalyzeEv}>
-                {evImpactRunning ? "Analyzing EV impact…" : `Analyze EV Impact (${evList.length} EV${evList.length > 1 ? "s" : ""})`}
-              </button>
-            )}
+            {/* L) Analyze EV Impact button: only for EVs added AFTER the last sweep */}
+            {(() => {
+              const addedEvCount = Math.max(0, evList.length - sweepEvList.length);
+              const v2gInSweep = sweepEvList.some(ev => ev.canV2G);
+              return (
+                <>
+                  {result !== null && addedEvCount > 0 && (
+                    <button
+                      style={{ ...S.btnPrimary, background: evImpactRunning ? "#6c757d" : "#1a6b3a",
+                               opacity: evImpactRunning ? 0.7 : 1, marginTop: "2px" }}
+                      disabled={evImpactRunning}
+                      onClick={handleAnalyzeEv}>
+                      {evImpactRunning ? "Analyzing EV impact…"
+                        : `Eval Added EV Impact (${addedEvCount} new EV${addedEvCount > 1 ? "s" : ""})`}
+                    </button>
+                  )}
+                  {result !== null && v2gInSweep && (
+                    <div style={{ fontSize: "10px", color: "#155724", marginTop: "2px" }}>
+                      ✓ V2G EV included in sweep — criteria 2 & 3 use EV battery (criterion 1 stationary only)
+                    </div>
+                  )}
+                </>
+              );
+            })()}
 
             {/* M) Status messages */}
             {running && runStatus && (
@@ -5071,7 +5112,7 @@ function App() {
                             <div style={{ fontSize: "10px", color: "#333", marginTop: "6px", lineHeight: 1.9, background: "#e8f7ed", borderRadius: "4px", padding: "5px 8px" }}>
                               <div>
                                 {c1Pass ? "✓" : "⚠"}&nbsp;
-                                <strong>Criterion 1</strong> (3-day critical load, no solar):&nbsp;
+                                <strong>Criterion 1</strong> (3-day critical load, no solar — stationary battery only):&nbsp;
                                 battery {c1Have} kWh {c1Pass ? "≥" : "<"} {c1Need} kWh needed
                                 {!c1Pass && <span style={{ color: "#856404" }}> — shortfall {Math.round((c1Need - c1Have)*10)/10} kWh</span>}
                               </div>
@@ -5083,8 +5124,9 @@ function App() {
                               </div>
                               <div>
                                 ✓&nbsp;
-                                <strong>Criterion 3</strong> (worst 10-day window, full load):&nbsp;
+                                <strong>Criterion 3</strong> (worst 10-day window, full load{result._sweepHasV2g ? " + V2G" : ""}):&nbsp;
                                 {opt.wwPct}% coverage
+                                {result._v2gEffKwh > 0 && <span style={{ color: "#555", fontSize: "9px", marginLeft: "4px" }}>({result._v2gEffKwh} kWh V2G)</span>}
                               </div>
                             </div>
                             <button
@@ -5172,7 +5214,7 @@ function App() {
                             <div style={{ fontSize: "10px", color: "#333", marginTop: "6px", lineHeight: 1.9, background: "#fff8e8", borderRadius: "4px", padding: "5px 8px" }}>
                               <div>
                                 {g.criterion1Pass !== false ? "✓" : "⚠"}&nbsp;
-                                <strong>Criterion 1</strong> (3-day critical load, no solar):&nbsp;
+                                <strong>Criterion 1</strong> (3-day critical load, no solar — stationary battery only):&nbsp;
                                 gen runs <strong>{g.criterion1GenHours ?? "—"} hr</strong>
                                 &nbsp;of {result._emergencyGenHrLimit} hr emergency limit
                               </div>
