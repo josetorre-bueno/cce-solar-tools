@@ -1,6 +1,6 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.114
-// Updated: 2026-04-17 19:30 PT
+// Version: v0.4.115
+// Updated: 2026-04-17 20:00 PT
 // Part of: Wipomo / CCE Solar Tools
 
 "use strict";
@@ -2538,6 +2538,82 @@ function App() {
     a.click();
   }
 
+  function downloadCsv(filename, content) {
+    const blob = new Blob(["\uFEFF" + content], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  // Auto-export all sweep and trace data to CSV files after each run.
+  // Triggered automatically — no button required.
+  function triggerAutoExports(res, slug, hasEvs) {
+    // 1. Battery-only sweep — all PV × battery combinations
+    if (res.sweep?.length > 0) {
+      const baseHdrs = ["mount","pvKw","batteryLabel","batteryKwh","wwPass","wwPct",
+                        "wwUnservedKwh","pvCost","batteryCost","evseCost","totalCost","isOptimum"];
+      const evHdrs   = hasEvs ? ["annualDcfcTrips","annualEmergencyDcfcTrips","annualEnrouteDcfcTrips","annualWorkChargeCost"] : [];
+      const hdrs = [...baseHdrs, ...evHdrs];
+      const annOpt = res.optimum || res._wwOnlyOptimum;
+      const lines = [hdrs.join(",")];
+      for (const r of res.sweep) {
+        const isOpt = annOpt && r.mountLabel===annOpt.mountLabel && r.pvKw===annOpt.pvKw && r.batteryLabel===annOpt.batteryLabel ? 1 : 0;
+        const base = [r.mountLabel, r.pvKw, r.batteryLabel, r.batteryKwh,
+                      r.wwPass?1:0, r.wwPct, r.wwUnservedKwh,
+                      r.pvCost, r.batteryCost, r.evseCost||0, r.totalCost, isOpt];
+        const evCols = hasEvs ? [r.annualDcfcTrips??0, r.annualEmergencyDcfcTrips??0,
+                                  r.annualEnrouteDcfcTrips??0, r.annualWorkChargeCost??0] : [];
+        lines.push([...base, ...evCols].join(","));
+      }
+      downloadCsv(`battery_sweep_${slug}.csv`, lines.join("\n"));
+    }
+    // 2. Generator optimizer — all mount × PV × battery × gen combinations
+    const diagRows = res._genOptResult?.diagRows;
+    if (diagRows?.length > 0) {
+      const hdrs = ["mount","pvKw","batLabel","batKwh","genKw","batAlreadyPasses",
+                    "wwPass","wwGenHours","annGenHours","annFuelCostPerYr",
+                    "pvCost","batCost","genCap","fuelNpv","totalCost","rejection","isOptimum"];
+      const lines = [hdrs.join(",")];
+      for (const r of diagRows) {
+        lines.push(hdrs.map(k => { const v = r[k]; if (v == null) return ""; const s = String(v); return s.includes(",") ? `"${s}"` : s; }).join(","));
+      }
+      setTimeout(() => downloadCsv(`generator_sweep_${slug}.csv`, lines.join("\n")), 300);
+    }
+    // 3. Annual battery trace
+    const batTr = res._annualTrace;
+    if (batTr?.bat) {
+      setTimeout(() => {
+        const wth = buildAnnualWeather(batTr.bat.length);
+        const lines = ["hour,month,day,hourOfDay,solarKw,loadKw,batKwh,batSocPct,unservedKw"];
+        for (let h = 0; h < batTr.bat.length; h++) {
+          lines.push([h, wth[h].month, wth[h].day, wth[h].hourOfDay,
+                      (batTr.sol[h]||0).toFixed(3), (batTr.ld[h]||0).toFixed(3),
+                      batTr.bat[h].toFixed(3), (batTr.bat[h]/batTr.batKwh*100).toFixed(1),
+                      (batTr.unserved[h]||0).toFixed(3)].join(","));
+        }
+        downloadCsv(`annual_bat_trace_${slug}.csv`, lines.join("\n"));
+      }, 600);
+    }
+    // 4. Annual generator trace
+    const genTr = res._genOptResult?.annualTrace;
+    if (genTr?.bat) {
+      setTimeout(() => {
+        const wth = buildAnnualWeather(genTr.bat.length);
+        const lines = ["hour,month,day,hourOfDay,solarKw,loadKw,batKwh,batSocPct,genRunning,genKwRated"];
+        for (let h = 0; h < genTr.bat.length; h++) {
+          lines.push([h, wth[h].month, wth[h].day, wth[h].hourOfDay,
+                      (genTr.sol[h]||0).toFixed(3), (genTr.ld[h]||0).toFixed(3),
+                      genTr.bat[h].toFixed(3), (genTr.bat[h]/genTr.batKwh*100).toFixed(1),
+                      genTr.gen[h]||0, genTr.genKw||0].join(","));
+        }
+        downloadCsv(`annual_gen_trace_${slug}.csv`, lines.join("\n"));
+      }, 900);
+    }
+  }
+
   // Composite multiple panel canvases vertically into one PNG with white background
   function downloadMultiPanel(canvasRefs, filename) {
     const canvases = canvasRefs.map(r => r.current).filter(Boolean);
@@ -2692,6 +2768,7 @@ function App() {
           setRunStatus("Annual coverage check — testing full-year load coverage for all passing configs...");
           await new Promise(resolve => setTimeout(resolve, 10));
           let annualOptimum = null;
+          let wwOnlyAnnualCheck = null;   // annual check result for the cheapest WW-passing config
           for (const candidate of res.allPassing) {  // sorted by cost (cheapest first)
             const candMount = mountOptions.find(m => m.label === candidate.mountLabel);
             if (!candMount) continue;
@@ -2700,9 +2777,11 @@ function App() {
               candSolar, loadHourly, candidate.batteryKwh, candidate.batteryKw,
               0, 0, -1, 0, 4, false
             );
+            if (wwOnlyAnnualCheck === null) wwOnlyAnnualCheck = candAnn;  // first iteration = WW optimum
             if (candAnn.unservedKwh === 0) { annualOptimum = candidate; break; }
           }
           // Save WW-only optimum so Phase 2a always has a fixed PV+battery point.
+          res._wwOnlyAnnualCheck = wwOnlyAnnualCheck;  // annual check data for WW-only optimum
           res._wwOnlyOptimum = res.optimum;
           res.optimum = annualOptimum;   // null → no battery-only config covers full year
         }
@@ -2863,6 +2942,10 @@ function App() {
           ? ` (Annual check upgraded battery-only optimum.)`
           : "";
       setRunStatus(`Done. Battery-only WW pass: ${res.nPassing}/${res.nTotal}.${annualNote}${genNote}`);
+
+      // Auto-export all sweep and trace data to CSV (no button required)
+      const slug = (siteName || "site").replace(/\s+/g, "_");
+      triggerAutoExports(res, slug, sweepFleetScen.length > 0);
 
       // Auto-save after successful run
       const now = new Date();
@@ -4335,7 +4418,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.114</span>
+        <span style={S.version}>v0.4.115</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto"}}>
           <a href="https://tools.cc-energy.org/index.html"
@@ -4892,13 +4975,28 @@ function App() {
                       <div style={{ fontSize: "12px", fontWeight: 700, color: "#155724", marginBottom: "8px", textTransform: "uppercase", letterSpacing: "0.04em" }}>
                         Battery-Only
                       </div>
-                      {result.optimum ? (() => {
-                        const opt = result.optimum;
-                        const c1Need = result._criticalLoadKwhPerDay * 3;  // kWh, 3-day critical load
-                        const c1Have = opt.batteryKwh;                     // rated usable kWh
+                      {(() => {
+                        const opt = result.optimum || result._wwOnlyOptimum;
+                        if (!opt) {
+                          return (
+                            <div style={{ fontSize: "12px", color: "#721c24" }}>
+                              No passing configuration.<br/>Try larger PV or battery sizes.
+                            </div>
+                          );
+                        }
+                        const isAnnualValid = !!result.optimum;
+                        const c1Need = result._criticalLoadKwhPerDay * 3;
+                        const c1Have = opt.batteryKwh;
                         const c1Pass = c1Have >= c1Need;
+                        const annChk = result._wwOnlyAnnualCheck;
                         return (
                           <>
+                            {!isAnnualValid && (
+                              <div style={{ fontSize: "10px", background: "#fff3cd", border: "1px solid #ffc107", borderRadius: "4px", padding: "4px 7px", marginBottom: "6px", color: "#856404" }}>
+                                ⚠ WW-only result — no battery-only config in the selected range passes full-year coverage.
+                                {annChk && annChk.unservedHours > 0 && ` Best: ${annChk.unservedHours} hr / ${annChk.unservedKwh} kWh unserved. Try larger batteries.`}
+                              </div>
+                            )}
                             <div style={{ fontSize: "13px", fontWeight: 600, marginBottom: "6px", lineHeight: 1.4 }}>
                               {opt.mountLabel}<br/>
                               {opt.pvKw} kW PV<br/>
@@ -4907,11 +5005,12 @@ function App() {
                             <div style={{ fontSize: "11px", color: "#555", lineHeight: 1.8 }}>
                               <div>PV: <strong>{fmtCurrency(opt.pvCost)}</strong></div>
                               <div>Battery: <strong>{fmtCurrency(opt.batteryCost)}</strong></div>
-                              <div style={{ borderTop: "1px solid #aaa", marginTop: "4px", paddingTop: "4px", fontSize: "13px", color: "#155724", fontWeight: 700 }}>
+                              <div style={{ borderTop: "1px solid #aaa", marginTop: "4px", paddingTop: "4px", fontSize: "13px", color: isAnnualValid ? "#155724" : "#856404", fontWeight: 700 }}>
                                 Total NPV: {fmtCurrency(opt.totalCost)}
+                                {!isAnnualValid && <span style={{ fontSize: "10px", fontWeight: 400, marginLeft: "4px" }}>(WW only)</span>}
                               </div>
                             </div>
-                            <div style={{ fontSize: "10px", color: "#333", marginTop: "6px", lineHeight: 1.9, background: "#e8f7ed", borderRadius: "4px", padding: "5px 8px" }}>
+                            <div style={{ fontSize: "10px", color: "#333", marginTop: "6px", lineHeight: 1.9, background: isAnnualValid ? "#e8f7ed" : "#fffbe6", borderRadius: "4px", padding: "5px 8px" }}>
                               <div>
                                 {c1Pass ? "✓" : "⚠"}&nbsp;
                                 <strong>Criterion 1</strong> (3-day critical load, no solar — stationary battery only):&nbsp;
@@ -4919,10 +5018,12 @@ function App() {
                                 {!c1Pass && <span style={{ color: "#856404" }}> — shortfall {Math.round((c1Need - c1Have)*10)/10} kWh</span>}
                               </div>
                               <div>
-                                <span style={{ color: "#666" }}>—</span>&nbsp;
-                                <strong>Criterion 2</strong> (typical year):&nbsp;
-                                N/A — no generator; worst-window sizing guarantees full-load coverage
-                                for all typical days (higher irradiance than worst window)
+                                {isAnnualValid
+                                  ? <><span style={{color:"#155724"}}>✓</span>&nbsp;<strong>Criterion 2</strong> (typical year): full-year coverage verified — 0 unserved hours</>
+                                  : annChk
+                                    ? <><span style={{color:"#856404"}}>⚠</span>&nbsp;<strong>Criterion 2</strong> (typical year): <strong>{annChk.unservedHours} hr / {annChk.unservedKwh} kWh</strong> unserved — needs larger PV or battery for full annual coverage</>
+                                    : <><span style={{color:"#666"}}>—</span>&nbsp;<strong>Criterion 2</strong> (typical year): not checked (V2G in sweep — trust WW pass)</>
+                                }
                               </div>
                               <div>
                                 ✓&nbsp;
@@ -4933,17 +5034,15 @@ function App() {
                             </div>
                             <button
                               style={{ marginTop: "10px", width: "100%", padding: "6px 0", fontSize: "12px", fontWeight: 700, borderRadius: "5px", border: "none", cursor: "pointer",
-                                background: chosenPath === "battery_only" ? "#155724" : "#2d7d46",
+                                background: chosenPath === "battery_only" ? "#155724" : isAnnualValid ? "#2d7d46" : "#9a6b1e",
                                 color: "#fff", letterSpacing: "0.02em" }}
                               onClick={() => { setChosenPath("battery_only"); setEvImpact(null); }}>
-                              {chosenPath === "battery_only" ? "✓ Battery-Only selected" : "Select Battery-Only path"}
+                              {chosenPath === "battery_only" ? "✓ Battery-Only selected" : isAnnualValid ? "Select Battery-Only path" : "Select Battery-Only path (WW only)"}
                             </button>
                             <button
                               style={{ marginTop: "6px", width: "100%", padding: "4px 0", fontSize: "11px", borderRadius: "5px", border: "1px solid #2d7d46", cursor: "pointer", background: "#fff", color: "#155724" }}
                               onClick={() => {
                                 const ts = new Date().toLocaleString();
-                                const c1Need = result._criticalLoadKwhPerDay * 3;
-                                const c1Pass = opt.batteryKwh >= c1Need;
                                 const lines = [
                                   "CCE Solar Tools — Battery-Only System Design Report",
                                   `Generated: ${ts}`,
@@ -4962,7 +5061,11 @@ function App() {
                                   "═══ Design Criteria ═══",
                                   `Criterion 1 (3-day critical load, no solar): ${c1Pass ? "PASS" : "FAIL"}`,
                                   `  Battery ${opt.batteryKwh} kWh ${c1Pass ? "≥" : "<"} ${c1Need} kWh needed`,
-                                  `Criterion 2: N/A (battery-only; worst-window sizing covers full load)`,
+                                  isAnnualValid
+                                    ? `Criterion 2 (full year): PASS — 0 unserved hours`
+                                    : annChk
+                                      ? `Criterion 2 (full year): FAIL — ${annChk.unservedHours} hr / ${annChk.unservedKwh} kWh unserved`
+                                      : `Criterion 2 (full year): not checked (V2G)`,
                                   `Criterion 3 (worst 10-day window, full load): ${opt.wwPct}% coverage`,
                                   "",
                                   `Configurations evaluated: ${result.nPassing ?? "—"} passing of ${result.nTotal ?? "—"} total`,
@@ -4973,20 +5076,7 @@ function App() {
                             </button>
                           </>
                         );
-                      })() : (
-                        <div style={{ fontSize: "12px", color: "#721c24" }}>
-                          {result._wwOnlyOptimum && !result.optimum ? (
-                            <>
-                              <strong>No battery-only configuration covers the full year.</strong><br/>
-                              {result.nPassing} config{result.nPassing !== 1 ? "s" : ""} pass the worst 10-day window
-                              but all shed load during extended low-solar periods (winter nights
-                              when battery is at minimum SOC). A generator is required for 100% annual coverage.
-                            </>
-                          ) : (
-                            <>No passing configuration.<br/>Try larger PV or battery sizes.</>
-                          )}
-                        </div>
-                      )}
+                      })()}
                     </div>
 
                     {/* Battery + Generator column */}
@@ -5111,97 +5201,6 @@ function App() {
                     })()}
                   </div>
                 </div>
-
-                {/* Battery optimizer diagnostics */}
-                {result._genOptResult?.batteryDiag && (() => {
-                  const diag = result._genOptResult.batteryDiag;
-                  const rows = Object.entries(diag).sort((a, b) => a[1].kwh - b[1].kwh);
-                  const diagRows = result._genOptResult.diagRows || [];
-                  function exportDiagCsv() {
-                    const headers = [
-                      "mount","pvKw","batLabel","batKwh","genKw","batAlreadyPasses",
-                      "wwPass","wwGenHours","annGenHours","annFuelCostPerYr",
-                      "pvCost","batCost","genCap","fuelNpv","totalCost",
-                      "rejection","isOptimum"
-                    ];
-                    const csvLines = [headers.join(",")];
-                    for (const r of diagRows) {
-                      csvLines.push(headers.map(k => {
-                        const v = r[k];
-                        if (v === null || v === undefined) return "";
-                        const s = String(v);
-                        return s.includes(",") ? `"${s}"` : s;
-                      }).join(","));
-                    }
-                    const blob = new Blob([csvLines.join("\n")], { type: "text/csv" });
-                    const a = document.createElement("a");
-                    a.href = URL.createObjectURL(blob);
-                    a.download = `optimizer_diag_${(siteName||"site").replace(/\s+/g,"_")}.csv`;
-                    a.click();
-                  }
-                  return (
-                    <div style={S.card}>
-                      <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "6px" }}>
-                        <div style={{ fontSize: "12px", fontWeight: 700, color: "#1a4a7a" }}>
-                          🔍 Battery Optimizer Diagnostics — why each battery size was selected or rejected
-                        </div>
-                        <button
-                          style={{ padding: "3px 10px", fontSize: "11px", borderRadius: "4px", border: "1px solid #1a4a7a", background: "#e8f0f8", color: "#1a4a7a", cursor: "pointer", whiteSpace: "nowrap" }}
-                          onClick={exportDiagCsv}>
-                          ⬇ Export full CSV ({diagRows.length} rows)
-                        </button>
-                      </div>
-                      <div style={{ overflowX: "auto" }}>
-                        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "11px" }}>
-                          <thead>
-                            <tr style={{ background: "#e8f0f8" }}>
-                              <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #b8cce0" }}>Battery</th>
-                              <th style={{ padding: "4px 8px", textAlign: "right", borderBottom: "1px solid #b8cce0" }}>kWh</th>
-                              <th style={{ padding: "4px 8px", textAlign: "right", borderBottom: "1px solid #b8cce0" }}>wwPass fails</th>
-                              <th style={{ padding: "4px 8px", textAlign: "right", borderBottom: "1px solid #b8cce0" }}>wwHrs fails</th>
-                              <th style={{ padding: "4px 8px", textAlign: "right", borderBottom: "1px solid #b8cce0" }}>annHrs fails</th>
-                              <th style={{ padding: "4px 8px", textAlign: "right", borderBottom: "1px solid #b8cce0" }}>Best ann hr</th>
-                              <th style={{ padding: "4px 8px", textAlign: "right", borderBottom: "1px solid #b8cce0" }}>Best NPV cost</th>
-                              <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #b8cce0" }}>Status</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {rows.map(([label, d]) => {
-                              const isWinner = label === result._genOptResult?.optimum?.batteryLabel;
-                              const bg = isWinner ? "#fffbe6" : d.bestConfig ? "#f5fff5" : "#fff5f5";
-                              const status = isWinner ? "★ SELECTED"
-                                : d.bestConfig ? `passes — $${Math.round(d.bestCost).toLocaleString()}`
-                                : d.rejectAnnualHours > 0 ? `✗ ann hrs ${d.bestAnnualHours ?? "?"}>${result._genHrLimit}`
-                                : d.rejectWwHours > 0 ? "✗ ww hrs too high"
-                                : "✗ wwPass fails";
-                              return (
-                                <tr key={label} style={{ background: bg }}>
-                                  <td style={{ padding: "3px 8px", fontWeight: isWinner ? 700 : 400 }}>{label}</td>
-                                  <td style={{ padding: "3px 8px", textAlign: "right" }}>{d.kwh}</td>
-                                  <td style={{ padding: "3px 8px", textAlign: "right", color: d.rejectWwPass > 0 ? "#c0392b" : "#888" }}>{d.rejectWwPass}</td>
-                                  <td style={{ padding: "3px 8px", textAlign: "right", color: d.rejectWwHours > 0 ? "#c0392b" : "#888" }}>{d.rejectWwHours}</td>
-                                  <td style={{ padding: "3px 8px", textAlign: "right", color: d.rejectAnnualHours > 0 ? "#c0392b" : "#888" }}>{d.rejectAnnualHours}</td>
-                                  <td style={{ padding: "3px 8px", textAlign: "right", color: d.bestAnnualHours > result._genHrLimit ? "#c0392b" : "#155724" }}>
-                                    {d.bestAnnualHours !== null ? d.bestAnnualHours : "—"}
-                                  </td>
-                                  <td style={{ padding: "3px 8px", textAlign: "right" }}>
-                                    {d.bestConfig ? `$${Math.round(d.bestCost).toLocaleString()}` : "—"}
-                                  </td>
-                                  <td style={{ padding: "3px 8px", fontWeight: isWinner ? 700 : 400, color: isWinner ? "#6b4a10" : d.bestConfig ? "#155724" : "#c0392b" }}>{status}</td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      </div>
-                      <div style={{ fontSize: "10px", color: "#666", marginTop: "4px" }}>
-                        "ann hrs fails" = configs rejected because annual gen hrs &gt; {result._genHrLimit} hr/yr limit.
-                        "Best ann hr" = lowest annual gen hrs seen across all PV+gen combos for that battery.
-                        Green rows pass all criteria; red rows have no passing configuration.
-                      </div>
-                    </div>
-                  );
-                })()}
 
                 {/* Annual Dispatch — Battery-only and Generator charts, synchronized */}
                 {(result._annualTrace || result._genOptResult?.annualTrace) && (() => {
