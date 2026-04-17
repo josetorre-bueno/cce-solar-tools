@@ -1,5 +1,5 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.98
+// Version: v0.4.99
 // Updated: 2026-04-16 PT
 // Part of: Wipomo / CCE Solar Tools
 
@@ -1431,6 +1431,8 @@ function findOptimumGenerator({ mountOptions, pvSizesKw, batteryOptions, genSize
   const wwStartH8760 = ((spinupDoy - 1) + (cell.spinup_days || 0)) * 24 % 8760;
   const wwLenH8760   = (cell.window_days || 10) * 24;  // typically 240 h (10 days)
   let best = null, bestTrace = null;
+  // Per-battery diagnostics: track why each battery size was rejected or accepted
+  const batteryDiag = {};
   for (const mount of mountOptions) {
     const solarSw = extractWindow(mount.solarNormalized, spinupDoy, cell.n_hours);
     for (const pvKw of [...pvSizesKw].sort((a, b) => a - b)) {
@@ -1447,11 +1449,18 @@ function findOptimumGenerator({ mountOptions, pvSizesKw, batteryOptions, genSize
         // generator appears to require MORE solar than battery-only.
         const batOnlyCheck = dispatchGenerator(solarH, loadSw, bat.kwh, bat.kw, 0, weather, lookaheadDays, 0);
         const batAlreadyPasses = batOnlyCheck.wwPass;
+        // Init diag entry for this battery (keyed by label)
+        if (!batteryDiag[bat.label]) {
+          batteryDiag[bat.label] = { kwh: bat.kwh, bestCost: Infinity, bestConfig: null,
+                                      rejectWwPass: 0, rejectWwHours: 0, rejectAnnualHours: 0,
+                                      bestAnnualHours: null, bestWwHours: null };
+        }
+        const diag = batteryDiag[bat.label];
         for (const genKw of [...genSizesKw].sort((a, b) => a - b)) {
           const r = dispatchGenerator(solarH, loadSw, bat.kwh, bat.kw, genKw, weather, lookaheadDays, fuelCostPerKwHr);
-          if (!r.wwPass) continue;
+          if (!r.wwPass) { diag.rejectWwPass++; continue; }
           // Emergency limit: worst-window generator hours — permissive ceiling (default 200 hr)
-          if (r.wwGenHours > emergencyGenHrLimit) continue;
+          if (r.wwGenHours > emergencyGenHrLimit) { diag.rejectWwHours++; continue; }
           // Annual gen hours — Criterion 2 hard filter.
           // If battery-only already passes the stress window, the generator never fires in a typical
           // year → annual hours = 0.  Otherwise, run the full TMY simulation.
@@ -1462,13 +1471,27 @@ function findOptimumGenerator({ mountOptions, pvSizesKw, batteryOptions, genSize
               ? countAnnualGenHours(annualSolarH, loadAnnual, bat.kwh, bat.kw, genKw, fuelCostPerKwHr,
                                     wwStartH8760, wwLenH8760)
               : { annualGenHours: r.simGenHours, annualGenCost: r.annualGenCost };
-          if (ann.annualGenHours > genHrLimit) continue;
+          if (ann.annualGenHours > genHrLimit) {
+            diag.rejectAnnualHours++;
+            // Track worst annual hours seen (helps understand how far over the limit)
+            if (diag.bestAnnualHours === null || ann.annualGenHours < diag.bestAnnualHours) {
+              diag.bestAnnualHours = ann.annualGenHours;
+              diag.bestWwHours = r.wwGenHours;
+            }
+            continue;
+          }
           const pvCost    = Math.round(pvKw  * mount.pvCostPerKw);
           const batCost   = Math.round(bat.fixedCost);
           const genCap    = genInstalledCost; // fixed installed cost regardless of kW size
           const fuelNpv   = Math.round(ann.annualGenCost * npvFactor);
           const totalCost = pvCost + batCost + genCap + fuelNpv;
           const c1hrs = criterion1GenHours(criticalLoadKwhPerDay, bat.kwh, genKw);
+          // Update per-battery diag with best passing config
+          if (totalCost < diag.bestCost) {
+            diag.bestCost = totalCost;
+            diag.bestConfig = { pvKw, genKw, annualGenHours: ann.annualGenHours, wwGenHours: r.wwGenHours, totalCost };
+            if (diag.bestAnnualHours === null) diag.bestAnnualHours = ann.annualGenHours;
+          }
           if (!best || totalCost < best.totalCost) {
             best = {
               mountLabel: mount.label, pvKw,
@@ -1487,7 +1510,7 @@ function findOptimumGenerator({ mountOptions, pvSizesKw, batteryOptions, genSize
       }
     }
   }
-  return { optimum: best, trace: bestTrace };
+  return { optimum: best, trace: bestTrace, batteryDiag };
 }
 
 // ── FORMATTING HELPERS ────────────────────────────────────────────────────────
@@ -3981,7 +4004,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.98</span>
+        <span style={S.version}>v0.4.99</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto"}}>
           <a href="https://tools.cc-energy.org/index.html"
@@ -4719,6 +4742,67 @@ function App() {
                     })()}
                   </div>
                 </div>
+
+                {/* Battery optimizer diagnostics */}
+                {result._genOptResult?.batteryDiag && (() => {
+                  const diag = result._genOptResult.batteryDiag;
+                  const rows = Object.entries(diag).sort((a, b) => a[1].kwh - b[1].kwh);
+                  return (
+                    <div style={S.card}>
+                      <div style={{ fontSize: "12px", fontWeight: 700, color: "#1a4a7a", marginBottom: "6px" }}>
+                        🔍 Battery Optimizer Diagnostics — why each battery size was selected or rejected
+                      </div>
+                      <div style={{ overflowX: "auto" }}>
+                        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "11px" }}>
+                          <thead>
+                            <tr style={{ background: "#e8f0f8" }}>
+                              <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #b8cce0" }}>Battery</th>
+                              <th style={{ padding: "4px 8px", textAlign: "right", borderBottom: "1px solid #b8cce0" }}>kWh</th>
+                              <th style={{ padding: "4px 8px", textAlign: "right", borderBottom: "1px solid #b8cce0" }}>wwPass fails</th>
+                              <th style={{ padding: "4px 8px", textAlign: "right", borderBottom: "1px solid #b8cce0" }}>wwHrs fails</th>
+                              <th style={{ padding: "4px 8px", textAlign: "right", borderBottom: "1px solid #b8cce0" }}>annHrs fails</th>
+                              <th style={{ padding: "4px 8px", textAlign: "right", borderBottom: "1px solid #b8cce0" }}>Best ann hr</th>
+                              <th style={{ padding: "4px 8px", textAlign: "right", borderBottom: "1px solid #b8cce0" }}>Best NPV cost</th>
+                              <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #b8cce0" }}>Status</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {rows.map(([label, d]) => {
+                              const isWinner = label === result._genOptResult?.optimum?.batteryLabel;
+                              const bg = isWinner ? "#fffbe6" : d.bestConfig ? "#f5fff5" : "#fff5f5";
+                              const status = isWinner ? "★ SELECTED"
+                                : d.bestConfig ? `passes — $${Math.round(d.bestCost).toLocaleString()}`
+                                : d.rejectAnnualHours > 0 ? `✗ ann hrs ${d.bestAnnualHours ?? "?"}>${result._genHrLimit}`
+                                : d.rejectWwHours > 0 ? "✗ ww hrs too high"
+                                : "✗ wwPass fails";
+                              return (
+                                <tr key={label} style={{ background: bg }}>
+                                  <td style={{ padding: "3px 8px", fontWeight: isWinner ? 700 : 400 }}>{label}</td>
+                                  <td style={{ padding: "3px 8px", textAlign: "right" }}>{d.kwh}</td>
+                                  <td style={{ padding: "3px 8px", textAlign: "right", color: d.rejectWwPass > 0 ? "#c0392b" : "#888" }}>{d.rejectWwPass}</td>
+                                  <td style={{ padding: "3px 8px", textAlign: "right", color: d.rejectWwHours > 0 ? "#c0392b" : "#888" }}>{d.rejectWwHours}</td>
+                                  <td style={{ padding: "3px 8px", textAlign: "right", color: d.rejectAnnualHours > 0 ? "#c0392b" : "#888" }}>{d.rejectAnnualHours}</td>
+                                  <td style={{ padding: "3px 8px", textAlign: "right", color: d.bestAnnualHours > result._genHrLimit ? "#c0392b" : "#155724" }}>
+                                    {d.bestAnnualHours !== null ? d.bestAnnualHours : "—"}
+                                  </td>
+                                  <td style={{ padding: "3px 8px", textAlign: "right" }}>
+                                    {d.bestConfig ? `$${Math.round(d.bestCost).toLocaleString()}` : "—"}
+                                  </td>
+                                  <td style={{ padding: "3px 8px", fontWeight: isWinner ? 700 : 400, color: isWinner ? "#6b4a10" : d.bestConfig ? "#155724" : "#c0392b" }}>{status}</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                      <div style={{ fontSize: "10px", color: "#666", marginTop: "4px" }}>
+                        "ann hrs fails" = configs rejected because annual gen hrs &gt; {result._genHrLimit} hr/yr limit.
+                        "Best ann hr" = lowest annual gen hrs seen across all PV+gen combos for that battery.
+                        Green rows pass all criteria; red rows have no passing configuration.
+                      </div>
+                    </div>
+                  );
+                })()}
 
                 {/* Detail-toggle tile */}
                 <div style={S.card}>
