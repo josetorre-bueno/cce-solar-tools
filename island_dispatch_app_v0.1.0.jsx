@@ -1,5 +1,5 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.94
+// Version: v0.4.95
 // Updated: 2026-04-16 PT
 // Part of: Wipomo / CCE Solar Tools
 
@@ -1222,8 +1222,16 @@ function dispatchGenerator(solarH, loadH, batKwh, batKw, genKw, weather, lookahe
     if (!genRunning && batE <= batMax * 0.20) genRunning = true;
 
     // Planning: afternoon trigger — will tonight drain to batMin?
+    // Guard: only start when battery has discharged below 75%.  Starting when the battery
+    // is near-full is wasteful — a 10 kW generator serving a 2 kW load can only push
+    // 8 kW into the battery, but if the battery is already at 95-100% there is nowhere
+    // for that energy to go and the output is curtailed.  The 95% stop condition then
+    // fires after just one hour (battery still full), wasting a run, while the battery
+    // drains overnight anyway and the emergency trigger fires again.  Waiting until the
+    // battery is below 75% ensures every planning run does useful charging work and
+    // reduces total annual run hours — allowing smaller batteries to qualify.
     const afternoonTrigger = (hr >= 12 && sol < ld) || hr === 18;
-    if (afternoonTrigger && !genRunning) {
+    if (afternoonTrigger && !genRunning && batE < batMax * 0.75) {
       if (shortageExpected(h)) genRunning = true;
     }
 
@@ -3916,7 +3924,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.94</span>
+        <span style={S.version}>v0.4.95</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto"}}>
           <a href="https://tools.cc-energy.org/index.html"
