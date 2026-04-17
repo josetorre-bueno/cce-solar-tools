@@ -1,5 +1,5 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.100
+// Version: v0.4.101
 // Updated: 2026-04-16 PT
 // Part of: Wipomo / CCE Solar Tools
 
@@ -1319,6 +1319,7 @@ function countAnnualGenHours(solarH, loadH, batKwh, batKw, genKw, fuelCostPerKwH
   let genRunning = false;
   let genHoursTotal = 0;  // all hours — for fuel cost
   let genHoursNonWw = 0;  // hours outside worst window — for 52 hr/yr ordinance check
+  let lastGenStopH  = -99; // hour index of most recent generator stop (prevents multi-fire)
 
   for (let h = 0; h < N; h++) {
     const sol = solarH[h];
@@ -1327,17 +1328,19 @@ function countAnnualGenHours(solarH, loadH, batKwh, batKw, genKw, fuelCostPerKwH
     const hr  = h % 24;
 
     // Stop: battery recharged or solar covers load
-    if (genRunning && batE >= batMax * 0.95) genRunning = false;
-    if (genRunning && sol >= ld)             genRunning = false;
+    if (genRunning && batE >= batMax * 0.95) { genRunning = false; lastGenStopH = h; }
+    if (genRunning && sol >= ld)             { genRunning = false; lastGenStopH = h; }
 
-    // Planning trigger (mirrors dispatchGenerator): fire in the afternoon/evening when
-    // the battery is below 75% SOC and solar is not covering load.  This prevents the
-    // battery from draining to the hard floor overnight on high-load days, which is how
-    // the system actually operates (and is far more fuel-efficient: a 1-hr top-up at 75%
-    // vs a 4-hr emergency refill from 10% covers the same energy deficit in 4× less time).
-    // Without this trigger, countAnnualGenHours over-counts annual hours on high-load
-    // scenarios — causing the optimizer to require over-sized batteries and PV.
-    if (!genRunning && ((hr >= 14 && sol < ld) || hr === 18) && batE < batMax * 0.75) genRunning = true;
+    // Planning trigger (mirrors dispatchGenerator): fire once per cycle in the afternoon when
+    // the battery is below 75% SOC and solar is not covering load.
+    // IMPORTANT: guarded by (h - lastGenStopH >= 8) to prevent multi-fire.  Without this guard
+    // the trigger fires at hr=14, charges the battery to 95%, stops at hr=16, the battery
+    // drains back below 75% by hr=20, fires again, charges, stops at hr=22, fires again at
+    // hr=2am — inflating annual hours 3-5× vs reality (e.g. 2380 hr/yr instead of ~400 hr/yr).
+    // The 8-hour refractory window matches dispatchGenerator's implicit single-run-per-day
+    // behaviour (shortageExpected lookahead prevents same-evening re-triggers there).
+    if (!genRunning && (h - lastGenStopH >= 8) &&
+        ((hr >= 14 && sol < ld) || hr === 18) && batE < batMax * 0.75) genRunning = true;
 
     // Emergency fallback: battery has hit the HARD FLOOR (BATTERY_MIN_SOC = 10%) AND
     // solar cannot cover load.  Also prevents the same-timestep stop-restart race on
@@ -4027,7 +4030,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.100</span>
+        <span style={S.version}>v0.4.101</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto"}}>
           <a href="https://tools.cc-energy.org/index.html"
