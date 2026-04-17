@@ -1,5 +1,5 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.96
+// Version: v0.4.97
 // Updated: 2026-04-16 PT
 // Part of: Wipomo / CCE Solar Tools
 
@@ -1130,7 +1130,11 @@ function dispatchGenerator(solarH, loadH, batKwh, batKw, genKw, weather, lookahe
   const batMin = batKwh * BATTERY_MIN_SOC;
   const batMax = batKwh;
   let batE = batKwh * 0.5;
-  let genRunning = false;
+  let genRunning    = false;
+  let genByPlanning = false;   // true when current run was started by the planning lookahead trigger
+                                // (vs. the emergency floor trigger).  Planning runs skip canStop —
+                                // they charge all the way to 95% rather than stopping early on the
+                                // optimistic assumption that tomorrow's solar can finish the job.
   let genHours = 0;      // total hours running across full stress window (spinup + WW)
   let wwGenHours = 0;    // hours running only during the worst 10-day window (emergency operation)
   let wwLoad = 0, wwUns = 0;
@@ -1210,16 +1214,20 @@ function dispatchGenerator(solarH, loadH, batKwh, batKw, genKw, weather, lookahe
     const inWW = r.isWorstWindow;
 
     // ── Stop conditions ──────────────────────────────────────────────────────
-    // 1. Battery full
-    if (genRunning && batE >= batMax * 0.95) genRunning = false;
+    // 1. Battery full — always stops the generator (applies to both planning and emergency runs)
+    if (genRunning && batE >= batMax * 0.95) { genRunning = false; genByPlanning = false; }
     // 2. Solar alone covers load — hand off to solar+battery
-    if (genRunning && sol >= ld) genRunning = false;
-    // 3. Tomorrow's PV will finish the job — stop early
-    if (genRunning && canStop(h)) genRunning = false;
+    if (genRunning && sol >= ld)             { genRunning = false; genByPlanning = false; }
+    // 3. Tomorrow's PV will finish the job — stop early.
+    //    SKIPPED for planning runs: canStop is optimistic about consecutive bad days and
+    //    causes a "small boost" pattern where the generator stops at 65-70% SOC then must
+    //    restart the next night.  Planning runs always charge to 95%; only emergency runs
+    //    (genByPlanning = false) use this early-stop optimisation.
+    if (genRunning && !genByPlanning && canStop(h)) genRunning = false;
 
     // ── Start conditions ─────────────────────────────────────────────────────
-    // Emergency: battery hit floor
-    if (!genRunning && batE <= batMax * 0.20) genRunning = true;
+    // Emergency: battery hit floor — resets planning flag (this is not a planning run)
+    if (!genRunning && batE <= batMax * 0.20) { genRunning = true; genByPlanning = false; }
 
     // Planning: afternoon trigger — will tonight drain to batMin?
     // Guard: only start when battery has discharged below 75%.  Starting when the battery
@@ -1228,11 +1236,11 @@ function dispatchGenerator(solarH, loadH, batKwh, batKw, genKw, weather, lookahe
     // for that energy to go and the output is curtailed.  The 95% stop condition then
     // fires after just one hour (battery still full), wasting a run, while the battery
     // drains overnight anyway and the emergency trigger fires again.  Waiting until the
-    // battery is below 75% ensures every planning run does useful charging work and
-    // reduces total annual run hours — allowing smaller batteries to qualify.
+    // battery is below 75% ensures every planning run does useful charging work.
+    // genByPlanning = true so this run charges to 95% without canStop cutting it short.
     const afternoonTrigger = (hr >= 12 && sol < ld) || hr === 18;
     if (afternoonTrigger && !genRunning && batE < batMax * 0.75) {
-      if (shortageExpected(h)) genRunning = true;
+      if (shortageExpected(h)) { genRunning = true; genByPlanning = true; }
     }
 
     const genOut = genRunning ? genKw : 0;
@@ -3963,7 +3971,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.96</span>
+        <span style={S.version}>v0.4.97</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto"}}>
           <a href="https://tools.cc-energy.org/index.html"
