@@ -1,5 +1,5 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.102
+// Version: v0.4.104
 // Updated: 2026-04-16 PT
 // Part of: Wipomo / CCE Solar Tools
 
@@ -1029,7 +1029,7 @@ async function fetchPVWatts(lat, lon, apiKey, arrayType, tilt, azimuth, losses, 
     dc_ac_ratio:    dcAcRatio,
     timeframe:      "hourly",
   });
-  const url = `https://developer.nrel.gov/api/pvwatts/v8.json?${params}`;
+  const url = `https://developer.nlr.gov/api/pvwatts/v8.json?${params}`;
   const resp = await fetch(url);
   if (!resp.ok) throw new Error(`PVWatts HTTP ${resp.status}: ${resp.statusText}`);
   const data = await resp.json();
@@ -1293,7 +1293,7 @@ function dispatchGenerator(solarH, loadH, batKwh, batKw, genKw, weather, lookahe
 // wwStartH/wwLenH: worst-window hours are excluded from annualGenHours (ordinance count)
 // but included in genHoursTotal (fuel cost). Pass wwStartH=-1 to count all hours.
 function countAnnualGenHours(solarH, loadH, batKwh, batKw, genKw, fuelCostPerKwHr,
-                             wwStartH = -1, wwLenH = 0, lookaheadDays = 4) {
+                             wwStartH = -1, wwLenH = 0, lookaheadDays = 4, returnTrace = false) {
   const N = solarH.length;
   const batMin = batKwh * BATTERY_MIN_SOC;
   const batMax = batKwh;
@@ -1304,6 +1304,8 @@ function countAnnualGenHours(solarH, loadH, batKwh, batKw, genKw, fuelCostPerKwH
   let genByPlanning = false;
   let genHoursTotal = 0;
   let genHoursNonWw = 0;
+  const traceBat = returnTrace ? new Float32Array(N) : null;
+  const traceGen = returnTrace ? new Uint8Array(N)   : null;
 
   // shortageExpected — identical to dispatchGenerator but uses h%24 for hourOfDay
   function shortageExpected(h) {
@@ -1396,11 +1398,13 @@ function countAnnualGenHours(solarH, loadH, batKwh, batKw, genKw, fuelCostPerKwH
     const avail = Math.min(Math.max(0, batE - batMin), batKw);
     const bd = Math.min(res, avail);
     batE -= bd;
+    if (returnTrace) { traceBat[h] = batE; traceGen[h] = genRunning ? 1 : 0; }
   }
 
   return {
     annualGenHours: genHoursNonWw,
     annualGenCost:  Math.round(genHoursTotal * fuelCostPerKwHr * genKw),
+    traceBat, traceGen,
   };
 }
 
@@ -2098,6 +2102,15 @@ function App() {
   const genChartContainerRef = useRef(null);
   const [pinnedEvRow,     setPinnedEvRow]     = useState(null);
   const [pinnedGenRow,    setPinnedGenRow]    = useState(null);
+  // Annual trace chart state
+  const [annZoomH,  setAnnZoomH]  = useState(0);        // zoom window start, hours into year
+  const [annZoomW,  setAnnZoomW]  = useState(14 * 24);  // zoom window width in hours
+  const annOverviewRef       = useRef(null);   // canvas for full-year overview strip
+  const annDetailContRef     = useRef(null);   // container div (wheel listener)
+  const annP1Ref             = useRef(null);   // canvas for detail power chart
+  const annP2Ref             = useRef(null);   // canvas for detail battery chart
+  const annP1Inst            = useRef(null);   // Chart.js instance – power
+  const annP2Inst            = useRef(null);   // Chart.js instance – battery
   const diagCrosshairIdx                      = useRef(-1);
   const [diagHoverRow,    setDiagHoverRow]    = useState(null);
   // Slice refs: hold current visible slice so onContextMenu can look up position from event coords
@@ -2888,6 +2901,29 @@ function App() {
             criticalLoadKwhPerDay,
           });
           res._genOptResult = genOptResult;
+
+          // Annual trace for winner — powers the full-year dispatch chart
+          const winOpt = genOptResult.optimum;
+          if (winOpt && loadHourly) {
+            const winMount = mountOptions.find(m => m.label === winOpt.mountLabel);
+            if (winMount) {
+              const winSolar = winMount.solarNormalized.map(x => x * winOpt.pvKw);
+              const _wwSA = ((res.spinupStartDoy - 1) + (res._cell.spinup_days || 0)) * 24 % 8760;
+              const _wwLA = (res._cell.window_days || 10) * 24;
+              const annTr = countAnnualGenHours(
+                winSolar, loadHourly, winOpt.batteryKwh, winOpt.batteryKw, winOpt.genKw,
+                fuelCostPerHour, _wwSA, _wwLA, genLookaheadDays, true
+              );
+              genOptResult.annualTrace = {
+                bat: annTr.traceBat,
+                gen: annTr.traceGen,
+                sol: new Float32Array(winSolar),
+                ld:  new Float32Array(loadHourly),
+                batKwh: winOpt.batteryKwh,
+                genKw:  winOpt.genKw,
+              };
+            }
+          }
         }
       }
 
@@ -3208,6 +3244,158 @@ function App() {
 
     return () => { [evP1Inst, evP2Inst, evP3Inst].forEach(ref => { if (ref.current) { ref.current.destroy(); ref.current = null; } }); };
   }, [result]);
+
+  // ── Annual trace chart — overview canvas + zoom detail ────────────────────
+
+  // Convert 0-based hour index to a readable date string (non-leap year)
+  function hourToLabel(h) {
+    const dim = [31,28,31,30,31,30,31,31,30,31,30,31];
+    const mn  = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    let day = Math.floor(h / 24), hr = h % 24;
+    for (let m = 0; m < 12; m++) {
+      if (day < dim[m]) return `${mn[m]} ${day + 1} ${String(hr).padStart(2,"0")}:00`;
+      day -= dim[m];
+    }
+    return `Dec 31 ${String(hr).padStart(2,"0")}:00`;
+  }
+
+  // Overview canvas — full-year daily aggregates
+  useEffect(() => {
+    const trace = result?._genOptResult?.annualTrace;
+    const canvas = annOverviewRef.current;
+    if (!trace || !canvas) return;
+    const W = canvas.parentElement?.offsetWidth || 800;
+    canvas.width  = W;
+    canvas.height = 72;
+    const H = 72, N = 8760;
+    const { bat, gen, batKwh } = trace;
+    // Daily aggregates
+    const dailyGenHrs = new Float32Array(365);
+    const dailyBatAvg = new Float32Array(365);
+    for (let day = 0; day < 365; day++) {
+      let gs = 0, bs = 0;
+      for (let hr = 0; hr < 24; hr++) {
+        const h = day * 24 + hr;
+        gs += gen[h]; bs += bat[h];
+      }
+      dailyGenHrs[day] = gs;
+      dailyBatAvg[day] = bs / 24 / batKwh;
+    }
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, W, H);
+    const dw = W / 365;
+    for (let day = 0; day < 365; day++) {
+      const x = day * dw, w = Math.max(1, dw);
+      // Battery SOC — blue fill from bottom
+      const soc = dailyBatAvg[day];
+      const bh = soc * H * 0.75;
+      ctx.fillStyle = `rgba(30,100,200,${0.12 + soc * 0.5})`;
+      ctx.fillRect(x, H - bh, w, bh);
+      // Generator hours — orange bar from bottom (layered above battery for visibility)
+      if (dailyGenHrs[day] > 0) {
+        const gh = (dailyGenHrs[day] / 24) * H * 0.5;
+        ctx.fillStyle = "rgba(210,80,10,0.85)";
+        ctx.fillRect(x, H - gh, w, gh);
+      }
+    }
+    // Month dividers + labels
+    const mStart = [0,31,59,90,120,151,181,212,243,273,304,334];
+    const mName  = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    ctx.font = "9px sans-serif"; ctx.fillStyle = "#444";
+    mStart.forEach((d, i) => {
+      const x = (d / 365) * W;
+      ctx.strokeStyle = "rgba(0,0,0,0.12)"; ctx.lineWidth = 0.5;
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+      if (x + 2 < W - 10) ctx.fillText(mName[i], x + 2, H - 2);
+    });
+    // Zoom window highlight
+    const z1 = (annZoomH / N) * W, z2 = ((annZoomH + annZoomW) / N) * W;
+    ctx.fillStyle = "rgba(0,60,200,0.12)";
+    ctx.fillRect(z1, 0, z2 - z1, H);
+    ctx.strokeStyle = "#1a4a7a"; ctx.lineWidth = 1.5;
+    ctx.strokeRect(z1 + 0.5, 0.5, Math.max(1, z2 - z1 - 1), H - 1);
+  }, [result, annZoomH, annZoomW]);
+
+  // Native wheel listener — prevents page scroll while zooming the chart
+  useEffect(() => {
+    const el = annDetailContRef.current;
+    if (!el) return;
+    const handler = (e) => {
+      e.preventDefault();
+      const factor = e.deltaY > 0 ? 1.35 : 1 / 1.35;
+      setAnnZoomW(oldW => {
+        const newW = Math.max(48, Math.min(8760, Math.round(oldW * factor)));
+        setAnnZoomH(oldH => Math.max(0, Math.min(8760 - newW, Math.round((oldH + oldW / 2) - newW / 2))));
+        return newW;
+      });
+    };
+    el.addEventListener("wheel", handler, { passive: false });
+    return () => el.removeEventListener("wheel", handler);
+  }, [result]);   // re-attach if result (and therefore the div) changes
+
+  // Detail charts — Power + Battery panels for zoom window
+  useEffect(() => {
+    const trace = result?._genOptResult?.annualTrace;
+    if (!trace || !annP1Ref.current || !annP2Ref.current) return;
+    if (annP1Inst.current) { annP1Inst.current.destroy(); annP1Inst.current = null; }
+    if (annP2Inst.current) { annP2Inst.current.destroy(); annP2Inst.current = null; }
+    const { bat, gen, sol, ld, batKwh, genKw } = trace;
+    const startH = Math.max(0, annZoomH);
+    const endH   = Math.min(8760, annZoomH + annZoomW);
+    const nHours = endH - startH;
+    // Downsample when > 720 pts (30 days) to keep Chart.js snappy
+    const step   = Math.max(1, Math.floor(nHours / 720));
+    const labels = [], solDs = [], ldDs = [], genDs = [], batDs = [];
+    for (let h = startH; h < endH; h += step) {
+      labels.push(hourToLabel(h));
+      solDs.push(+sol[h].toFixed(2));
+      ldDs.push(+ld[h].toFixed(2));
+      genDs.push(gen[h] ? genKw : 0);
+      batDs.push(+bat[h].toFixed(2));
+    }
+    const batMinLine = new Array(labels.length).fill(+(batKwh * BATTERY_MIN_SOC).toFixed(2));
+    const commonOpt = (bottom) => ({
+      animation: false, responsive: true, maintainAspectRatio: false,
+      scales: {
+        x: { ticks: { maxTicksLimit: bottom ? 10 : 6, font: { size: 9 }, maxRotation: 0 },
+             grid: { color: "#f0f0f0" }, display: true },
+      },
+      plugins: { legend: { labels: { font: { size: 10 }, boxWidth: 10 } }, tooltip: { enabled: false } },
+      layout: { padding: { right: 8 } },
+    });
+    // Panel 1: Power kW
+    const opt1 = commonOpt(false);
+    opt1.scales.y = { title: { display: true, text: "kW", font: { size: 10 } },
+      beginAtZero: true, min: 0, ticks: { font: { size: 9 } }, grid: { color: "#f0f0f0" } };
+    annP1Inst.current = new Chart(annP1Ref.current, {
+      type: "line",
+      data: { labels, datasets: [
+        { label: "Solar kW",          data: solDs, borderColor: "#d48000", backgroundColor: "rgba(244,160,32,0.25)", fill: true,  tension: 0, pointRadius: 0, borderWidth: 1.5 },
+        { label: "Load kW",           data: ldDs,  borderColor: "#204090", backgroundColor: "rgba(48,96,192,0.12)",  fill: true,  tension: 0, pointRadius: 0, borderWidth: 1.5 },
+        { label: `Generator ${genKw} kW`, data: genDs, borderColor: "#c05010", backgroundColor: "rgba(200,80,20,0.30)", fill: true, tension: 0, pointRadius: 0, borderWidth: 1.5 },
+      ]},
+      options: opt1,
+      plugins: [WHITE_BG],
+    });
+    // Panel 2: Battery kWh
+    const opt2 = commonOpt(true);
+    opt2.scales.y = { title: { display: true, text: "kWh", font: { size: 10 } },
+      beginAtZero: true, min: 0, max: batKwh * 1.05, ticks: { font: { size: 9 } }, grid: { color: "#f0f0f0" } };
+    annP2Inst.current = new Chart(annP2Ref.current, {
+      type: "line",
+      data: { labels, datasets: [
+        { label: `Battery (${batKwh} kWh)`, data: batDs, borderColor: "#107040", backgroundColor: "rgba(32,160,96,0.25)", fill: true,  tension: 0, pointRadius: 0, borderWidth: 1.5 },
+        { label: `Min SOC (${(batKwh * BATTERY_MIN_SOC).toFixed(1)} kWh)`, data: batMinLine, borderColor: "#107040", borderDash: [4,3], backgroundColor: "transparent", fill: false, pointRadius: 0, borderWidth: 1 },
+      ]},
+      options: opt2,
+      plugins: [WHITE_BG],
+    });
+    return () => {
+      if (annP1Inst.current) { annP1Inst.current.destroy(); annP1Inst.current = null; }
+      if (annP2Inst.current) { annP2Inst.current.destroy(); annP2Inst.current = null; }
+    };
+  }, [result, annZoomH, annZoomW]);
 
   // ── Chart: Phase 2 EV impact — solar/load + battery SOC + per-EV SOC panels ─
 
@@ -4053,7 +4241,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.102</span>
+        <span style={S.version}>v0.4.104</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto"}}>
           <a href="https://tools.cc-energy.org/index.html"
@@ -4878,6 +5066,73 @@ function App() {
                         "ann hrs fails" = configs rejected because annual gen hrs &gt; {result._genHrLimit} hr/yr limit.
                         "Best ann hr" = lowest annual gen hrs seen across all PV+gen combos for that battery.
                         Green rows pass all criteria; red rows have no passing configuration.
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* Annual generator dispatch chart */}
+                {result._genOptResult?.annualTrace && (() => {
+                  const opt = result._genOptResult.optimum;
+                  const zoomDays = (annZoomW / 24).toFixed(1);
+                  const zoomLabel = annZoomW < 96 ? `${annZoomW} hr`
+                    : annZoomW < 336 ? `${zoomDays} days`
+                    : annZoomW < 8760 ? `${(annZoomW / 168).toFixed(1)} weeks`
+                    : "full year";
+                  const sliderMax = Math.max(0, 8760 - annZoomW);
+                  function scrollBy(dir) {
+                    setAnnZoomH(h => Math.max(0, Math.min(sliderMax, h + dir * Math.round(annZoomW * 0.5))));
+                  }
+                  function handleOverviewClick(e) {
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    const frac = (e.clientX - rect.left) / rect.width;
+                    const center = Math.round(frac * 8760);
+                    setAnnZoomH(Math.max(0, Math.min(sliderMax, center - Math.round(annZoomW / 2))));
+                  }
+                  return (
+                    <div style={S.card}>
+                      <div style={{ fontSize: "12px", fontWeight: 700, color: "#1a4a7a", marginBottom: "6px" }}>
+                        📅 Annual Generator Dispatch — {opt.pvKw} kW {opt.mountLabel} · {opt.batteryLabel} · {opt.genKw} kW gen
+                      </div>
+                      <div style={{ fontSize: "10px", color: "#666", marginBottom: "3px" }}>
+                        Full-year overview — <span style={{ color: "#1a60c0" }}>■</span> battery SOC avg/day &nbsp;
+                        <span style={{ color: "rgba(210,80,10,0.9)" }}>■</span> generator hrs/day. Click to navigate.
+                      </div>
+                      <canvas
+                        ref={annOverviewRef}
+                        style={{ width: "100%", height: "72px", display: "block", cursor: "pointer",
+                                 border: "1px solid #ddd", borderRadius: "3px" }}
+                        onClick={handleOverviewClick}
+                      />
+                      <div style={{ fontSize: "10px", color: "#666", margin: "7px 0 2px" }}>
+                        Detail view — {zoomLabel} · scroll wheel to zoom · ← → buttons or slider to pan
+                      </div>
+                      <div ref={annDetailContRef} style={{ touchAction: "none" }}>
+                        <div style={{ height: "160px" }}>
+                          <canvas ref={annP1Ref} style={{ width: "100%", height: "100%" }} />
+                        </div>
+                        <div style={{ height: "120px", marginTop: "3px" }}>
+                          <canvas ref={annP2Ref} style={{ width: "100%", height: "100%" }} />
+                        </div>
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "6px" }}>
+                        <button
+                          style={{ padding: "3px 12px", fontSize: "14px", cursor: "pointer",
+                                   border: "1px solid #aaa", borderRadius: "4px", background: "#f5f5f5",
+                                   lineHeight: 1.2 }}
+                          onClick={() => scrollBy(-1)}>←</button>
+                        <input
+                          type="range" min={0} max={sliderMax} value={Math.min(annZoomH, sliderMax)}
+                          onChange={e => setAnnZoomH(Number(e.target.value))}
+                          style={{ flex: 1 }}
+                        />
+                        <button
+                          style={{ padding: "3px 12px", fontSize: "14px", cursor: "pointer",
+                                   border: "1px solid #aaa", borderRadius: "4px", background: "#f5f5f5",
+                                   lineHeight: 1.2 }}
+                          onClick={() => scrollBy(1)}>→</button>
+                        <span style={{ fontSize: "10px", color: "#888", whiteSpace: "nowrap",
+                                       minWidth: "60px", textAlign: "right" }}>{zoomLabel}</span>
                       </div>
                     </div>
                   );
