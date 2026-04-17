@@ -1,5 +1,5 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.101
+// Version: v0.4.102
 // Updated: 2026-04-16 PT
 // Part of: Wipomo / CCE Solar Tools
 
@@ -1284,75 +1284,98 @@ function dispatchGenerator(solarH, loadH, batKwh, batKw, genKw, weather, lookahe
 }
 
 // Counts generator-on hours over a full annual (8760-h) simulation.
-// Uses the same dispatch logic as dispatchGenerator but without a weather object —
-// hour-of-day is derived as h % 24.  No worst-window tracking.
-// Returns { annualGenHours, annualGenCost }.
-// countAnnualGenHours uses only the EMERGENCY floor trigger (battery ≤ 20%), NOT the
-// afternoon-lookahead planning trigger used in dispatchGenerator.
-// Rationale: the generator is an emergency-only device. In a typical TMY year with adequate PV,
-// the battery handles all load without help; the generator should fire only if the battery truly
-// hits the floor. The planning trigger is appropriate for the stress-window (where we know solar
-// will be scarce for days), but in a typical year it fires during ordinary cloudy spells, inflating
-// annual hours and forcing the optimizer to require more PV than the battery-only path — wrong.
-// Using floor-only here means typical-year hours stay near zero, the 52 hr/yr ordinance limit
-// passes easily, and battery+generator always needs ≤ the same PV as battery-only.
-// wwStartH: first hour index (0-based, in the 8760 TMY array) of the worst-window period.
-// wwLenH:   length of that period in hours (typically 10 × 24 = 240).
-// Generator hours during the worst window are treated as emergency operation — they are
-// excluded from the 52 hr/yr ordinance count (annualGenHours) but still accumulate in
-// genHoursTotal so that fuel cost (which is real money spent) is calculated correctly.
-// Pass wwStartH = -1 (default) to count all hours (backward-compatible).
+// Uses IDENTICAL dispatch logic to dispatchGenerator — same shortageExpected lookahead,
+// same canStop logic, same genByPlanning flag, same start/stop thresholds.
+// The only difference: no weather object (hourOfDay = h % 24) and no per-hour trace.
+// This ensures the rules are the same between the stress-window simulation and the annual
+// simulation — if the generator only fires 3 times in the worst 10 days, it should fire
+// proportionally few times in a typical year (where solar is generally better).
+// wwStartH/wwLenH: worst-window hours are excluded from annualGenHours (ordinance count)
+// but included in genHoursTotal (fuel cost). Pass wwStartH=-1 to count all hours.
 function countAnnualGenHours(solarH, loadH, batKwh, batKw, genKw, fuelCostPerKwHr,
-                             wwStartH = -1, wwLenH = 0) {
+                             wwStartH = -1, wwLenH = 0, lookaheadDays = 4) {
   const N = solarH.length;
   const batMin = batKwh * BATTERY_MIN_SOC;
   const batMax = batKwh;
-  // Start at full charge (100%).  The stress-window simulation has an autumn spinup period
-  // that naturally charges the battery from 50% to ~80-90% before the worst winter window
-  // arrives.  The annual simulation starts January 1 with no such spinup advantage, so a
-  // 50% start would let the battery drain to the floor in the first few winter weeks for any
-  // system that barely passes the battery-only stress window — triggering spurious generator
-  // hours that the stress-window simulation never sees.  Starting at 100% is equivalent to
-  // assuming the battery was fully charged at the end of the preceding summer, which is the
-  // correct initial condition for a well-operated off-grid system.
+  const planThresh = batMax * 0.25;  // matches dispatchGenerator
+  // Start at full charge — correct initial condition for a system that finished summer fully charged.
   let batE = batKwh;
-  let genRunning = false;
-  let genHoursTotal = 0;  // all hours — for fuel cost
-  let genHoursNonWw = 0;  // hours outside worst window — for 52 hr/yr ordinance check
-  let lastGenStopH  = -99; // hour index of most recent generator stop (prevents multi-fire)
+  let genRunning    = false;
+  let genByPlanning = false;
+  let genHoursTotal = 0;
+  let genHoursNonWw = 0;
+
+  // shortageExpected — identical to dispatchGenerator but uses h%24 for hourOfDay
+  function shortageExpected(h) {
+    let projE    = batE;
+    const hrNow  = h % 24;
+    const maxHrs = (24 - hrNow) + lookaheadDays * 24;
+    let pastSolar = solarH[Math.min(h, N-1)] < loadH[Math.min(h, N-1)];
+    let seenDark  = pastSolar;
+    for (let j = 0; j < maxHrs; j++) {
+      const idx = h + j;
+      if (idx >= N) break;
+      const net = solarH[idx] - loadH[idx];
+      if (solarH[idx] === 0) seenDark = true;
+      if (!pastSolar && net < 0) pastSolar = true;
+      projE += net > 0 ? net * BATTERY_RTE : net;
+      projE  = Math.min(projE, batMax);
+      if (projE < planThresh)              return true;
+      if (pastSolar && seenDark && net >= 0) return false;
+    }
+    return false;
+  }
+
+  // canStop — identical to dispatchGenerator
+  function canStop(h) {
+    let projE    = batE;
+    let pastSolar = solarH[Math.min(h, N-1)] < loadH[Math.min(h, N-1)];
+    let seenDark  = pastSolar;
+    let recovIdx  = -1;
+    for (let j = 0; j < 48; j++) {
+      const idx = h + j;
+      if (idx >= N) break;
+      const net = solarH[idx] - loadH[idx];
+      if (solarH[idx] === 0) seenDark = true;
+      if (!pastSolar && net < 0) pastSolar = true;
+      projE += net > 0 ? net * BATTERY_RTE : net;
+      projE  = Math.min(projE, batMax);
+      if (projE < planThresh)              return false;
+      if (pastSolar && seenDark && net >= 0) { recovIdx = idx; break; }
+    }
+    if (recovIdx < 0) return false;
+    let tmrCharge = 0;
+    for (let j = 0; j < 20; j++) {
+      const idx = Math.min(recovIdx + j, N - 1);
+      const net = solarH[idx] - loadH[idx];
+      if (net > 0) tmrCharge += net * BATTERY_RTE;
+      else if (j > 4) break;
+    }
+    return Math.min(projE + tmrCharge, batMax) >= batMax * 0.90;
+  }
 
   for (let h = 0; h < N; h++) {
     const sol = solarH[h];
     const ld  = loadH[h];
-    // Hour of day (0–23) derived from position in the 8760-h TMY array.
     const hr  = h % 24;
 
-    // Stop: battery recharged or solar covers load
-    if (genRunning && batE >= batMax * 0.95) { genRunning = false; lastGenStopH = h; }
-    if (genRunning && sol >= ld)             { genRunning = false; lastGenStopH = h; }
+    // Stop conditions — identical to dispatchGenerator
+    if (genRunning && batE >= batMax * 0.95) { genRunning = false; genByPlanning = false; }
+    if (genRunning && sol >= ld)             { genRunning = false; genByPlanning = false; }
+    if (genRunning && !genByPlanning && canStop(h)) genRunning = false;
 
-    // Planning trigger (mirrors dispatchGenerator): fire once per cycle in the afternoon when
-    // the battery is below 75% SOC and solar is not covering load.
-    // IMPORTANT: guarded by (h - lastGenStopH >= 8) to prevent multi-fire.  Without this guard
-    // the trigger fires at hr=14, charges the battery to 95%, stops at hr=16, the battery
-    // drains back below 75% by hr=20, fires again, charges, stops at hr=22, fires again at
-    // hr=2am — inflating annual hours 3-5× vs reality (e.g. 2380 hr/yr instead of ~400 hr/yr).
-    // The 8-hour refractory window matches dispatchGenerator's implicit single-run-per-day
-    // behaviour (shortageExpected lookahead prevents same-evening re-triggers there).
-    if (!genRunning && (h - lastGenStopH >= 8) &&
-        ((hr >= 14 && sol < ld) || hr === 18) && batE < batMax * 0.75) genRunning = true;
+    // Start: emergency floor
+    if (!genRunning && batE <= batMax * 0.20) { genRunning = true; genByPlanning = false; }
 
-    // Emergency fallback: battery has hit the HARD FLOOR (BATTERY_MIN_SOC = 10%) AND
-    // solar cannot cover load.  Also prevents the same-timestep stop-restart race on
-    // mornings when solar rises to cover load after a generator-assisted night.
-    if (!genRunning && batE <= batMax * BATTERY_MIN_SOC && sol < ld) genRunning = true;
+    // Start: planning trigger with shortageExpected lookahead — same as dispatchGenerator
+    const afternoonTrigger = (hr >= 12 && sol < ld) || hr === 18;
+    if (afternoonTrigger && !genRunning && batE < batMax * 0.75) {
+      if (shortageExpected(h)) { genRunning = true; genByPlanning = true; }
+    }
 
     const genOut = genRunning ? genKw : 0;
     if (genRunning) {
       genHoursTotal++;
-      // Determine whether this hour falls inside the worst window.
-      // wwStartH < 0 means no mask provided — count all hours.
-      // Handles year-wrap (e.g. worst window spans Dec → Jan).
       const inWw = wwStartH >= 0 && wwLenH > 0 && (
         wwStartH + wwLenH <= N
           ? (h >= wwStartH && h < wwStartH + wwLenH)
@@ -1376,8 +1399,8 @@ function countAnnualGenHours(solarH, loadH, batKwh, batKw, genKw, fuelCostPerKwH
   }
 
   return {
-    annualGenHours: genHoursNonWw,                                    // ordinance-countable hours (outside worst window)
-    annualGenCost:  Math.round(genHoursTotal * fuelCostPerKwHr * genKw), // fuel cost on ALL hours (real expenditure)
+    annualGenHours: genHoursNonWw,
+    annualGenCost:  Math.round(genHoursTotal * fuelCostPerKwHr * genKw),
   };
 }
 
@@ -1392,7 +1415,7 @@ function sweepGenerators(solarH, loadH, batKwh, batKw, weather, genSizesKw, fuel
     const r = dispatchGenerator(solarH, loadH, batKwh, batKw, genKw, weather, lookaheadDays, fuelCostPerKwHr);
     if (annualSolarH && annualLoadH) {
       const ann = countAnnualGenHours(annualSolarH, annualLoadH, batKwh, batKw, genKw, fuelCostPerKwHr,
-                                      wwStartH, wwLenH);
+                                      wwStartH, wwLenH, lookaheadDays);
       r.annualGenHours = ann.annualGenHours;
       r.annualGenCost  = ann.annualGenCost;
     }
@@ -1481,7 +1504,7 @@ function findOptimumGenerator({ mountOptions, pvSizesKw, batteryOptions, genSize
             ? { annualGenHours: 0, annualGenCost: 0 }
             : (annualSolarH && loadAnnual)
               ? countAnnualGenHours(annualSolarH, loadAnnual, bat.kwh, bat.kw, genKw, fuelCostPerKwHr,
-                                    wwStartH8760, wwLenH8760)
+                                    wwStartH8760, wwLenH8760, lookaheadDays)
               : { annualGenHours: r.simGenHours, annualGenCost: r.annualGenCost };
           row.annGenHours = ann.annualGenHours;
           row.annFuelCostPerYr = ann.annualGenCost;
@@ -4030,7 +4053,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.101</span>
+        <span style={S.version}>v0.4.102</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto"}}>
           <a href="https://tools.cc-energy.org/index.html"
