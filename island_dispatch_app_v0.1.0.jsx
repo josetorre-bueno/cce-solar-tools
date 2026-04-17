@@ -1,6 +1,6 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.115
-// Updated: 2026-04-17 20:00 PT
+// Version: v0.4.116
+// Updated: 2026-04-17 21:30 PT
 // Part of: Wipomo / CCE Solar Tools
 
 "use strict";
@@ -938,6 +938,10 @@ function findOptimum(params) {
 
   const allResults = [];
 
+  // If V2G EVs are in the scenario, annual sim cannot model their discharge contribution,
+  // so we skip the annual check and trust the stress-window pass (same as pre-v0.4.116 behaviour).
+  const hasV2gInScenario = evScenario.some(ev => ev.canV2G);
+
   for (const mount of mountOptions) {
     const solarSw = extractWindow(mount.solarNormalized, spinupDoy, cell.n_hours);
 
@@ -948,6 +952,29 @@ function findOptimum(params) {
       for (const bat of batteryOptions) {
         if (bat.kwh < codeMinBatKwh) continue; // below 3× winter-avg minimum — AHJ will reject
         const r = dispatch(solarH, loadSw, bat.kwh, bat.kw, evScenario, weather, dcfcCostPerKwh, false, erMinKwh);
+
+        // ── Criterion 2: annual full-year coverage ─────────────────────────
+        // Only run for WW-passing configs (saves time on clear failures).
+        // V2G EVs are skipped: countAnnualGenHours cannot model V2G discharge, so
+        // we conservatively assume annual coverage passes when the stress window passes.
+        // null = WW failed (annual check skipped entirely).
+        let annualUnservedKwh   = null;
+        let annualUnservedHours = null;
+        if (r.wwPass) {
+          if (hasV2gInScenario) {
+            // Trust WW pass for V2G-assisted designs — annual sim would undercount storage
+            annualUnservedKwh   = 0;
+            annualUnservedHours = 0;
+          } else if (loadHourly) {
+            const annSolarH  = mount.solarNormalized.map(x => x * pvKw);
+            const annWeather = buildAnnualWeather(annSolarH.length);
+            const annR = simulatePeriod(annSolarH, loadHourly, bat.kwh, bat.kw, 0, [], annWeather, {
+              initialSoc: 1.0,
+            });
+            annualUnservedKwh   = annR.unservedKwh;
+            annualUnservedHours = annR.unservedHours;
+          }
+        }
 
         const pvCost   = Math.round(pvKw * mount.pvCostPerKw);
         const batCost  = Math.round(bat.fixedCost);
@@ -994,17 +1021,30 @@ function findOptimum(params) {
           systemCost:                  sysCost,
           npvDcfc,
           totalCost,
+          annualUnservedKwh,      // null = WW failed; 0 = passes annual coverage; >0 = fails
+          annualUnservedHours,
         });
       }
     }
   }
 
-  // Pass filter: two separate DCFC thresholds with different concerns.
-  // En-route: DCFC added to an already-scheduled trip — cost concern, higher tolerance.
-  // Emergency: special trip made solely to charge — inconvenience concern, stricter limit.
-  // Both still enter totalCost so the optimizer always prefers more solar/battery.
+  // ── Pass filters ──────────────────────────────────────────────────────────────
+  // WW-only: Criterion 3 (worst window) + DCFC limits, no annual check.
+  // Used as fallback display when no fully-valid config exists.
+  const passingWwOnly = allResults.filter(r =>
+    r.wwPass &&
+    r.nonWwAnnualEnrouteDcfc   <= effectiveEnrouteLimit &&
+    r.nonWwAnnualEmergencyDcfc <= effectiveEmergencyLimit
+  );
+  const wwOnlyOptimum = passingWwOnly.length > 0
+    ? passingWwOnly.reduce((best, r) => r.totalCost < best.totalCost ? r : best, passingWwOnly[0])
+    : null;
+
+  // Full: Criterion 2 (annual coverage) + 3 + DCFC — the true battery-only optimum.
+  // annualUnservedKwh===null means WW failed and annual check was skipped.
   const passing = allResults.filter(r =>
     r.wwPass &&
+    r.annualUnservedKwh === 0 &&
     r.nonWwAnnualEnrouteDcfc   <= effectiveEnrouteLimit &&
     r.nonWwAnnualEmergencyDcfc <= effectiveEmergencyLimit
   );
@@ -1048,6 +1088,7 @@ function findOptimum(params) {
     hasEnrouteEv,
     nTotal:             allResults.length,
     nPassing:           passing.length,
+    nWwOnly:            passingWwOnly.length,
     nWwPass,
     nWwPassEnRoute,
     bestWwPct:          Math.round(bestWwPct * 10) / 10,
@@ -1055,8 +1096,15 @@ function findOptimum(params) {
     diagBestEmergency,
     diagEmergencyBreakdown,
     optimum,
+    wwOnlyOptimum,
     allPassing:         [...passing].sort((a, b) => a.totalCost - b.totalCost),
+    allPassingWwOnly:   [...passingWwOnly].sort((a, b) => a.totalCost - b.totalCost),
     sweep:              allResults,
+    // WW-only annual check data (for UI warning banner when no annual-valid config exists)
+    _wwOnlyAnnualCheck: wwOnlyOptimum ? {
+      unservedKwh:   wwOnlyOptimum.annualUnservedKwh,
+      unservedHours: wwOnlyOptimum.annualUnservedHours,
+    } : null,
     // For trace chart: store cell and extracted arrays for later use
     _cell:    cell,
     _weather: weather,
@@ -2745,58 +2793,27 @@ function App() {
 
       const res = findOptimum(params);
 
-      // ── Annual coverage check (hard rejection) ────────────────────────────────
-      // Unserved load in any hour of the full year is grounds for rejecting a
-      // battery-only configuration regardless of worst-window pass status.
-      // Process allPassing in cost order; first with zero annual unserved becomes
-      // the true battery-only optimum.  WW-only optimum is saved for Phase 2a
-      // (generators fix the unserved load, so WW-sizing is the right base).
+      // ── Annual coverage check is now integrated into findOptimum (v0.4.116) ──────
+      // res.optimum already satisfies all 3 criteria (WW pass + annual coverage + DCFC).
+      // res.wwOnlyOptimum is the cheapest WW-passing config for Phase 2a fallback.
+      res._wwOnlyOptimum     = res.wwOnlyOptimum    || null;
+      // res._wwOnlyAnnualCheck is already set by findOptimum
       res._v2gEffKwh   = Math.round(v2gEffKwh);
       res._sweepHasV2g = hasV2gAtSweep;
 
-      if (loadHourly && res.allPassing.length > 0) {
-        if (hasV2gAtSweep) {
-          // V2G EVs are part of the design — the stress-window dispatch already correctly
-          // models V2G discharge covering nighttime load. countAnnualGenHours cannot model
-          // EV dispatch, so boosting batKwh would produce a misleading (always-full) trace.
-          // Trust the stress-window pass: if the system survives the worst 70 days with V2G,
-          // V2G covers the less severe nights in the rest of the year.
-          res._wwOnlyOptimum = res.optimum;  // WW optimum IS the annual optimum
-          // res.optimum stays as the WW-passing cost-minimum config
-        } else {
-          // No V2G: run full annual coverage check (stationary battery only).
-          setRunStatus("Annual coverage check — testing full-year load coverage for all passing configs...");
-          await new Promise(resolve => setTimeout(resolve, 10));
-          let annualOptimum = null;
-          let wwOnlyAnnualCheck = null;   // annual check result for the cheapest WW-passing config
-          for (const candidate of res.allPassing) {  // sorted by cost (cheapest first)
-            const candMount = mountOptions.find(m => m.label === candidate.mountLabel);
-            if (!candMount) continue;
-            const candSolar = candMount.solarNormalized.map(x => x * candidate.pvKw);
-            const candAnn = countAnnualGenHours(
-              candSolar, loadHourly, candidate.batteryKwh, candidate.batteryKw,
-              0, 0, -1, 0, 4, false
-            );
-            if (wwOnlyAnnualCheck === null) wwOnlyAnnualCheck = candAnn;  // first iteration = WW optimum
-            if (candAnn.unservedKwh === 0) { annualOptimum = candidate; break; }
-          }
-          // Save WW-only optimum so Phase 2a always has a fixed PV+battery point.
-          res._wwOnlyAnnualCheck = wwOnlyAnnualCheck;  // annual check data for WW-only optimum
-          res._wwOnlyOptimum = res.optimum;
-          res.optimum = annualOptimum;   // null → no battery-only config covers full year
-        }
-      }
-
-      // Phase 2a base config: use annual-valid optimum if it exists, else fall back
-      // to WW-only optimum (generator will cover the unserved hours).
+      // Phase 2a base: annually-valid optimum if it exists, else WW-only optimum.
       const phase2aBase = res.optimum || res._wwOnlyOptimum;
 
-      // Generate dispatch trace for battery-only annual-valid optimum
-      if (res.optimum) {
+      // ── Stress-window trace + annual trace ────────────────────────────────────
+      // Generated for the annually-valid optimum when it exists; falls back to the
+      // WW-only optimum so the annual chart always renders (with red unserved bars
+      // showing why annual coverage fails when no annually-valid config was found).
+      const optForTrace = res.optimum || res._wwOnlyOptimum;
+      if (optForTrace) {
         setRunStatus("Generating trace for battery-only optimum...");
         await new Promise(resolve => setTimeout(resolve, 10));
 
-        const opt = res.optimum;
+        const opt = optForTrace;
         const optMount = mountOptions.find(m => m.label === opt.mountLabel);
         const optBat   = batteryOptions.find(b => b.label === opt.batteryLabel);
 
@@ -2809,11 +2826,9 @@ function App() {
           res._traceData = traceResult.trace;
           res._optSolarH = solarH;
 
-          // Battery-only annual trace — full 8760-h dispatch for the annual dispatch chart.
-          // Only generated when NO V2G EVs are in the sweep: countAnnualGenHours cannot model
-          // EV dispatch, so running it with a V2G-capable fleet would show an inflated
-          // (never-discharging) battery.  When V2G is present, the stress-window chart
-          // (which correctly models V2G) is the primary validation display.
+          // Annual trace — always generated; unserved load shows in red when annual
+          // coverage fails.  Skipped for V2G designs (countAnnualGenHours cannot model
+          // V2G dispatch; the stress-window chart is the primary validation display).
           if (loadHourly && !hasV2gAtSweep) {
             const annSolar8760 = optMount.solarNormalized.map(x => x * opt.pvKw);
             const batAnnTr = countAnnualGenHours(
@@ -2941,7 +2956,7 @@ function App() {
         : res._wwOnlyOptimum && res.optimum && res._wwOnlyOptimum !== res.optimum
           ? ` (Annual check upgraded battery-only optimum.)`
           : "";
-      setRunStatus(`Done. Battery-only WW pass: ${res.nPassing}/${res.nTotal}.${annualNote}${genNote}`);
+      setRunStatus(`Done. Battery-only: ${res.nPassing} of ${res.nTotal} pass all criteria (${res.nWwOnly} pass WW).${annualNote}${genNote}`);
 
       // Auto-export all sweep and trace data to CSV (no button required)
       const slug = (siteName || "site").replace(/\s+/g, "_");
@@ -4418,7 +4433,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.115</span>
+        <span style={S.version}>v0.4.116</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto"}}>
           <a href="https://tools.cc-energy.org/index.html"
