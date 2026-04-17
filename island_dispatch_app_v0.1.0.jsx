@@ -1,6 +1,6 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.85
-// Updated: 2026-04-16 14:00 PT
+// Version: v0.4.86
+// Updated: 2026-04-16 15:00 PT
 // Part of: Wipomo / CCE Solar Tools
 
 "use strict";
@@ -1368,13 +1368,18 @@ function findOptimumGenerator({ mountOptions, pvSizesKw, batteryOptions, genSize
           if (!r.wwPass) continue;
           // Emergency limit: worst-window generator hours — permissive ceiling (default 200 hr)
           if (r.wwGenHours > emergencyGenHrLimit) continue;
-          // Normal-year limit: annual TMY hours must be ≤ genHrLimit (52 hr ordinance)
-          // countAnnualGenHours uses floor-only trigger so typical-year hours ≈ 0 and this
-          // limit passes easily — ensuring battery+generator never needs more PV than battery-only
+          // Normal-year proxy: use stress-window total generator hours (r.simGenHours, 70-day
+          // worst period) as an upper bound on annual hours.  The stress window is the worst
+          // consecutive 70 days in 26 years of NSRDB data — a typical TMY year will be sunnier,
+          // so a configuration that runs the generator ≤ genHrLimit hr during those 70 days will
+          // almost certainly run ≤ genHrLimit hr in any ordinary year.  This ensures the
+          // battery+generator path always accepts any (PV, battery) pair that battery-only
+          // already accepts, i.e. adding a generator can only reduce required PV, never increase it.
+          if (r.simGenHours > genHrLimit) continue;
+          // Annual gen hours are still computed for fuel NPV — informational only, not a hard filter.
           const ann = (annualSolarH && loadAnnual)
             ? countAnnualGenHours(annualSolarH, loadAnnual, bat.kwh, bat.kw, genKw, fuelCostPerKwHr)
             : { annualGenHours: r.simGenHours, annualGenCost: r.annualGenCost };
-          if (ann.annualGenHours > genHrLimit) continue; // exceeds normal-year ordinance limit
           const pvCost    = Math.round(pvKw  * mount.pvCostPerKw);
           const batCost   = Math.round(bat.kwh * bat.costPerKwh);
           const genCap    = genInstalledCost; // fixed installed cost regardless of kW size
@@ -3794,7 +3799,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.85</span>
+        <span style={S.version}>v0.4.86</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto"}}>
           <a href="https://tools.cc-energy.org/index.html"
