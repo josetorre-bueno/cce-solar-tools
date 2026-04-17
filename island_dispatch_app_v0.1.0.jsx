@@ -1,5 +1,5 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.89
+// Version: v0.4.90
 // Updated: 2026-04-16 18:45 PT
 // Part of: Wipomo / CCE Solar Tools
 
@@ -1155,7 +1155,8 @@ function dispatchGenerator(solarH, loadH, batKwh, batKw, genKw, weather, lookahe
     let pastSolar = solarH[Math.min(h, N-1)] < loadH[Math.min(h, N-1)];
     let seenDark  = pastSolar; // already dark at call site?
     for (let j = 0; j < maxHrs; j++) {
-      const idx = Math.min(h + j, N - 1);
+      const idx = h + j;
+      if (idx >= N) break; // past end of simulation data — do not extrapolate from stale last row
       const net = solarH[idx] - loadH[idx];
       if (solarH[idx] === 0) seenDark = true;        // confirmed full darkness
       if (!pastSolar && net < 0) pastSolar = true;
@@ -1176,7 +1177,8 @@ function dispatchGenerator(solarH, loadH, batKwh, batKw, genKw, weather, lookahe
     let seenDark  = pastSolar;
     let recovIdx  = -1;
     for (let j = 0; j < 48; j++) {
-      const idx = Math.min(h + j, N - 1);
+      const idx = h + j;
+      if (idx >= N) break; // past end of simulation data — treat as safe to stop
       const net = solarH[idx] - loadH[idx];
       if (solarH[idx] === 0) seenDark = true;
       if (!pastSolar && net < 0) pastSolar = true;
@@ -3538,7 +3540,7 @@ function App() {
     const spinupHours  = result._cell.spinup_days * 24;
     const wwHours4     = result._cell.window_days * 24;
     const totalH       = traceData.length;
-    const displayStart = Math.max(0, spinupHours - 96); // 4-day lead-in
+    const displayStart = Math.max(0, spinupHours - 48); // 2-day lead-in — same as PV-only chart
     const slice        = traceData.slice(displayStart, totalH);
     genSliceRef.current = slice; // for onContextMenu position lookup
     const wwMaskStart  = spinupHours - displayStart;
@@ -3623,7 +3625,25 @@ function App() {
         },
       };
     }
-    const yFit = scale => { scale.width = 62; };
+    const Y2_W = 46;
+    const yFit  = scale => { scale.width = 62; };
+    const yFit2 = scale => { scale.width = Y2_W; };
+    const makeSocAxisY2 = (deviceKwh, kwhMax) => {
+      const socMax = deviceKwh > 0 ? kwhMax / deviceKwh * 100 : 100;
+      return {
+        position: "right",
+        title: { display: true, text: "% SOC", font: { size: 9 } },
+        min: 0, max: socMax,
+        grid: { drawOnChartArea: false },
+        afterBuildTicks(axis) {
+          axis.ticks = [0, 25, 50, 75, 100]
+            .filter(v => v <= socMax + 0.5)
+            .map(v => ({ value: v }));
+        },
+        ticks: { callback: v => (v <= 100.5) ? `${Math.round(v)}%` : null, font: { size: 9 } },
+        afterFit: yFit2,
+      };
+    };
     const commonOpts = (showX) => ({
       animation: false, responsive: true, maintainAspectRatio: false,
       interaction: { mode: "index", intersect: false },
@@ -3666,7 +3686,9 @@ function App() {
     [genP1Inst, genP2Inst, genP3Inst].forEach(ref => { if (ref.current) { ref.current.destroy(); ref.current = null; } });
 
     // Panel 1: Solar + Load (no-EV context; x-axis hidden)
+    // layout.padding.right matches Y2_W so plot area aligns with Panel 2's kWh+%SOC axes.
     { const opts = commonOpts(false); opts.scales.y = { title: { display: true, text: "Power (kW)", font: { size: 10 } }, beginAtZero: true, grid: { color: "#f0f0f0" }, afterFit: yFit };
+      opts.layout = { padding: { right: Y2_W } };
       const LEG_CURT_G = { text: "Curtailed solar", fillStyle: "rgba(140,140,0,0.60)", strokeStyle: "rgba(0,0,0,0)", lineWidth: 0, lineDash: [], hidden: false, datasetIndex: null, pointStyle: "rect" };
       const p1gLeg = [LEG_WW]; if (hasPostWw4) p1gLeg.push(LEG_PW); if (hasCurt) p1gLeg.push(LEG_CURT_G);
       opts.plugins.legend = buildLegend(p1gLeg);
@@ -3679,15 +3701,20 @@ function App() {
         ]}, options: opts, plugins: [WHITE_BG, makeWwPlugin("gww1"), makeGenCurtailPlugin("gcurt1"), makeGenCrosshair("ch_gen1")] });
     }
 
-    // Panel 2: Battery SOC + generator output; y-axis sized to joint-opt battery
-    { const opts = commonOpts(true); opts.scales.y = { title: { display: true, text: "Energy (kWh) / Generator (kW)", font: { size: 10 } }, beginAtZero: true, max: yMax, grid: { color: "#f0f0f0" }, afterFit: yFit };
+    // Panel 2: Battery kWh (left) + %SOC (right) + generator output overlay.
+    // Right axis calibrated to battery capacity; generator kW rides on the same kWh scale
+    // (numerically similar for typical 5–10 kW gen / 10–30 kWh battery combinations).
+    { const batMinKwh = batKwhCap * BATTERY_MIN_SOC;
+      const opts = commonOpts(true);
+      opts.scales.y  = { title: { display: true, text: "Battery (kWh) / Generator (kW)", font: { size: 10 } }, beginAtZero: true, max: yMax, grid: { color: "#f0f0f0" }, afterFit: yFit };
+      opts.scales.y2 = makeSocAxisY2(batKwhCap, yMax);
       opts.plugins.legend = buildLegend(hasPostWw4 ? [LEG_WW, LEG_PW, LEG_GEN] : [LEG_WW, LEG_GEN]);
       opts.plugins.tooltip = { enabled: false };
       genP2Inst.current = new Chart(genP2Ref.current, { type: "line",
         data: { labels, datasets: [
-          { label: `Battery SOC (${batKwhCap} kWh)`,                    data: batDs,      borderColor: "#107040", backgroundColor: "rgba(32,160,96,0.35)",  fill: true, tension: 0.15, pointRadius: 0, borderWidth: 1.5 },
-          { label: `Bat min SOC (${(BATTERY_MIN_SOC*100).toFixed(0)}%)`, data: minSocLine, borderColor: "#107040", borderDash: [4,3], backgroundColor: "transparent", fill: false, pointRadius: 0, borderWidth: 1 },
-          { label: `Generator output (${dispGenKw} kW)`,                 data: genDs,      borderColor: "#802000", backgroundColor: "rgba(192,64,0,0.30)", fill: true, stepped: "before", pointRadius: 0, borderWidth: 1.5 },
+          { label: `Battery (${batKwhCap} kWh)`,                              data: batDs,      borderColor: "#107040", backgroundColor: "rgba(32,160,96,0.35)",  fill: true, tension: 0.15, pointRadius: 0, borderWidth: 1.5 },
+          { label: `Bat min (${(BATTERY_MIN_SOC*100).toFixed(0)}% = ${batMinKwh.toFixed(1)} kWh)`, data: minSocLine, borderColor: "#107040", borderDash: [4,3], backgroundColor: "transparent", fill: false, pointRadius: 0, borderWidth: 1 },
+          { label: `Generator output (${dispGenKw} kW)`,                      data: genDs,      borderColor: "#802000", backgroundColor: "rgba(192,64,0,0.30)", fill: true, stepped: "before", pointRadius: 0, borderWidth: 1.5 },
         ]}, options: opts, plugins: [WHITE_BG, makeWwPlugin("gww2"), makeGenRunPlugin("grun2"), makeGenCrosshair("ch_gen2")] });
     }
 
@@ -3894,7 +3921,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.89</span>
+        <span style={S.version}>v0.4.90</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto"}}>
           <a href="https://tools.cc-energy.org/index.html"
