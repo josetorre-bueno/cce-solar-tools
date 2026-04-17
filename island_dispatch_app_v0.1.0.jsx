@@ -1,5 +1,5 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.99
+// Version: v0.4.100
 // Updated: 2026-04-16 PT
 // Part of: Wipomo / CCE Solar Tools
 
@@ -1431,8 +1431,10 @@ function findOptimumGenerator({ mountOptions, pvSizesKw, batteryOptions, genSize
   const wwStartH8760 = ((spinupDoy - 1) + (cell.spinup_days || 0)) * 24 % 8760;
   const wwLenH8760   = (cell.window_days || 10) * 24;  // typically 240 h (10 days)
   let best = null, bestTrace = null;
-  // Per-battery diagnostics: track why each battery size was rejected or accepted
+  // Per-battery summary diagnostics (for table display)
   const batteryDiag = {};
+  // Full per-combination diagnostic rows (for CSV export)
+  const diagRows = [];
   for (const mount of mountOptions) {
     const solarSw = extractWindow(mount.solarNormalized, spinupDoy, cell.n_hours);
     for (const pvKw of [...pvSizesKw].sort((a, b) => a - b)) {
@@ -1443,13 +1445,9 @@ function findOptimumGenerator({ mountOptions, pvSizesKw, batteryOptions, genSize
       for (const bat of batteryOptions) {
         if (bat.kwh < codeMinBatKwh) continue; // below 3× winter-avg minimum
         // Pre-check: does this pvKw + battery already survive the stress window WITHOUT a generator?
-        // If yes, the generator never fires in a typical TMY year either (stress window is the worst
-        // period), so annual generator hours = 0 and Criterion 2 is trivially satisfied for every
-        // generator size at this pvKw/battery combination.  This prevents the paradox where adding a
-        // generator appears to require MORE solar than battery-only.
         const batOnlyCheck = dispatchGenerator(solarH, loadSw, bat.kwh, bat.kw, 0, weather, lookaheadDays, 0);
         const batAlreadyPasses = batOnlyCheck.wwPass;
-        // Init diag entry for this battery (keyed by label)
+        // Init per-battery summary diag entry
         if (!batteryDiag[bat.label]) {
           batteryDiag[bat.label] = { kwh: bat.kwh, bestCost: Infinity, bestConfig: null,
                                       rejectWwPass: 0, rejectWwHours: 0, rejectAnnualHours: 0,
@@ -1458,22 +1456,36 @@ function findOptimumGenerator({ mountOptions, pvSizesKw, batteryOptions, genSize
         const diag = batteryDiag[bat.label];
         for (const genKw of [...genSizesKw].sort((a, b) => a - b)) {
           const r = dispatchGenerator(solarH, loadSw, bat.kwh, bat.kw, genKw, weather, lookaheadDays, fuelCostPerKwHr);
-          if (!r.wwPass) { diag.rejectWwPass++; continue; }
-          // Emergency limit: worst-window generator hours — permissive ceiling (default 200 hr)
-          if (r.wwGenHours > emergencyGenHrLimit) { diag.rejectWwHours++; continue; }
-          // Annual gen hours — Criterion 2 hard filter.
-          // If battery-only already passes the stress window, the generator never fires in a typical
-          // year → annual hours = 0.  Otherwise, run the full TMY simulation.
-          // Hours during the worst window are excluded from the ordinance count (emergency exemption).
+          // Record a diagnostic row for every combination regardless of pass/fail
+          const row = {
+            mount: mount.label, pvKw, batLabel: bat.label, batKwh: bat.kwh,
+            genKw, batAlreadyPasses: batAlreadyPasses ? 1 : 0,
+            wwPass: r.wwPass ? 1 : 0, wwGenHours: r.wwGenHours,
+            annGenHours: null, annFuelCostPerYr: null,
+            pvCost: null, batCost: null, genCap: null, fuelNpv: null, totalCost: null,
+            rejection: null, isOptimum: 0,
+          };
+          if (!r.wwPass) {
+            row.rejection = "wwPass_fail";
+            diagRows.push(row); diag.rejectWwPass++; continue;
+          }
+          if (r.wwGenHours > emergencyGenHrLimit) {
+            row.rejection = "wwGenHours_exceed";
+            diagRows.push(row); diag.rejectWwHours++; continue;
+          }
+          // Annual gen hours — Criterion 2 hard filter
           const ann = batAlreadyPasses
             ? { annualGenHours: 0, annualGenCost: 0 }
             : (annualSolarH && loadAnnual)
               ? countAnnualGenHours(annualSolarH, loadAnnual, bat.kwh, bat.kw, genKw, fuelCostPerKwHr,
                                     wwStartH8760, wwLenH8760)
               : { annualGenHours: r.simGenHours, annualGenCost: r.annualGenCost };
+          row.annGenHours = ann.annualGenHours;
+          row.annFuelCostPerYr = ann.annualGenCost;
           if (ann.annualGenHours > genHrLimit) {
+            row.rejection = "annGenHours_exceed";
+            diagRows.push(row);
             diag.rejectAnnualHours++;
-            // Track worst annual hours seen (helps understand how far over the limit)
             if (diag.bestAnnualHours === null || ann.annualGenHours < diag.bestAnnualHours) {
               diag.bestAnnualHours = ann.annualGenHours;
               diag.bestWwHours = r.wwGenHours;
@@ -1482,11 +1494,15 @@ function findOptimumGenerator({ mountOptions, pvSizesKw, batteryOptions, genSize
           }
           const pvCost    = Math.round(pvKw  * mount.pvCostPerKw);
           const batCost   = Math.round(bat.fixedCost);
-          const genCap    = genInstalledCost; // fixed installed cost regardless of kW size
+          const genCap    = genInstalledCost;
           const fuelNpv   = Math.round(ann.annualGenCost * npvFactor);
           const totalCost = pvCost + batCost + genCap + fuelNpv;
           const c1hrs = criterion1GenHours(criticalLoadKwhPerDay, bat.kwh, genKw);
-          // Update per-battery diag with best passing config
+          row.pvCost = pvCost; row.batCost = batCost; row.genCap = genCap;
+          row.fuelNpv = fuelNpv; row.totalCost = totalCost;
+          row.rejection = "none";
+          diagRows.push(row);
+          // Update per-battery summary diag
           if (totalCost < diag.bestCost) {
             diag.bestCost = totalCost;
             diag.bestConfig = { pvKw, genKw, annualGenHours: ann.annualGenHours, wwGenHours: r.wwGenHours, totalCost };
@@ -1498,9 +1514,7 @@ function findOptimumGenerator({ mountOptions, pvSizesKw, batteryOptions, genSize
               batteryLabel: bat.label, batteryKwh: bat.kwh, batteryKw: bat.kw,
               genKw, wwGenHours: r.wwGenHours,
               annualGenHours: ann.annualGenHours, annualFuelCost: ann.annualGenCost,
-              criterion1GenHours: Math.round(c1hrs * 10) / 10,  // hrs needed for 3-day critical load test
-              // Criterion 1 is a no-solar emergency test — compared against the emergency limit,
-              // not the 52 hr/yr ordinance limit (which applies only to normal-year operation).
+              criterion1GenHours: Math.round(c1hrs * 10) / 10,
               criterion1Pass: c1hrs <= emergencyGenHrLimit,
               pvCost, batCost, genCap, fuelNpv, totalCost,
             };
@@ -1510,7 +1524,16 @@ function findOptimumGenerator({ mountOptions, pvSizesKw, batteryOptions, genSize
       }
     }
   }
-  return { optimum: best, trace: bestTrace, batteryDiag };
+  // Mark the winning row
+  if (best) {
+    for (const row of diagRows) {
+      if (row.mount === best.mountLabel && row.pvKw === best.pvKw &&
+          row.batLabel === best.batteryLabel && row.genKw === best.genKw) {
+        row.isOptimum = 1; break;
+      }
+    }
+  }
+  return { optimum: best, trace: bestTrace, batteryDiag, diagRows };
 }
 
 // ── FORMATTING HELPERS ────────────────────────────────────────────────────────
@@ -4004,7 +4027,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.99</span>
+        <span style={S.version}>v0.4.100</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto"}}>
           <a href="https://tools.cc-energy.org/index.html"
@@ -4747,10 +4770,40 @@ function App() {
                 {result._genOptResult?.batteryDiag && (() => {
                   const diag = result._genOptResult.batteryDiag;
                   const rows = Object.entries(diag).sort((a, b) => a[1].kwh - b[1].kwh);
+                  const diagRows = result._genOptResult.diagRows || [];
+                  function exportDiagCsv() {
+                    const headers = [
+                      "mount","pvKw","batLabel","batKwh","genKw","batAlreadyPasses",
+                      "wwPass","wwGenHours","annGenHours","annFuelCostPerYr",
+                      "pvCost","batCost","genCap","fuelNpv","totalCost",
+                      "rejection","isOptimum"
+                    ];
+                    const csvLines = [headers.join(",")];
+                    for (const r of diagRows) {
+                      csvLines.push(headers.map(k => {
+                        const v = r[k];
+                        if (v === null || v === undefined) return "";
+                        const s = String(v);
+                        return s.includes(",") ? `"${s}"` : s;
+                      }).join(","));
+                    }
+                    const blob = new Blob([csvLines.join("\n")], { type: "text/csv" });
+                    const a = document.createElement("a");
+                    a.href = URL.createObjectURL(blob);
+                    a.download = `optimizer_diag_${(siteName||"site").replace(/\s+/g,"_")}.csv`;
+                    a.click();
+                  }
                   return (
                     <div style={S.card}>
-                      <div style={{ fontSize: "12px", fontWeight: 700, color: "#1a4a7a", marginBottom: "6px" }}>
-                        🔍 Battery Optimizer Diagnostics — why each battery size was selected or rejected
+                      <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "6px" }}>
+                        <div style={{ fontSize: "12px", fontWeight: 700, color: "#1a4a7a" }}>
+                          🔍 Battery Optimizer Diagnostics — why each battery size was selected or rejected
+                        </div>
+                        <button
+                          style={{ padding: "3px 10px", fontSize: "11px", borderRadius: "4px", border: "1px solid #1a4a7a", background: "#e8f0f8", color: "#1a4a7a", cursor: "pointer", whiteSpace: "nowrap" }}
+                          onClick={exportDiagCsv}>
+                          ⬇ Export full CSV ({diagRows.length} rows)
+                        </button>
                       </div>
                       <div style={{ overflowX: "auto" }}>
                         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "11px" }}>
