@@ -1,6 +1,6 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.86
-// Updated: 2026-04-16 15:00 PT
+// Version: v0.4.88
+// Updated: 2026-04-16 17:30 PT
 // Part of: Wipomo / CCE Solar Tools
 
 "use strict";
@@ -15,21 +15,23 @@ const BATTERY_MIN_SOC  = 0.10;
 const WW_SOLAR_FACTOR  = 0.5;   // pessimism factor for worst-window days
 
 // ── BATTERY LIBRARY ───────────────────────────────────────────────────────────
+// fixedCost = total installed cost per system configuration ($/system, not $/kWh).
+// These are editable defaults — the user sets actual costs in the Battery Options panel.
 const BATTERY_LIBRARY = {
   // Enphase IQ Battery 10C — 10.08 kWh / 7.68 kW per unit (scalable stack)
-  "1x Enphase 10C": { label: "1x Enphase 10C", kwh:  10.0, kw:  7.08, costPerKwh: 1400 },
-  "2x Enphase 10C": { label: "2x Enphase 10C", kwh:  20.0, kw: 14.16, costPerKwh: 1400 },
-  "3x Enphase 10C": { label: "3x Enphase 10C", kwh:  30.0, kw: 21.24, costPerKwh: 1400 },
-  "4x Enphase 10C": { label: "4x Enphase 10C", kwh:  40.0, kw: 28.32, costPerKwh: 1400 },
-  "5x Enphase 10C": { label: "5x Enphase 10C", kwh:  50.0, kw: 35.40, costPerKwh: 1400 },
-  "6x Enphase 10C": { label: "6x Enphase 10C", kwh:  60.0, kw: 42.48, costPerKwh: 1400 },
+  "1x Enphase 10C": { label: "1x Enphase 10C", kwh:  10.0, kw:  7.08, fixedCost: 14000 },
+  "2x Enphase 10C": { label: "2x Enphase 10C", kwh:  20.0, kw: 14.16, fixedCost: 28000 },
+  "3x Enphase 10C": { label: "3x Enphase 10C", kwh:  30.0, kw: 21.24, fixedCost: 42000 },
+  "4x Enphase 10C": { label: "4x Enphase 10C", kwh:  40.0, kw: 28.32, fixedCost: 56000 },
+  "5x Enphase 10C": { label: "5x Enphase 10C", kwh:  50.0, kw: 35.40, fixedCost: 70000 },
+  "6x Enphase 10C": { label: "6x Enphase 10C", kwh:  60.0, kw: 42.48, fixedCost: 84000 },
   // Tesla Powerwall 3 — 13.5 kWh / 11.5 kW per unit (integrated inverter, stackable)
-  "1x Powerwall 3": { label: "1x Powerwall 3", kwh:  13.5, kw: 11.5,  costPerKwh: 1150 },
-  "2x Powerwall 3": { label: "2x Powerwall 3", kwh:  27.0, kw: 23.0,  costPerKwh: 1150 },
-  "3x Powerwall 3": { label: "3x Powerwall 3", kwh:  40.5, kw: 34.5,  costPerKwh: 1150 },
-  "4x Powerwall 3": { label: "4x Powerwall 3", kwh:  54.0, kw: 46.0,  costPerKwh: 1150 },
-  "5x Powerwall 3": { label: "5x Powerwall 3", kwh:  67.5, kw: 57.5,  costPerKwh: 1150 },
-  "6x Powerwall 3": { label: "6x Powerwall 3", kwh:  81.0, kw: 69.0,  costPerKwh: 1150 },
+  "1x Powerwall 3": { label: "1x Powerwall 3", kwh:  13.5, kw: 11.5,  fixedCost: 15500 },
+  "2x Powerwall 3": { label: "2x Powerwall 3", kwh:  27.0, kw: 23.0,  fixedCost: 31000 },
+  "3x Powerwall 3": { label: "3x Powerwall 3", kwh:  40.5, kw: 34.5,  fixedCost: 46500 },
+  "4x Powerwall 3": { label: "4x Powerwall 3", kwh:  54.0, kw: 46.0,  fixedCost: 62000 },
+  "5x Powerwall 3": { label: "5x Powerwall 3", kwh:  67.5, kw: 57.5,  fixedCost: 77500 },
+  "6x Powerwall 3": { label: "6x Powerwall 3", kwh:  81.0, kw: 69.0,  fixedCost: 93000 },
 };
 
 // ── TITLE 24 TABLE 150.1-C: PV SIZING FACTORS ────────────────────────────────
@@ -186,7 +188,11 @@ function expandStressWindow(cell) {
   const dhiArr  = cell.hourly.dhi;
   const tempArr = cell.hourly.temp;
   const nHours  = cell.n_hours;
-  const spinupHours = cell.spinup_days * 24;
+  const spinupHours    = cell.spinup_days * 24;
+  const wwHours        = cell.window_days * 24;
+  const wwEnd          = spinupHours + wwHours;          // first post-window hour index
+  // post_window_days is present in v2.2 JSON; 0 for older JSON (no post-window data).
+  // const postWindowDays = cell.post_window_days || 0;  // (not needed for flag logic)
 
   // Compute start date from spinup_start_year and spinup_start_doy (1-based)
   const startDate = new Date(cell.spinup_start_year, 0, 1);
@@ -205,7 +211,8 @@ function expandStressWindow(cell) {
       ghi:            ghiArr[i],
       dhi:            dhiArr[i],
       tempC:          tempArr[i],
-      isWorstWindow:  i >= spinupHours,
+      isWorstWindow:  i >= spinupHours && i < wwEnd,  // 10-day worst window only
+      isPostWindow:   i >= wwEnd,                     // display context after WW
     });
   }
   return weather;
@@ -872,7 +879,10 @@ function findOptimum(params) {
   const weather  = expandStressWindow(cell);
   const spinupDoy = cell.spinup_start_doy;
   const loadSw    = extractWindow(loadHourly, spinupDoy, cell.n_hours);
-  const annualScale = 365.0 / (cell.n_hours / 24.0);
+  // annualScale uses only the core simulation period (spinup + window), NOT post-window days,
+  // so that DCFC annual extrapolation is independent of how many post-window display days exist.
+  const coreDays    = cell.spinup_days + cell.window_days;
+  const annualScale = 365.0 / coreDays;
 
   const allResults = [];
 
@@ -888,7 +898,7 @@ function findOptimum(params) {
         const r = dispatch(solarH, loadSw, bat.kwh, bat.kw, evScenario, weather, dcfcCostPerKwh, false, erMinKwh);
 
         const pvCost   = Math.round(pvKw * mount.pvCostPerKw);
-        const batCost  = Math.round(bat.kwh * bat.costPerKwh);
+        const batCost  = Math.round(bat.fixedCost);
         const eCost    = evseCost * nEvs;
         const sysCost  = pvCost + batCost + eCost;
         const npvDcfc  = Math.round(r.annualDcfcCost * npvFactor * 100) / 100;
@@ -1238,7 +1248,7 @@ function dispatchGenerator(solarH, loadH, batKwh, batKw, genKw, weather, lookahe
 
     trace.push({ h, month: r.month, day: r.day, year: r.year, hourOfDay: hr,
                  solarKw: sol, loadKw: ld, batKwhEnd: batE,
-                 genRunning, genKwOut: genOut, wwGenHours, curtailed, isWorstWindow: inWW });
+                 genRunning, genKwOut: genOut, wwGenHours, curtailed, isWorstWindow: inWW, isPostWindow: r.isPostWindow || false });
   }
 
   const wwPct = wwLoad > 0 ? (1 - wwUns / wwLoad) * 100 : 100;
@@ -1381,7 +1391,7 @@ function findOptimumGenerator({ mountOptions, pvSizesKw, batteryOptions, genSize
             ? countAnnualGenHours(annualSolarH, loadAnnual, bat.kwh, bat.kw, genKw, fuelCostPerKwHr)
             : { annualGenHours: r.simGenHours, annualGenCost: r.annualGenCost };
           const pvCost    = Math.round(pvKw  * mount.pvCostPerKw);
-          const batCost   = Math.round(bat.kwh * bat.costPerKwh);
+          const batCost   = Math.round(bat.fixedCost);
           const genCap    = genInstalledCost; // fixed installed cost regardless of kW size
           const fuelNpv   = Math.round(ann.annualGenCost * npvFactor);
           const totalCost = pvCost + batCost + genCap + fuelNpv;
@@ -1776,6 +1786,7 @@ function drawCurtainBezier(ctx, topMeta, botMeta, curtDs) {
 }
 // Reusable extra legend items for plugin-drawn chart elements
 const LEG_WW   = { text: "Worst window",      fillStyle: "rgba(192,57,43,0.14)",  strokeStyle: "rgba(0,0,0,0)",        lineWidth: 0,   lineDash: [],   hidden: false, datasetIndex: null, pointStyle: "rect" };
+const LEG_PW   = { text: "Post-window",        fillStyle: "rgba(32,128,64,0.14)",  strokeStyle: "rgba(0,0,0,0)",        lineWidth: 0,   lineDash: [],   hidden: false, datasetIndex: null, pointStyle: "rect" };
 const LEG_GEN  = { text: "Generator running",  fillStyle: "rgba(192,100,0,0.24)", strokeStyle: "rgba(0,0,0,0)",        lineWidth: 0,   lineDash: [],   hidden: false, datasetIndex: null, pointStyle: "rect" };
 const LEG_DCFC = { text: "DCFC top-off",       fillStyle: "rgba(0,0,0,0)",        strokeStyle: "rgba(192,57,43,0.75)", lineWidth: 1.5, lineDash: [4,3], hidden: false, datasetIndex: null, pointStyle: "line" };
 
@@ -1824,6 +1835,11 @@ function App() {
     "1x Powerwall 3", "2x Powerwall 3", "3x Powerwall 3", "4x Powerwall 3", "5x Powerwall 3", "6x Powerwall 3",
     "1x Enphase 10C", "2x Enphase 10C", "3x Enphase 10C", "4x Enphase 10C", "5x Enphase 10C", "6x Enphase 10C",
   ]));
+  // Per-system installed cost ($/system) for each battery option. Editable in the UI.
+  // Defaults from BATTERY_LIBRARY.fixedCost; user can override to match actual quotes.
+  const [batteryCosts, setBatteryCosts] = useState(() =>
+    Object.fromEntries(Object.entries(BATTERY_LIBRARY).map(([k, v]) => [k, v.fixedCost]))
+  );
 
   // EV fleet — array of { kwh, tripsPerWeek, tripMiles, destCharging, ... }; up to 3 vehicles; empty = no EV
   const [evList, setEvList] = useState([]);
@@ -2006,6 +2022,8 @@ function App() {
       if (p.mounts       !== undefined) setMounts(p.mounts);
       if (p.pvSizesStr   !== undefined) setPvSizesStr(p.pvSizesStr);
       if (p.selectedBatteries !== undefined) setSelectedBatteries(new Set(p.selectedBatteries));
+      // batteryCosts: merge saved costs over library defaults (new entries get library defaults)
+      if (p.batteryCosts !== undefined) setBatteryCosts(prev => ({ ...prev, ...p.batteryCosts }));
       // genSizesStr: migrate old saves that included sub-10 kW sizes (no soundproofing)
       if (p.genSizesStr !== undefined) {
         const cleaned = p.genSizesStr.split(",").map(s => parseFloat(s.trim())).filter(v => !isNaN(v) && v >= 10);
@@ -2186,6 +2204,7 @@ function App() {
       uploadedLoad: (loadMode === "upload" && uploadedLoad) ? uploadedLoad : null,
       uploadedFileName: (loadMode === "upload" && uploadedLoad) ? uploadedFileName : "",
       selectedBatteries: Array.from(selectedBatteries),
+      batteryCosts,
       evList, dcfcCostPerKwh, evseCost, maxEmergencyDcfc, maxEnrouteDcfc,
       npvYears, discountRate,
       genSizesStr, fuelCostPerHour, genLookaheadDays, genInstalledCost, genHrLimit, emergencyGenHrLimit,
@@ -2195,7 +2214,7 @@ function App() {
     setLastSavedTime(timeStr);
     setBtnFeedback("saved"); setTimeout(() => setBtnFeedback(""), 2000);
   }, [siteName, lat, lon, geoAddress, mounts, pvSizesStr, loadMode, annualKwh, daytimeShiftPct, uploadedLoad, selectedBatteries,
-      evList, dcfcCostPerKwh, evseCost, maxEmergencyDcfc, maxEnrouteDcfc, npvYears, discountRate,
+      batteryCosts, evList, dcfcCostPerKwh, evseCost, maxEmergencyDcfc, maxEnrouteDcfc, npvYears, discountRate,
       genSizesStr, fuelCostPerHour, genLookaheadDays, genInstalledCost, genHrLimit, emergencyGenHrLimit,
       climateZone, cfa, ndu, criticalLoadKwhPerDay, uploadedFileName]);
 
@@ -2213,6 +2232,7 @@ function App() {
       if (p.annualKwh         !== undefined) setAnnualKwh(p.annualKwh);
       if (p.daytimeShiftPct   !== undefined) setDaytimeShiftPct(p.daytimeShiftPct);
       if (p.selectedBatteries !== undefined) setSelectedBatteries(new Set(p.selectedBatteries));
+      if (p.batteryCosts !== undefined) setBatteryCosts(prev => ({ ...prev, ...p.batteryCosts }));
       if (p.evList && Array.isArray(p.evList)) setEvList(p.evList);
       if (p.dcfcCostPerKwh    !== undefined) setDcfcCostPerKwh(p.dcfcCostPerKwh);
       if (p.evseCost          !== undefined) setEvseCost(p.evseCost);
@@ -2269,7 +2289,7 @@ function App() {
       const pvSizes = pvSizesStr.split(",").map(s => parseFloat(s.trim())).filter(v => !isNaN(v) && v > 0);
       const batteryOptions = Object.entries(BATTERY_LIBRARY)
         .filter(([k]) => selectedBatteries.has(k))
-        .map(([, v]) => v);
+        .map(([k, v]) => ({ ...v, fixedCost: batteryCosts[k] ?? v.fixedCost }));
       const loadHourly = applyLoadShift(
         loadMode === "upload" && uploadedLoad ? uploadedLoad : syntheticLoad(annualKwh),
         daytimeShiftPct
@@ -2453,7 +2473,9 @@ function App() {
       const codeMinBatKwh = Math.round(criticalLoadKwhPerDay * 3 * 10) / 10;
 
       // Smallest selected battery that meets the code-minimum kWh requirement
-      const allBats = Object.values(BATTERY_LIBRARY).filter(b => selectedBatteries.has(b.label));
+      const allBats = Object.values(BATTERY_LIBRARY)
+        .filter(b => selectedBatteries.has(b.label))
+        .map(b => ({ ...b, fixedCost: batteryCosts[b.label] ?? b.fixedCost }));
       const codeBat = allBats.filter(b => b.kwh >= codeMinBatKwh)
                              .sort((a, b) => a.kwh - b.kwh)[0]
                    || allBats.sort((a, b) => b.kwh - a.kwh)[0]; // fallback: largest available
@@ -2589,7 +2611,7 @@ function App() {
 
       const batteryOptions = Object.entries(BATTERY_LIBRARY)
         .filter(([k]) => selectedBatteries.has(k))
-        .map(([, v]) => v);
+        .map(([k, v]) => ({ ...v, fixedCost: batteryCosts[k] ?? v.fixedCost }));
 
       if (loadMode === "upload" && !uploadedLoad) {
         throw new Error(
@@ -2745,6 +2767,7 @@ function App() {
         uploadedLoad: (loadMode === "upload" && uploadedLoad) ? uploadedLoad : null,
       uploadedFileName: (loadMode === "upload" && uploadedLoad) ? uploadedFileName : "",
         selectedBatteries: Array.from(selectedBatteries),
+        batteryCosts,
         evList, dcfcCostPerKwh, evseCost, maxEmergencyDcfc, maxEnrouteDcfc,
         npvYears, discountRate,
         genSizesStr, fuelCostPerHour, genLookaheadDays, genInstalledCost, genHrLimit, emergencyGenHrLimit,
@@ -2759,7 +2782,7 @@ function App() {
     } finally {
       setRunning(false);
     }
-  }, [lat, lon, apiKey, mounts, pvSizesStr, selectedBatteries,
+  }, [lat, lon, apiKey, mounts, pvSizesStr, selectedBatteries, batteryCosts,
       loadMode, uploadedLoad, uploadedFileName, annualKwh, daytimeShiftPct, evList, dcfcCostPerKwh, evseCost,
       maxEmergencyDcfc, npvYears, discountRate, stressData,
       genSizesStr, fuelCostPerHour, genLookaheadDays, genInstalledCost, genHrLimit, emergencyGenHrLimit,
@@ -2783,13 +2806,18 @@ function App() {
 
     const traceData    = result._traceData;
     const spinupHours  = result._cell.spinup_days * 24;
+    const wwHours      = result._cell.window_days * 24;
     const totalH       = traceData.length;
     const displayStart = Math.max(0, spinupHours - 48);
-    const displayEnd   = Math.min(totalH, totalH + 48);
-    const slice        = traceData.slice(displayStart, displayEnd);
+    const slice        = traceData.slice(displayStart, totalH);
     evSliceRef.current = slice; // for onContextMenu position lookup
+    // Worst-window bounds (red tint) — only the 10-day WW, not post-window
     const wwMaskStart  = spinupHours - displayStart;
-    const wwMaskEnd    = totalH - displayStart;
+    const wwMaskEnd    = spinupHours + wwHours - displayStart;
+    // Post-window bounds (light green tint) — present only in v2.2+ JSON
+    const pwMaskStart  = wwMaskEnd;
+    const pwMaskEnd    = totalH - displayStart;
+    const hasPostWw    = (result._cell.post_window_days || 0) > 0;
 
     const labels  = slice.map(r => fmtDateHr(r.month, r.day, r.hourOfDay));
     const solarDs = slice.map(r => r.solarKw);
@@ -2811,10 +2839,19 @@ function App() {
         beforeDraw(chart) {
           const { ctx, chartArea, scales } = chart;
           if (!chartArea) return;
+          ctx.save();
+          // Red tint: worst-window (10-day critical period)
           const x0 = scales.x.getPixelForValue(Math.max(0, wwMaskStart));
           const x1 = scales.x.getPixelForValue(Math.min(slice.length - 1, wwMaskEnd - 1));
-          ctx.save(); ctx.fillStyle = "rgba(192,57,43,0.07)";
+          ctx.fillStyle = "rgba(192,57,43,0.07)";
           ctx.fillRect(x0, chartArea.top, x1 - x0, chartArea.bottom - chartArea.top);
+          // Green tint: post-window display context
+          if (hasPostWw && pwMaskStart < slice.length) {
+            const px0 = scales.x.getPixelForValue(Math.max(0, pwMaskStart));
+            const px1 = scales.x.getPixelForValue(Math.min(slice.length - 1, pwMaskEnd - 1));
+            ctx.fillStyle = "rgba(32,128,64,0.07)";
+            ctx.fillRect(px0, chartArea.top, px1 - px0, chartArea.bottom - chartArea.top);
+          }
           ctx.restore();
         },
       };
@@ -2833,8 +2870,12 @@ function App() {
       },
     };
 
-    // Force all y-axes to the same width so both panels' x-axes are pixel-aligned
-    const yFit = scale => { scale.width = 62; };
+    // Force all y-axes to the same width so all panels' x-axes are pixel-aligned.
+    // yFit: left axis (kW or kWh). yFit2: right axis (%SOC). Y2_W: right-axis reserved width.
+    // Panels without a right axis use layout.padding.right = Y2_W to match width.
+    const Y2_W = 46;
+    const yFit  = scale => { scale.width = 62; };
+    const yFit2 = scale => { scale.width = Y2_W; };
 
     // Helper: right-axis %SOC calibrated so deviceKwh corresponds to 100% on the right axis
     // and kwhMax (left axis top) corresponds to kwhMax/deviceKwh×100% on the right.
@@ -2846,6 +2887,7 @@ function App() {
         title: { display: true, text: "% SOC", font: { size: 9 } },
         min: 0, max: socMax,
         grid: { drawOnChartArea: false },
+        afterFit: yFit2,
         afterBuildTicks(axis) {
           axis.ticks = [0, 25, 50, 75, 100]
             .filter(v => v <= socMax + 0.5)
@@ -2950,11 +2992,14 @@ function App() {
     };
 
     // Panel 1: Solar + Load (x-axis hidden)
+    // layout.padding.right matches Y2_W so this panel's plot area aligns with Panel 2's.
     {
       const opts = commonOpts(false);
       opts.scales.y = { title: { display: true, text: "Power (kW)", font: { size: 10 } }, beginAtZero: true, grid: { color: "#f0f0f0" }, afterFit: yFit };
+      opts.layout = { padding: { right: Y2_W } };
       const LEG_CURT = { text: "Curtailed solar", fillStyle: "rgba(140,140,0,0.45)", strokeStyle: "rgba(0,0,0,0)", lineWidth: 0, lineDash: [], hidden: false, datasetIndex: null, pointStyle: "rect" };
       const p1Extras = [LEG_WW];
+      if (hasPostWw) p1Extras.push(LEG_PW);
       if (hasCurt) p1Extras.push(LEG_CURT);
       if (dcfcIdx.length > 0) p1Extras.push(LEG_DCFC);
       opts.plugins.legend = buildLegend(p1Extras);
@@ -3033,12 +3078,16 @@ function App() {
     const batKwhCap   = evImpact.evOptResult._batKwhCap || (evImpact.evOpt?.batteryKwh || 20);
     const nEvs        = Math.min(evImpact.fleetSummary.length, 4);
     const spinupHours = result._cell.spinup_days * 24;
+    const wwHours2    = result._cell.window_days * 24;
     const totalH      = traceData.length;
     const displayStart = Math.max(0, spinupHours - 48);
-    const slice        = traceData.slice(displayStart, totalH + 48);
+    const slice        = traceData.slice(displayStart, totalH);
     evImpSliceRef.current = slice;
     const wwMaskStart  = spinupHours - displayStart;
-    const wwMaskEnd    = totalH - displayStart;
+    const wwMaskEnd    = spinupHours + wwHours2 - displayStart;
+    const pwMaskStart2 = wwMaskEnd;
+    const pwMaskEnd2   = totalH - displayStart;
+    const hasPostWw2   = (result._cell.post_window_days || 0) > 0;
 
     const labels  = slice.map(r => fmtDateHr(r.month, r.day, r.hourOfDay));
     const solarDs = slice.map(r => r.solarKw);
@@ -3056,7 +3105,9 @@ function App() {
 
     const EV_COLORS = ["#7b2d8b", "#1a6696", "#b05a00", "#1a7a40"];
 
-    const yFit = scale => { scale.width = 62; };
+    const Y2_W = 46;
+    const yFit  = scale => { scale.width = 62; };
+    const yFit2 = scale => { scale.width = Y2_W; };
 
     // Helper: right-axis %SOC calibrated to device capacity
     const makeSocAxisY2 = (deviceKwh, kwhMax) => {
@@ -3066,6 +3117,7 @@ function App() {
         title: { display: true, text: "% SOC", font: { size: 9 } },
         min: 0, max: socMax,
         grid: { drawOnChartArea: false },
+        afterFit: yFit2,
         afterBuildTicks(axis) {
           axis.ticks = [0, 25, 50, 75, 100]
             .filter(v => v <= socMax + 0.5)
@@ -3081,10 +3133,17 @@ function App() {
         beforeDraw(chart) {
           const { ctx, chartArea, scales } = chart;
           if (!chartArea) return;
+          ctx.save();
           const x0 = scales.x.getPixelForValue(Math.max(0, wwMaskStart));
           const x1 = scales.x.getPixelForValue(Math.min(slice.length - 1, wwMaskEnd - 1));
-          ctx.save(); ctx.fillStyle = "rgba(192,57,43,0.07)";
+          ctx.fillStyle = "rgba(192,57,43,0.07)";
           ctx.fillRect(x0, chartArea.top, x1 - x0, chartArea.bottom - chartArea.top);
+          if (hasPostWw2 && pwMaskStart2 < slice.length) {
+            const px0 = scales.x.getPixelForValue(Math.max(0, pwMaskStart2));
+            const px1 = scales.x.getPixelForValue(Math.min(slice.length - 1, pwMaskEnd2 - 1));
+            ctx.fillStyle = "rgba(32,128,64,0.07)";
+            ctx.fillRect(px0, chartArea.top, px1 - px0, chartArea.bottom - chartArea.top);
+          }
           ctx.restore();
         },
       };
@@ -3146,11 +3205,12 @@ function App() {
       },
     });
 
-    // Panel 1: Solar + Load
+    // Panel 1: Solar + Load (no right axis — padding.right = Y2_W keeps x-axis aligned)
     {
       const opts = commonOpts(false);
       opts.scales.y = { title: { display: true, text: "Power (kW)", font: { size: 10 } }, beginAtZero: true, grid: { color: "#f0f0f0" }, afterFit: yFit };
-      opts.plugins.legend = buildLegend([LEG_WW]);
+      opts.layout = { padding: { right: Y2_W } };
+      opts.plugins.legend = buildLegend(hasPostWw2 ? [LEG_WW, LEG_PW] : [LEG_WW]);
       evImpP1Inst.current = new Chart(evImpP1Ref.current, {
         type: "line",
         data: { labels, datasets: [
@@ -3271,7 +3331,9 @@ function App() {
     const evKwhCaps = evList.slice(0, 4).map(ev => ev.kwh || 1);
     const commonKwhMax = Math.max(batKwhCap, ...evKwhCaps, 1) * 1.05;
     const EV_COLORS = ["#7b2d8b", "#1a6696", "#b05a00", "#1a7a40"];
-    const yFit = scale => { scale.width = 62; };
+    const Y2_W = 46;
+    const yFit  = scale => { scale.width = 62; };
+    const yFit2 = scale => { scale.width = Y2_W; };
 
     // Helper: right-axis %SOC calibrated to device capacity
     const makeSocAxisY2 = (deviceKwh, kwhMax) => {
@@ -3281,6 +3343,7 @@ function App() {
         title: { display: true, text: "% SOC", font: { size: 9 } },
         min: 0, max: socMax,
         grid: { drawOnChartArea: false },
+        afterFit: yFit2,
         afterBuildTicks(axis) {
           axis.ticks = [0, 25, 50, 75, 100]
             .filter(v => v <= socMax + 0.5)
@@ -3353,11 +3416,32 @@ function App() {
       plugins: { legend: buildLegend([]), tooltip: { enabled: false } },
       scales: { x: { display: showX, ticks: { maxTicksLimit: 12, font: { size: 9 }, maxRotation: 30 }, grid: { color: "#f0f0f0" } } },
     });
-    // Panel 1: Solar + Load
+    // Zone-shading plugin: red=WW, green=post-window — derived from per-row flags
+    const hasPostWw3 = slice.some(r => r.isPostWindow);
+    const wwZonePlugin = {
+      id: "evImpDiagZone",
+      beforeDraw(chart) {
+        const { ctx, chartArea, scales } = chart;
+        if (!chartArea) return;
+        ctx.save();
+        for (let i = 0; i < slice.length - 1; i++) {
+          const r = slice[i];
+          if (!r.isWorstWindow && !r.isPostWindow) continue;
+          const x0 = scales.x.getPixelForValue(i);
+          const x1 = scales.x.getPixelForValue(i + 1);
+          ctx.fillStyle = r.isWorstWindow ? "rgba(192,57,43,0.07)" : "rgba(32,128,64,0.07)";
+          ctx.fillRect(x0, chartArea.top, x1 - x0, chartArea.bottom - chartArea.top);
+        }
+        ctx.restore();
+      },
+    };
+    // Panel 1: Solar + Load (no right axis — padding.right = Y2_W keeps x-axis aligned)
     {
       const opts = commonOpts(false);
       opts.scales.y = { title: { display: true, text: "Power (kW)", font: { size: 10 } }, beginAtZero: true, grid: { color: "#f0f0f0" }, afterFit: yFit };
-      opts.plugins.legend = buildLegend([]);
+      opts.layout = { padding: { right: Y2_W } };
+      const legExtras = hasPostWw3 ? [LEG_WW, LEG_PW] : [LEG_WW];
+      opts.plugins.legend = buildLegend(legExtras);
       evImpDiagP1Inst.current = new Chart(evImpDiagP1Ref.current, {
         type: "line",
         data: { labels, datasets: [
@@ -3366,7 +3450,7 @@ function App() {
           { label: "", data: solarBotDs, borderColor: "transparent", backgroundColor: "transparent", fill: false, tension: 0.15, pointRadius: 0, borderWidth: 0 },
         ]},
         options: opts,
-        plugins: [WHITE_BG, centerPlugin, dcfcPlugin, makeDiagCrosshair("ch_evd1")],
+        plugins: [WHITE_BG, wwZonePlugin, centerPlugin, dcfcPlugin, makeDiagCrosshair("ch_evd1")],
       });
     }
     // Panel 2: Battery SOC — kWh left axis, %SOC right axis, common kWh scale
@@ -3386,7 +3470,7 @@ function App() {
           { label: `Bat min (${(BATTERY_MIN_SOC*100).toFixed(0)}% = ${batMinKwh.toFixed(1)} kWh)`, data: new Array(slice.length).fill(batMinKwh), borderColor: "#107040", borderDash: [4,3], backgroundColor: "transparent", fill: false, pointRadius: 0, borderWidth: 1 },
         ]},
         options: opts,
-        plugins: [WHITE_BG, centerPlugin, dcfcPlugin, makeDiagCrosshair("ch_evd2")],
+        plugins: [WHITE_BG, wwZonePlugin, centerPlugin, dcfcPlugin, makeDiagCrosshair("ch_evd2")],
       });
     }
     // Panels 3..N: per-EV SOC — kWh left axis, %SOC right axis, common kWh scale
@@ -3430,7 +3514,7 @@ function App() {
           { label: `${evLabel} min (${evMinKwh.toFixed(1)} kWh)`, data: new Array(slice.length).fill(evMinKwh), borderColor: color, borderDash: [4,3], backgroundColor: "transparent", fill: false, pointRadius: 0, borderWidth: 1 },
         ]},
         options: opts,
-        plugins: [WHITE_BG, centerPlugin, makeAwayPlugin(`away_evd${i}`), dcfcPlugin, makeDiagCrosshair(`ch_evd${i+2}`)],
+        plugins: [WHITE_BG, wwZonePlugin, centerPlugin, makeAwayPlugin(`away_evd${i}`), dcfcPlugin, makeDiagCrosshair(`ch_evd${i+2}`)],
       });
     }
     return () => {
@@ -3452,13 +3536,16 @@ function App() {
 
     const traceData    = genTrace;
     const spinupHours  = result._cell.spinup_days * 24;
+    const wwHours4     = result._cell.window_days * 24;
     const totalH       = traceData.length;
     const displayStart = Math.max(0, spinupHours - 96); // 4-day lead-in
-    const displayEnd   = Math.min(totalH, totalH + 48);
-    const slice        = traceData.slice(displayStart, displayEnd);
+    const slice        = traceData.slice(displayStart, totalH);
     genSliceRef.current = slice; // for onContextMenu position lookup
     const wwMaskStart  = spinupHours - displayStart;
-    const wwMaskEnd    = totalH - displayStart;
+    const wwMaskEnd    = spinupHours + wwHours4 - displayStart; // end of WW only
+    const pwMaskStart4 = wwMaskEnd;
+    const pwMaskEnd4   = totalH - displayStart;
+    const hasPostWw4   = (result._cell.post_window_days || 0) > 0;
 
     const labels  = slice.map(r => fmtDateHr(r.month, r.day, r.hourOfDay));
     const solarDs = slice.map(r => r.solarKw);
@@ -3504,10 +3591,17 @@ function App() {
         beforeDraw(chart) {
           const { ctx, chartArea, scales } = chart;
           if (!chartArea) return;
+          ctx.save();
           const x0 = scales.x.getPixelForValue(Math.max(0, wwMaskStart));
           const x1 = scales.x.getPixelForValue(Math.min(slice.length - 1, wwMaskEnd - 1));
-          ctx.save(); ctx.fillStyle = "rgba(192,57,43,0.07)";
+          ctx.fillStyle = "rgba(192,57,43,0.07)";
           ctx.fillRect(x0, chartArea.top, x1 - x0, chartArea.bottom - chartArea.top);
+          if (hasPostWw4 && pwMaskStart4 < slice.length) {
+            const px0 = scales.x.getPixelForValue(Math.max(0, pwMaskStart4));
+            const px1 = scales.x.getPixelForValue(Math.min(slice.length - 1, pwMaskEnd4 - 1));
+            ctx.fillStyle = "rgba(32,128,64,0.07)";
+            ctx.fillRect(px0, chartArea.top, px1 - px0, chartArea.bottom - chartArea.top);
+          }
           ctx.restore();
         },
       };
@@ -3574,7 +3668,8 @@ function App() {
     // Panel 1: Solar + Load (no-EV context; x-axis hidden)
     { const opts = commonOpts(false); opts.scales.y = { title: { display: true, text: "Power (kW)", font: { size: 10 } }, beginAtZero: true, grid: { color: "#f0f0f0" }, afterFit: yFit };
       const LEG_CURT_G = { text: "Curtailed solar", fillStyle: "rgba(140,140,0,0.60)", strokeStyle: "rgba(0,0,0,0)", lineWidth: 0, lineDash: [], hidden: false, datasetIndex: null, pointStyle: "rect" };
-      opts.plugins.legend = buildLegend(hasCurt ? [LEG_WW, LEG_CURT_G] : [LEG_WW]);
+      const p1gLeg = [LEG_WW]; if (hasPostWw4) p1gLeg.push(LEG_PW); if (hasCurt) p1gLeg.push(LEG_CURT_G);
+      opts.plugins.legend = buildLegend(p1gLeg);
       opts.plugins.tooltip = { enabled: false };
       genP1Inst.current = new Chart(genP1Ref.current, { type: "line",
         data: { labels, datasets: [
@@ -3586,7 +3681,7 @@ function App() {
 
     // Panel 2: Battery SOC + generator output; y-axis sized to joint-opt battery
     { const opts = commonOpts(true); opts.scales.y = { title: { display: true, text: "Energy (kWh) / Generator (kW)", font: { size: 10 } }, beginAtZero: true, max: yMax, grid: { color: "#f0f0f0" }, afterFit: yFit };
-      opts.plugins.legend = buildLegend([LEG_WW, LEG_GEN]);
+      opts.plugins.legend = buildLegend(hasPostWw4 ? [LEG_WW, LEG_PW, LEG_GEN] : [LEG_WW, LEG_GEN]);
       opts.plugins.tooltip = { enabled: false };
       genP2Inst.current = new Chart(genP2Ref.current, { type: "line",
         data: { labels, datasets: [
@@ -3799,7 +3894,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.86</span>
+        <span style={S.version}>v0.4.88</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto"}}>
           <a href="https://tools.cc-energy.org/index.html"
@@ -4212,13 +4307,27 @@ function App() {
             {/* I) Battery Options */}
             <div style={S.card}>
               <div style={S.cardTitle}>Battery Options</div>
+              <div style={{ display: "flex", justifyContent: "flex-end", fontSize: "10px", color: "#888", marginBottom: "3px", paddingRight: "2px" }}>
+                Installed cost ($)
+              </div>
               {Object.keys(BATTERY_LIBRARY).map(key => (
-                <div key={key} style={S.checkRow}>
+                <div key={key} style={{ ...S.checkRow, alignItems: "center", gap: "6px" }}>
                   <input type="checkbox" id={"bat-" + key} checked={selectedBatteries.has(key)}
                     onChange={() => toggleBattery(key)} />
-                  <label htmlFor={"bat-" + key} style={{ fontSize: "12px" }}>
-                    {key} — {BATTERY_LIBRARY[key].kwh} kWh / {BATTERY_LIBRARY[key].kw} kW / ${BATTERY_LIBRARY[key].costPerKwh}/kWh
+                  <label htmlFor={"bat-" + key} style={{ fontSize: "12px", flex: 1 }}>
+                    {key} — {BATTERY_LIBRARY[key].kwh} kWh / {BATTERY_LIBRARY[key].kw} kW
                   </label>
+                  <input
+                    type="number" step="500" min="0"
+                    value={batteryCosts[key] ?? BATTERY_LIBRARY[key].fixedCost}
+                    onChange={e => {
+                      const v = parseInt(e.target.value) || 0;
+                      setBatteryCosts(prev => ({ ...prev, [key]: v }));
+                    }}
+                    style={{ width: "82px", textAlign: "right", fontSize: "12px",
+                      padding: "1px 4px", border: "1px solid #ccc", borderRadius: "3px",
+                      background: "#fff" }}
+                  />
                 </div>
               ))}
             </div>
@@ -4979,7 +5088,7 @@ function App() {
                     );
                     const S2 = { row: { display:"flex", justifyContent:"space-between", marginBottom:"2px" }, lbl: { color:"#666" }, val: { textAlign:"right" } };
                     const csvRow = () => {
-                      const fields = ["month","day","hourOfDay","solarKw","loadKw","curtailed","unserved","batKwhEnd","dcfcEvent","isWorstWindow"];
+                      const fields = ["month","day","hourOfDay","solarKw","loadKw","curtailed","unserved","batKwhEnd","dcfcEvent","isWorstWindow","isPostWindow"];
                       const header = fields.join(",");
                       const evFields = displayRow.evKwhEnd.map((v,i) => `evKwh_${i}:${v.toFixed(2)}`).join(" ");
                       const vals = fields.map(f => displayRow[f] !== undefined ? String(displayRow[f]) : "").join(",");
@@ -5006,7 +5115,7 @@ function App() {
                           <div style={S2.row}><span style={S2.lbl}>EV away</span><span style={{ ...S2.val, color:"#555" }}>{displayRow.evAway.length > 0 ? (displayRow.evAway[0]?"Yes":"No") : "—"}</span></div>
                           <div style={S2.row}><span style={S2.lbl}>DCFC sched</span><span style={{ ...S2.val, color:"#555" }}>{displayRow.triggerSet && displayRow.triggerSet.length > 0 ? (displayRow.triggerFired&&displayRow.triggerFired[0]?"→fired":displayRow.triggerSet[0]?"active":"No") : "—"}</span></div>
                           <div style={S2.row}><span style={S2.lbl}>DCFC event</span><span style={{ ...S2.val, color:displayRow.dcfcEvent?"#c0392b":"#555" }}>{displayRow.dcfcEvent?"Yes":"No"}</span></div>
-                          <div style={S2.row}><span style={S2.lbl}>In WW</span><span style={{ ...S2.val, color:"#555" }}>{displayRow.isWorstWindow?"Yes":"No"}</span></div>
+                          <div style={S2.row}><span style={S2.lbl}>Period</span><span style={{ ...S2.val, color: displayRow.isWorstWindow?"#c0392b": displayRow.isPostWindow?"#207040":"#555" }}>{displayRow.isWorstWindow?"Worst window": displayRow.isPostWindow?"Post-window":"Spinup"}</span></div>
                         </div>
                         {isPinned && (
                           <div style={{ display:"flex", gap:"4px", marginTop:"8px" }}>
@@ -5071,7 +5180,7 @@ function App() {
                             <div style={S2.row}><span style={S2.lbl}>Gen run</span><span style={{ ...S2.val, color:"#802000" }}>{displayRow.genRunning?"Yes":"No"}</span></div>
                           </div>
                           <div style={{ borderTop: "1px solid #dee2e6", marginTop: "4px", paddingTop: "4px" }}>
-                            <div style={S2.row}><span style={S2.lbl}>In WW</span><span style={{ ...S2.val, color:"#555" }}>{displayRow.isWorstWindow?"Yes":"No"}</span></div>
+                            <div style={S2.row}><span style={S2.lbl}>Period</span><span style={{ ...S2.val, color: displayRow.isWorstWindow?"#c0392b": displayRow.isPostWindow?"#207040":"#555" }}>{displayRow.isWorstWindow?"Worst window": displayRow.isPostWindow?"Post-window":"Spinup"}</span></div>
                           </div>
                           {isPinned && (
                             <button style={{ marginTop: "8px", fontSize: "10px", padding: "3px 8px", background: "#ffe0a0", border: "1px solid #d0a000", borderRadius: "4px", cursor: "pointer", width: "100%" }}
@@ -5136,6 +5245,7 @@ function App() {
                           <div style={{ fontWeight:700, marginBottom:"6px", fontSize:"12px" }}>
                             {displayRow.month}/{displayRow.day} {String(displayRow.hourOfDay).padStart(2,"0")}:00
                             {displayRow.isWorstWindow && <span style={{color:"#c0392b",marginLeft:"5px",fontSize:"10px"}}>WW</span>}
+                            {displayRow.isPostWindow  && <span style={{color:"#207040",marginLeft:"5px",fontSize:"10px"}}>PW</span>}
                           </div>
                           <div style={S2.row}><span style={S2.lbl}>PV →</span><span style={{ ...S2.val, color:"#d48000" }}>{solar.toFixed(2)} kW</span></div>
                           <div style={S2.row}><span style={S2.lbl}>← Load</span><span style={{ ...S2.val, color:"#204090" }}>{load.toFixed(2)} kW</span></div>
@@ -5262,12 +5372,12 @@ function App() {
                         Save PNG
                       </button>
                       <button style={{ ...S.btnSmall, fontSize: "11px", padding: "3px 12px" }} onClick={() => {
-                        const hdrs = ["Date","Hr","Solar_kW","Load_kW","Net_kW","Curtailed_kW","Unserved_kW","Bat_kWh","DCFC","WW",
+                        const hdrs = ["Date","Hr","Solar_kW","Load_kW","Net_kW","Curtailed_kW","Unserved_kW","Bat_kWh","DCFC","WW","PW",
                           ...evColLabels.flatMap(l => [`${l}_kWh`, `${l}_away`])];
                         const csvRows = tableRows.map(r => {
                           const base = [`${r.month}/${r.day}`, r.hourOfDay, (r.solarKw||0).toFixed(2), (r.loadKw||0).toFixed(2),
                             ((r.solarKw||0)-(r.loadKw||0)).toFixed(2), (r.curtailed||0).toFixed(2), (r.unserved||0).toFixed(2),
-                            (r.batKwhEnd||0).toFixed(2), r.dcfcEvent?"Y":"N", r.isWorstWindow?"Y":"N"];
+                            (r.batKwhEnd||0).toFixed(2), r.dcfcEvent?"Y":"N", r.isWorstWindow?"Y":"N", r.isPostWindow?"Y":"N"];
                           const evCells = evColLabels.flatMap((_, i) => [
                             r.evAway?.[i] ? "" : (r.evKwhEnd?.[i] != null ? r.evKwhEnd[i].toFixed(2) : ""),
                             r.evAway?.[i] ? "Y" : "N",
@@ -5306,6 +5416,7 @@ function App() {
                             <div style={{ fontWeight:700, marginBottom:"6px", fontSize:"12px" }}>
                               {dr.month}/{dr.day} {String(dr.hourOfDay).padStart(2,"0")}:00
                               {dr.isWorstWindow && <span style={{ color:"#c0392b", marginLeft:"5px", fontSize:"10px" }}>WW</span>}
+                              {dr.isPostWindow  && <span style={{ color:"#207040", marginLeft:"5px", fontSize:"10px" }}>PW</span>}
                             </div>
                             <div style={S2.row}><span style={S2.lbl}>PV →</span><span style={{ ...S2.val, color:"#d48000" }}>{(dr.solarKw||0).toFixed(2)} kW</span></div>
                             <div style={S2.row}><span style={S2.lbl}>← Load</span><span style={{ ...S2.val, color:"#204090" }}>{(dr.loadKw||0).toFixed(2)} kW</span></div>
@@ -5364,6 +5475,7 @@ function App() {
                               <th style={TH()}>Bat kWh</th>
                               <th style={TH()}>DCFC</th>
                               <th style={TH()}>WW</th>
+                              <th style={TH()}>PW</th>
                               {evColLabels.flatMap((l, i) => [
                                 <th key={`${i}s`} style={TH({ color: EV_COLORS[i%4] })}>{l} kWh</th>,
                                 <th key={`${i}a`} style={TH({ color: EV_COLORS[i%4] })}>{l} away</th>,
@@ -5387,6 +5499,7 @@ function App() {
                                   <td style={TD({ color: "#107040" })}>{(r.batKwhEnd||0).toFixed(2)}</td>
                                   <td style={TD({ color: r.dcfcEvent?"#c0392b":"#aaa" })}>{r.dcfcEvent?"⚡":""}</td>
                                   <td style={TD({ color: r.isWorstWindow?"#c0392b":"#aaa" })}>{r.isWorstWindow?"●":""}</td>
+                                  <td style={TD({ color: r.isPostWindow?"#207040":"#aaa" })}>{r.isPostWindow?"●":""}</td>
                                   {evColLabels.flatMap((_, i) => {
                                     const away = r.evAway?.[i];
                                     const soc  = r.evKwhEnd?.[i];
@@ -5513,7 +5626,7 @@ function App() {
                               )}
                             </div>
                             <div style={{ borderTop: "1px solid #dee2e6", marginTop: "4px", paddingTop: "4px" }}>
-                              <div style={S2.row}><span style={S2.lbl}>In WW</span><span style={{ ...S2.val, color:"#555" }}>{dr.isWorstWindow?"Yes":"No"}</span></div>
+                              <div style={S2.row}><span style={S2.lbl}>Period</span><span style={{ ...S2.val, color: dr.isWorstWindow?"#c0392b": dr.isPostWindow?"#207040":"#555" }}>{dr.isWorstWindow?"Worst window": dr.isPostWindow?"Post-window":"Spinup"}</span></div>
                             </div>
                           </div>
                         );
