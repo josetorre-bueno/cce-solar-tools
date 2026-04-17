@@ -1,5 +1,5 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.92
+// Version: v0.4.93
 // Updated: 2026-04-16 PT
 // Part of: Wipomo / CCE Solar Tools
 
@@ -1284,7 +1284,15 @@ function countAnnualGenHours(solarH, loadH, batKwh, batKw, genKw, fuelCostPerKwH
   const N = solarH.length;
   const batMin = batKwh * BATTERY_MIN_SOC;
   const batMax = batKwh;
-  let batE = batKwh * 0.5;
+  // Start at full charge (100%).  The stress-window simulation has an autumn spinup period
+  // that naturally charges the battery from 50% to ~80-90% before the worst winter window
+  // arrives.  The annual simulation starts January 1 with no such spinup advantage, so a
+  // 50% start would let the battery drain to the floor in the first few winter weeks for any
+  // system that barely passes the battery-only stress window — triggering spurious generator
+  // hours that the stress-window simulation never sees.  Starting at 100% is equivalent to
+  // assuming the battery was fully charged at the end of the preceding summer, which is the
+  // correct initial condition for a well-operated off-grid system.
+  let batE = batKwh;
   let genRunning = false;
   let genHours = 0;
 
@@ -1295,11 +1303,12 @@ function countAnnualGenHours(solarH, loadH, batKwh, batKw, genKw, fuelCostPerKwH
     // Stop: battery recharged or solar covers load
     if (genRunning && batE >= batMax * 0.95) genRunning = false;
     if (genRunning && sol >= ld)             genRunning = false;
-    // Start: battery has hit the HARD FLOOR (BATTERY_MIN_SOC = 10%).
-    // Using the actual floor — not the 20% conservative trigger used in the stress-window
-    // simulation — ensures the generator only fires in a typical year when load would
-    // actually go unserved without it (same threshold as battery-only unserved-energy).
-    if (!genRunning && batE <= batMax * BATTERY_MIN_SOC) genRunning = true;
+    // Start: battery has hit the HARD FLOOR (BATTERY_MIN_SOC = 10%) AND solar cannot cover
+    // load without the generator.  The "sol < ld" guard prevents a same-timestep stop-restart
+    // race: without it, the "sol >= ld" stop above fires, then this start immediately fires
+    // again because batE is still at the floor — logging a spurious run-hour every morning
+    // when solar rises to cover load after a generator-assisted night.
+    if (!genRunning && batE <= batMax * BATTERY_MIN_SOC && sol < ld) genRunning = true;
 
     const genOut = genRunning ? genKw : 0;
     if (genRunning) genHours++;
@@ -3898,7 +3907,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.92</span>
+        <span style={S.version}>v0.4.93</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto"}}>
           <a href="https://tools.cc-energy.org/index.html"
