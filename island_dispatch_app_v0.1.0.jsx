@@ -1,6 +1,6 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.112
-// Updated: 2026-04-17 18:00 PT
+// Version: v0.4.114
+// Updated: 2026-04-17 19:30 PT
 // Part of: Wipomo / CCE Solar Tools
 
 "use strict";
@@ -229,6 +229,25 @@ function extractWindow(arr8760, spinupStartDoy, nHours) {
   return arr8760.slice(startH).concat(arr8760.slice(0, nHours - (8760 - startH)));
 }
 
+// ── ANNUAL WEATHER HELPER ─────────────────────────────────────────────────────
+// Builds a synthetic weather array for full-year (8760-h) simulations.
+// All hours have isWorstWindow=false, isPostWindow=false.
+// PVWatts TMY convention: hour 0 = Jan 1 00:00–01:00, non-leap year.
+function buildAnnualWeather(nHours = 8760) {
+  const daysInMonth = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  const w = [];
+  let mo = 1, dy = 1, hr = 0;
+  for (let h = 0; h < nHours; h++) {
+    w.push({ month: mo, day: dy, year: 2023, hourOfDay: hr,
+             isWorstWindow: false, isPostWindow: false });
+    if (++hr >= 24) {
+      hr = 0;
+      if (++dy > daysInMonth[mo - 1]) { dy = 1; if (++mo > 12) mo = 1; }
+    }
+  }
+  return w;
+}
+
 // ── EV HELPERS ────────────────────────────────────────────────────────────────
 
 // Per-EV energy parameters (all use ev.efficiency, not the global constant)
@@ -254,586 +273,614 @@ function isRoadTripDay(ev, seqDay) {
   return (seqDay % interval) < 1.0;
 }
 
-// ── DISPATCH ──────────────────────────────────────────────────────────────────
+// ── UNIFIED SIMULATION ─────────────────────────────────────────────────────────
+// Single dispatch engine for any time period and any equipment mix.
+// Replaces the previous three separate functions (dispatch, dispatchGenerator,
+// countAnnualGenHours) so stress-window and annual simulations share identical logic.
+//
+// solarH     : kW array for simulation window
+// loadH      : kW array for simulation window
+// batKwh     : battery capacity (kWh)
+// batKw      : battery max charge/discharge rate (kW)
+// genKw      : generator rated output (kW); 0 = no generator
+// evScenario : EV parameter objects from evConfigToDispatch(); [] = no EVs
+// weather    : per-hour array { month, day, year, hourOfDay, isWorstWindow, isPostWindow }
+//              Use expandStressWindow() for stress-window runs.
+//              Use buildAnnualWeather()  for full-year runs.
+// opts:
+//   dcfcCostPerKwh  (def 0)    — cost multiplier for DCFC kWh
+//   fuelCostPerKwHr (def 0.50) — generator fuel+maint per rated kW per hour
+//   lookaheadDays   (def 4)    — generator planning horizon (days)
+//   erMinKwh        (def 8.57) — fleet emergency-range minimum kWh at EV_EFFICIENCY
+//   initialSoc      (def 0.5)  — starting battery SOC fraction
+//                                 (0.5 for stress window; 1.0 for annual full-year sim)
+//   returnTrace     (def false) — populate trace[] and typed Float32Array traces
+//   wwExcludeStartH (def -1)   — start of WW hours to exclude from ordinance count
+//   wwExcludeLen    (def 0)    — length of WW exclusion window (hours)
+//
+// Returns (all paths):
+//   wwPass, wwPct, wwUnservedKwh   — worst-window coverage
+//   simGenHours                    — total generator-on hours in window
+//   wwGenHours                     — gen hours during isWorstWindow hours only
+//   annGenHoursOrdinance           — gen hours excluding wwExclude window (ordinance count)
+//   simGenCost                     — fuel cost for this window
+//   unservedKwh, unservedHours     — unserved load totals
+//   simDays                        — window length in days
+//   + EV DCFC metrics (zeros when evScenario=[])
+//   trace[]          (returnTrace) — per-hour object array (all chart fields)
+//   traceBat, traceGen, traceUnserved (returnTrace) — typed Float32Arrays
+function simulatePeriod(solarH, loadH, batKwh, batKw, genKw, evScenario, weather, opts = {}) {
+  const {
+    dcfcCostPerKwh  = 0,
+    fuelCostPerKwHr = 0.50,
+    lookaheadDays   = 4,
+    erMinKwh        = 8.57,
+    initialSoc      = 0.5,
+    returnTrace     = false,
+    wwExcludeStartH = -1,
+    wwExcludeLen    = 0,
+  } = opts;
 
-function dispatch(solarH, loadH, batKwh, batKw, evScenario, weather, dcfcCostPerKwh, returnTrace, erMinKwh) {
-  const evs = evScenario;
-  const n = evs.length;
-  const N = solarH.length;
+  const N    = solarH.length;
+  const evs  = evScenario || [];
+  const nEv  = evs.length;
+  const hasGen = genKw > 0;
 
-  let batE   = batKwh * 0.50;
+  // ── Battery ────────────────────────────────────────────────────────────────
   const batMin = batKwh * BATTERY_MIN_SOC;
   const batMax = batKwh;
+  let batE     = batKwh * initialSoc;
 
-  const evE        = evs.map(e => e.kwh * 0.75);
-  const evAway     = new Array(n).fill(false);
-  const evOnTrip   = new Array(n).fill(false);
-  const chargeToday = new Array(n).fill(false);
+  // ── Generator state ────────────────────────────────────────────────────────
+  const planThresh     = batMax * 0.25;
+  let genRunning       = false;
+  let genByPlanning    = false;
+  let simGenHours      = 0;
+  let wwGenHours       = 0;
+  let annGenHoursOrdinance = 0;
 
-  let dcfcKwh          = 0.0;   // all DCFC (planned + unplanned)
-  let dcfcCount        = 0;
-  let wwDcfcKwh        = 0.0;
-  let wwDcfcCount      = 0;
-  let enrouteDcfcKwh   = 0.0;   // dcfc_enroute EVs, workday only (planned)
-  let enrouteDcfcCount = 0;
-  let wwEnrouteDcfcCount = 0;
-  let emergencyDcfcKwh  = 0.0;  // everything else: weekends, WFH, home_only (unplanned)
-  let emergencyDcfcCount = 0;
-  let wwEmergencyDcfcCount = 0;
-  // Emergency sub-categories for diagnostics
-  let emergencyRoadTripInfeasible = 0; // road trip > 80% range (line ~454)
-  let emergencyCommuteReturn = 0;      // chargeToday triggered, no dcfcPlanned (line ~510)
-  let emergencyHomeBased = 0;          // tripsPerWeek===0 EV at hr=18 (line ~531)
-  let workChargeCostTotal = 0.0; // l2_paid: cumulative cost of charging at work
-  let wwLoad           = 0.0;
-  let wwUns            = 0.0;
-  const traceRows  = returnTrace ? [] : null;
-
-  // Per-EV emergency-range minimum (kWh).
-  // erMinKwh is the site reference computed at EV_EFFICIENCY (e.g. 3.5 mi/kWh).
-  // Each EV's actual floor is scaled by its own efficiency so the guaranteed
-  // ER distance is identical for every vehicle regardless of consumption.
-  const siteErKwh = erMinKwh ?? 8.57;
-  const evMn = evs.map(ev => siteErKwh * EV_EFFICIENCY / (ev.efficiency || EV_EFFICIENCY));
-
-  // Build sequence-day index
-  let seqDay = 0;
-  let prevDate = null;
-  const seqDayH = [];
-  for (const r of weather) {
-    const k = `${r.month}-${r.day}`;
-    if (k !== prevDate) {
-      if (prevDate !== null) seqDay++;
-      prevDate = k;
+  // shortageExpected / canStop — defined once, used by both stress-window and annual paths.
+  // Both previously had identical bodies; the only prior difference was hourOfDay source
+  // (weather[h] vs h%24).  Using weather[h].hourOfDay works for both because
+  // buildAnnualWeather() sets hourOfDay = h%24.
+  function shortageExpected(h) {
+    let projE    = batE;
+    const hrNow  = weather[Math.min(h, N - 1)].hourOfDay;
+    const maxHrs = (24 - hrNow) + lookaheadDays * 24;
+    let pastSolar = solarH[Math.min(h, N - 1)] < loadH[Math.min(h, N - 1)];
+    let seenDark  = pastSolar;
+    for (let j = 0; j < maxHrs; j++) {
+      const idx = h + j;
+      if (idx >= N) break;
+      const net = solarH[idx] - loadH[idx];
+      if (solarH[idx] === 0) seenDark = true;
+      if (!pastSolar && net < 0) pastSolar = true;
+      projE += net > 0 ? net * BATTERY_RTE : net;
+      projE  = Math.min(projE, batMax);
+      if (projE < planThresh)               return true;
+      if (pastSolar && seenDark && net >= 0) return false;
     }
-    seqDayH.push(seqDay);
+    return false;
   }
 
+  function canStop(h) {
+    let projE    = batE;
+    let pastSolar = solarH[Math.min(h, N - 1)] < loadH[Math.min(h, N - 1)];
+    let seenDark  = pastSolar;
+    let recovIdx  = -1;
+    for (let j = 0; j < 48; j++) {
+      const idx = h + j;
+      if (idx >= N) break;
+      const net = solarH[idx] - loadH[idx];
+      if (solarH[idx] === 0) seenDark = true;
+      if (!pastSolar && net < 0) pastSolar = true;
+      projE += net > 0 ? net * BATTERY_RTE : net;
+      projE  = Math.min(projE, batMax);
+      if (projE < planThresh)               return false;
+      if (pastSolar && seenDark && net >= 0) { recovIdx = idx; break; }
+    }
+    if (recovIdx < 0) return false;
+    let tmrCharge = 0;
+    for (let j = 0; j < 20; j++) {
+      const idx = Math.min(recovIdx + j, N - 1);
+      const net = solarH[idx] - loadH[idx];
+      if (net > 0) tmrCharge += net * BATTERY_RTE;
+      else if (j > 4) break;
+    }
+    return Math.min(projE + tmrCharge, batMax) >= batMax * 0.90;
+  }
+
+  // ── EV state ───────────────────────────────────────────────────────────────
+  const evE         = evs.map(e => e.kwh * 0.75);
+  const evAway      = new Array(nEv).fill(false);
+  const evOnTrip    = new Array(nEv).fill(false);
+  const chargeToday = new Array(nEv).fill(false);
+  const siteErKwh   = erMinKwh;
+  const evMn        = evs.map(ev => siteErKwh * EV_EFFICIENCY / (ev.efficiency || EV_EFFICIENCY));
+
+  let dcfcKwh = 0, dcfcCount = 0, wwDcfcKwh = 0, wwDcfcCount = 0;
+  let enrouteDcfcKwh = 0, enrouteDcfcCount = 0, wwEnrouteDcfcCount = 0;
+  let emergencyDcfcKwh = 0, emergencyDcfcCount = 0, wwEmergencyDcfcCount = 0;
+  let emergencyRoadTripInfeasible = 0, emergencyCommuteReturn = 0, emergencyHomeBased = 0;
+  let workChargeCostTotal = 0;
+
+  // Build sequence-day index for trip scheduling (only when EVs present)
+  const seqDayH = [];
+  if (nEv > 0) {
+    let seqDay = 0, prevDate = null;
+    for (const r of weather) {
+      const k = `${r.month}-${r.day}`;
+      if (k !== prevDate) { if (prevDate !== null) seqDay++; prevDate = k; }
+      seqDayH.push(seqDay);
+    }
+  }
+
+  // ── WW + unserved accumulators ─────────────────────────────────────────────
+  let wwLoad = 0, wwUns = 0;
+  let unservedKwh = 0, unservedHours = 0;
+
+  // ── Trace buffers ──────────────────────────────────────────────────────────
+  const traceRows     = returnTrace ? [] : null;
+  const traceBat      = returnTrace ? new Float32Array(N) : null;
+  const traceGen      = returnTrace ? new Uint8Array(N)   : null;
+  const traceUnserved = returnTrace ? new Float32Array(N) : null;
+
+  // ── MAIN SIMULATION LOOP ───────────────────────────────────────────────────
   for (let h = 0; h < N; h++) {
     const r    = weather[h];
-    const mo   = r.month;
-    const dy   = r.day;
-    const yr   = r.year;
     const hr   = r.hourOfDay;
     const sol  = solarH[h];
     const ld   = loadH[h];
-    const sd   = seqDayH[h];
     const inWw = r.isWorstWindow;
 
-    const triggerFired = new Array(n).fill(false);
-    let dcfcThisHour = false;
-
-    // Snapshots for energy balance tracing
-    const evKwhStart  = [...evE];
-    const batKwhStart = batE;
-
-    for (let i = 0; i < n; i++) {
-      const ev      = evs[i];
-      const tripDay = isTripDay(ev.tripsPerWeek, sd);
-      const roadTrip = isRoadTripDay(ev, sd);
-
-      // V2G top-up of stationary battery while EV is home and solar is producing.
-      // Restricted to solar hours (sol > 0.5 kW) so trip EVs that return home
-      // after sunset are NOT drained back into the battery.
-      //
-      // V2G top-up of stationary battery — daytime only (sol > 0.5 kW).
-      // Nighttime V2G omitted: without prio-2 battery→EV recharge it causes one-way
-      // EV depletion over multi-day worst windows (EVs can't recover from solar).
-      // Floor: EV's own 90% target, so only surplus above target flows to battery.
-      if (!evAway[i] && !evOnTrip[i] && sol > 0.5 && ev.canV2G) {
-        const batNeed   = batMax - batE;
-        const halfRangeKwh = ev.tripMiles > 0 ? ev.tripMiles / (2 * ev.efficiency) : 0;
-        const evFloor = evMn[i] + halfRangeKwh;
-        const evSurplus = Math.max(0, evE[i] - evFloor) * V2G_RTE;
-        if (batNeed > 0.05 && evSurplus > 0.05) {
-          const tr = Math.min(batNeed / BATTERY_RTE, evSurplus, EVSE_KW);
-          evE[i] -= tr / V2G_RTE;
-          batE   += tr * V2G_RTE * BATTERY_RTE;
-        }
-      }
-
-      // Weather trigger at 6 am
-      if (hr === 6) {
-        // For destination-charging EVs (l2_free/l2_paid): no home DCFC trigger
-        if (ev.destCharging === "l2_free" || ev.destCharging === "l2_paid") {
-          chargeToday[i] = false;
-        } else {
-          const todaySol = (() => { let s = 0; for (let j = 1; j <= 11; j++) s += solarH[Math.min(h + j, N - 1)]; return s; })();
-          const tomSol   = (() => { let s = 0; for (let j = 25; j <= 35; j++) s += solarH[Math.min(h + j, N - 1)]; return s; })();
-          const todayLd  = (() => { let s = 0; for (let j = 0; j < 24; j++) s += loadH[Math.min(h + j, N - 1)]; return s; })();
-          const tomLd    = (() => { let s = 0; for (let j = 24; j < 48; j++) s += loadH[Math.min(h + j, N - 1)]; return s; })();
-          const shortfall = Math.max(0, todayLd - todaySol) + Math.max(0, tomLd - tomSol);
-          const availBat = batE - batMin;
-          // Fleet total V2G capacity — same trip-aware floors as the discharge loop:
-          // WFH bidi floor = evMn[j]; commuter bidi floor = max(evMn[j], roundTripKwh) if trip tomorrow
-          let availEvFleet = 0;
-          for (let j = 0; j < n; j++) {
-            if (!evs[j].canV2G || evAway[j] || evOnTrip[j]) continue;
-            const jIsWfh        = evs[j].tripsPerWeek === 0;
-            const jTomorrowTrip = isTripDay(evs[j].tripsPerWeek, sd + 1);
-            const jFloor        = (!jIsWfh && jTomorrowTrip) ? Math.max(evMn[j], evs[j].roundTripKwh) : evMn[j];
-            availEvFleet += Math.max(0, evE[j] - jFloor) * V2G_RTE;
-          }
-          const houseShortfall = shortfall > (availBat + availEvFleet);
-
-          // Transport shortfall: EV can't cover its trip round trip
-          let evTransportShortfall = false;
-          if (ev.tripsPerWeek > 0 && tripDay) {
-            evTransportShortfall = evE[i] < ev.roundTripKwh * 1.10;
-          } else if (ev.tripsPerWeek === 0) {
-            // Home-based EV: check if daily errand driving will drop below erMinKwh
-            const evNeedKwh = ev.roundTripKwh * (ev.tripsPerWeek / 7); // expected daily driving kWh
-            const evHeadroom = evE[i] - evMn[i] - evNeedKwh;
-            const todaySurplus = Math.max(0, todaySol - todayLd);
-            evTransportShortfall = evHeadroom < 0 && (todaySurplus * CHARGE_RTE) < -evHeadroom;
-          }
-
-          const newVal = houseShortfall || evTransportShortfall;
-          if (newVal && !chargeToday[i]) triggerFired[i] = true;
-          chargeToday[i] = newVal;
-        }
-      }
-
-      // Road trip departure hr===7
-      // Trips cannot be skipped. If the home system hasn't charged the EV enough,
-      // the driver stops at a DCFC before leaving — counted as en-route (enabling a
-      // scheduled trip, cost concern) not emergency (special trip just to charge).
-      // Target: charge to cover the full round trip if possible (≤ 80%), otherwise
-      // just enough for the one-way drive; the return leg will handle the rest.
-      if (hr === 7 && roadTrip && !evAway[i] && !evOnTrip[i]) {
-        const rtOneWayKwh = ev.tripMiles / ev.efficiency;
-        const rtRoundTripNeeded = rtOneWayKwh * 2 + evMn[i];
-        const rtDcfcCeil = ev.kwh * ev.dcfcTargetPct;
-        if (evE[i] < rtOneWayKwh + evMn[i]) {
-          // Not enough to depart — pre-departure DCFC (en-route category)
-          const dcfcTo = Math.min(rtDcfcCeil, Math.max(rtRoundTripNeeded, rtOneWayKwh + evMn[i]));
-          const added  = Math.max(0, dcfcTo - evE[i]);
-          if (added > 0.1) {
-            dcfcKwh   += added / CHARGE_RTE;
-            dcfcCount += 1;
-            dcfcThisHour = true;
-            if (inWw) { wwDcfcKwh += added / CHARGE_RTE; wwDcfcCount += 1; }
-            enrouteDcfcKwh   += added / CHARGE_RTE;
-            enrouteDcfcCount += 1;
-            if (inWw) wwEnrouteDcfcCount += 1;
-            evE[i] = dcfcTo;
-          }
-        } else if (evE[i] < rtRoundTripNeeded) {
-          // Enough for departure but not the full round trip — opportunistic DCFC top-up
-          const dcfcTo = Math.min(rtDcfcCeil, rtRoundTripNeeded);
-          const added  = Math.max(0, dcfcTo - evE[i]);
-          if (added > 0.5) {
-            dcfcKwh   += added / CHARGE_RTE;
-            dcfcCount += 1;
-            dcfcThisHour = true;
-            if (inWw) { wwDcfcKwh += added / CHARGE_RTE; wwDcfcCount += 1; }
-            enrouteDcfcKwh   += added / CHARGE_RTE;
-            enrouteDcfcCount += 1;
-            if (inWw) wwEnrouteDcfcCount += 1;
-            evE[i] = dcfcTo;
-          }
-        }
-        evE[i] -= rtOneWayKwh; // energy consumed driving to destination
-        evOnTrip[i] = true;
-        evAway[i]   = true;
-      }
-      // Road trip return hr===20
-      // EV has been at destination all day. Model: destination L2 charging brings EV to destL2TargetPct
-      // (hotel, family, destination charger — overnight L2 has plenty of time; no home energy cost).
-      // If EV already has more than destL2TargetPct, keep its natural level.
-      // After destination charge, check if it can drive home; if not, add a DCFC stop.
-      // If even charging to destL2TargetPct doesn't cover the one-way return + emergency reserve, flag
-      // this configuration as infeasible (trip too long for the battery).
-      if (hr === 20 && evOnTrip[i]) {
-        const rtOneWayKwh = ev.tripMiles / ev.efficiency;
-        const rtDcfcTarget = ev.kwh * ev.destL2TargetPct;
-        // Destination L2 top-up (external energy, no home battery cost)
-        evE[i] = Math.max(evE[i], rtDcfcTarget);
-        if (evE[i] >= rtOneWayKwh + evMn[i]) {
-          // Enough charge — drive home without DCFC
-          evE[i] -= rtOneWayKwh;
-        } else if (rtDcfcTarget >= rtOneWayKwh + evMn[i]) {
-          // En-route DCFC stop: charge to 80% then drive home
-          const added = Math.max(0, rtDcfcTarget - evE[i]);
-          dcfcKwh   += added / CHARGE_RTE;
-          dcfcCount += 1;
-          dcfcThisHour = true;
-          if (inWw) { wwDcfcKwh += added / CHARGE_RTE; wwDcfcCount += 1; }
-          enrouteDcfcKwh   += added / CHARGE_RTE;
-          enrouteDcfcCount += 1;
-          if (inWw) wwEnrouteDcfcCount += 1;
-          evE[i] = rtDcfcTarget - rtOneWayKwh; // arrive home after DCFC + return drive
-        } else {
-          // Infeasible: trip distance exceeds what 80% charge can cover.
-          // Drive home anyway on whatever charge is available; log as emergency DCFC.
-          const added = Math.max(0, rtDcfcTarget - evE[i]);
-          if (added > 0.1) {
-            dcfcKwh   += added / CHARGE_RTE;
-            dcfcCount += 1;
-            dcfcThisHour = true;
-            if (inWw) { wwDcfcKwh += added / CHARGE_RTE; wwDcfcCount += 1; }
-            emergencyDcfcKwh   += added / CHARGE_RTE;
-            emergencyDcfcCount += 1;
-            emergencyRoadTripInfeasible += 1;
-            if (inWw) wwEmergencyDcfcCount += 1;
-          }
-          evE[i] = Math.max(evE[i] + added - rtOneWayKwh, 0);
-        }
-        evAway[i]   = false;
-        evOnTrip[i] = false;
-      }
-
-      // EV trip departure and return (for EVs with tripsPerWeek > 0)
-      if (ev.tripsPerWeek > 0) {
-        if (hr === 7 && tripDay && !evAway[i] && !evOnTrip[i]) {
-          // Depart only if enough charge to reach destination
-          if (evE[i] >= ev.tripCheckKwh) {
-            evAway[i] = true;
-            // If overnight charging brought EV above round-trip threshold, clear the DCFC trigger
-            if (chargeToday[i] && evE[i] >= ev.roundTripKwh * 1.10) chargeToday[i] = false;
-          }
-        }
-        if (hr === 18 && evAway[i] && !evOnTrip[i]) {
-          evAway[i] = false;
-          if (ev.destCharging === "l2_free" || ev.destCharging === "l2_paid") {
-            const preDrive = evE[i];
-            evE[i] = ev.kwh * ev.destL2TargetPct;
-            if (ev.destCharging === "l2_paid" && ev.destChargeRate > 0) {
-              const drivingUsed = ev.tripMiles / ev.efficiency; // one-way drive to work
-              const preWork = Math.max(preDrive - drivingUsed, evMn[i]);
-              const addedAtWork = Math.max(0, ev.kwh * ev.destL2TargetPct - preWork);
-              workChargeCostTotal += addedAtWork * ev.destChargeRate;
-            }
-          } else if (ev.dcfcPlannedPerYear > 0 && chargeToday[i]) {
-            // En-route DCFC: planned stop on the way home
-            const natural = Math.max(evE[i] - ev.roundTripKwh, 0);
-            const added   = Math.max(0, ev.kwh * ev.dcfcTargetPct - natural);
-            dcfcKwh   += added / CHARGE_RTE;
-            dcfcCount += 1;
-            dcfcThisHour = true;
-            if (inWw) { wwDcfcKwh += added / CHARGE_RTE; wwDcfcCount += 1; }
-            enrouteDcfcKwh   += added / CHARGE_RTE;
-            enrouteDcfcCount += 1;
-            if (inWw) wwEnrouteDcfcCount += 1;
-            evE[i] = ev.kwh * ev.dcfcTargetPct;
-            chargeToday[i] = false;
-          } else {
-            // Home charging only or no DCFC planned: apply round-trip driving deduction
-            evE[i] = Math.max(evE[i] - ev.roundTripKwh, 0);
-            if (chargeToday[i]) {
-              // Emergency DCFC on return
-              const added = Math.max(0, ev.kwh * ev.dcfcTargetPct - evE[i]);
-              if (added > 0.1) {
-                dcfcKwh   += added / CHARGE_RTE;
-                dcfcCount += 1;
-                dcfcThisHour = true;
-                if (inWw) { wwDcfcKwh += added / CHARGE_RTE; wwDcfcCount += 1; }
-                emergencyDcfcKwh   += added / CHARGE_RTE;
-                emergencyDcfcCount += 1;
-                emergencyCommuteReturn += 1;
-                if (inWw) wwEmergencyDcfcCount += 1;
-                evE[i] = ev.kwh * ev.dcfcTargetPct;
-              }
-              chargeToday[i] = false;
-            }
-          }
-        }
-      }
-
-      // For tripsPerWeek === 0: EV never departs, no driving deduction
-      // For tripsPerWeek > 0: handled by the departure/return block above
-      // Emergency DCFC for home-based EVs: check chargeToday at hr === 18
-      if (ev.tripsPerWeek === 0 && !evOnTrip[i] && hr === 18 && chargeToday[i]) {
-        const added = Math.max(0, ev.kwh * ev.dcfcTargetPct - evE[i]);
-        if (added > 0.1) {
-          dcfcKwh   += added / CHARGE_RTE;
-          dcfcCount += 1;
-          dcfcThisHour = true;
-          if (inWw) { wwDcfcKwh += added / CHARGE_RTE; wwDcfcCount += 1; }
-          emergencyDcfcKwh   += added / CHARGE_RTE;
-          emergencyDcfcCount += 1;
-          emergencyHomeBased += 1;
-          if (inWw) wwEmergencyDcfcCount += 1;
-          evE[i]         = ev.kwh * ev.dcfcTargetPct;
-          chargeToday[i] = false;
-        }
+    // ── Generator stop / start ───────────────────────────────────────────────
+    if (hasGen) {
+      if (genRunning && batE >= batMax * 0.95)           { genRunning = false; genByPlanning = false; }
+      if (genRunning && sol >= ld)                       { genRunning = false; genByPlanning = false; }
+      if (genRunning && !genByPlanning && canStop(h))      genRunning = false;
+      if (!genRunning && batE <= batMax * 0.20)          { genRunning = true;  genByPlanning = false; }
+      const aft = (hr >= 12 && sol < ld) || hr === 18;
+      if (aft && !genRunning && batE < batMax * 0.75 && shortageExpected(h)) {
+        genRunning = true; genByPlanning = true;
       }
     }
+    const genOut = (hasGen && genRunning) ? genKw : 0;
+    if (hasGen && genRunning) {
+      simGenHours++;
+      if (inWw) wwGenHours++;
+      const inExclude = wwExcludeStartH >= 0 && wwExcludeLen > 0 && (
+        wwExcludeStartH + wwExcludeLen <= N
+          ? (h >= wwExcludeStartH && h < wwExcludeStartH + wwExcludeLen)
+          : (h >= wwExcludeStartH || h < (wwExcludeStartH + wwExcludeLen) - N)
+      );
+      if (!inExclude) annGenHoursOrdinance++;
+    }
 
-    // Snapshot after per-EV events (driving, DCFC) but before electrical dispatch
-    const evKwhPreDispatch = [...evE];
+    // ── Per-EV events ─────────────────────────────────────────────────────────
+    const triggerFired = nEv > 0 ? new Array(nEv).fill(false) : [];
+    let dcfcThisHour = false;
+    const evKwhStart = nEv > 0 ? [...evE] : [];
+    const batKwhStart = batE;
+
+    if (nEv > 0) {
+      const sd = seqDayH[h];
+
+      for (let i = 0; i < nEv; i++) {
+        const ev      = evs[i];
+        const tripDay = isTripDay(ev.tripsPerWeek, sd);
+        const roadTrip = isRoadTripDay(ev, sd);
+
+        // V2G top-up of stationary battery — daytime only (sol > 0.5 kW)
+        if (!evAway[i] && !evOnTrip[i] && sol > 0.5 && ev.canV2G) {
+          const batNeed      = batMax - batE;
+          const halfRangeKwh = ev.tripMiles > 0 ? ev.tripMiles / (2 * ev.efficiency) : 0;
+          const evFloor      = evMn[i] + halfRangeKwh;
+          const evSurplus    = Math.max(0, evE[i] - evFloor) * V2G_RTE;
+          if (batNeed > 0.05 && evSurplus > 0.05) {
+            const tr = Math.min(batNeed / BATTERY_RTE, evSurplus, EVSE_KW);
+            evE[i] -= tr / V2G_RTE;
+            batE   += tr * V2G_RTE * BATTERY_RTE;
+          }
+        }
+
+        // Weather trigger at 6 am
+        if (hr === 6) {
+          if (ev.destCharging === "l2_free" || ev.destCharging === "l2_paid") {
+            chargeToday[i] = false;
+          } else {
+            const todaySol = (() => { let s = 0; for (let j = 1; j <= 11; j++) s += solarH[Math.min(h + j, N - 1)]; return s; })();
+            const tomSol   = (() => { let s = 0; for (let j = 25; j <= 35; j++) s += solarH[Math.min(h + j, N - 1)]; return s; })();
+            const todayLd  = (() => { let s = 0; for (let j = 0; j < 24; j++) s += loadH[Math.min(h + j, N - 1)]; return s; })();
+            const tomLd    = (() => { let s = 0; for (let j = 24; j < 48; j++) s += loadH[Math.min(h + j, N - 1)]; return s; })();
+            const shortfall = Math.max(0, todayLd - todaySol) + Math.max(0, tomLd - tomSol);
+            const availBat = batE - batMin;
+            let availEvFleet = 0;
+            for (let j = 0; j < nEv; j++) {
+              if (!evs[j].canV2G || evAway[j] || evOnTrip[j]) continue;
+              const jIsWfh        = evs[j].tripsPerWeek === 0;
+              const jTomorrowTrip = isTripDay(evs[j].tripsPerWeek, sd + 1);
+              const jFloor        = (!jIsWfh && jTomorrowTrip) ? Math.max(evMn[j], evs[j].roundTripKwh) : evMn[j];
+              availEvFleet += Math.max(0, evE[j] - jFloor) * V2G_RTE;
+            }
+            const houseShortfall = shortfall > (availBat + availEvFleet);
+            let evTransportShortfall = false;
+            if (ev.tripsPerWeek > 0 && tripDay) {
+              evTransportShortfall = evE[i] < ev.roundTripKwh * 1.10;
+            } else if (ev.tripsPerWeek === 0) {
+              const evNeedKwh  = ev.roundTripKwh * (ev.tripsPerWeek / 7);
+              const evHeadroom = evE[i] - evMn[i] - evNeedKwh;
+              const todaySurplus = Math.max(0, todaySol - todayLd);
+              evTransportShortfall = evHeadroom < 0 && (todaySurplus * CHARGE_RTE) < -evHeadroom;
+            }
+            const newVal = houseShortfall || evTransportShortfall;
+            if (newVal && !chargeToday[i]) triggerFired[i] = true;
+            chargeToday[i] = newVal;
+          }
+        }
+
+        // Road trip departure hr===7
+        if (hr === 7 && roadTrip && !evAway[i] && !evOnTrip[i]) {
+          const rtOneWayKwh     = ev.tripMiles / ev.efficiency;
+          const rtRoundTripNeeded = rtOneWayKwh * 2 + evMn[i];
+          const rtDcfcCeil      = ev.kwh * ev.dcfcTargetPct;
+          if (evE[i] < rtOneWayKwh + evMn[i]) {
+            const dcfcTo = Math.min(rtDcfcCeil, Math.max(rtRoundTripNeeded, rtOneWayKwh + evMn[i]));
+            const added  = Math.max(0, dcfcTo - evE[i]);
+            if (added > 0.1) {
+              dcfcKwh += added / CHARGE_RTE; dcfcCount++;
+              dcfcThisHour = true;
+              if (inWw) { wwDcfcKwh += added / CHARGE_RTE; wwDcfcCount++; }
+              enrouteDcfcKwh += added / CHARGE_RTE; enrouteDcfcCount++;
+              if (inWw) wwEnrouteDcfcCount++;
+              evE[i] = dcfcTo;
+            }
+          } else if (evE[i] < rtRoundTripNeeded) {
+            const dcfcTo = Math.min(rtDcfcCeil, rtRoundTripNeeded);
+            const added  = Math.max(0, dcfcTo - evE[i]);
+            if (added > 0.5) {
+              dcfcKwh += added / CHARGE_RTE; dcfcCount++;
+              dcfcThisHour = true;
+              if (inWw) { wwDcfcKwh += added / CHARGE_RTE; wwDcfcCount++; }
+              enrouteDcfcKwh += added / CHARGE_RTE; enrouteDcfcCount++;
+              if (inWw) wwEnrouteDcfcCount++;
+              evE[i] = dcfcTo;
+            }
+          }
+          evE[i] -= rtOneWayKwh;
+          evOnTrip[i] = true;
+          evAway[i]   = true;
+        }
+
+        // Road trip return hr===20
+        if (hr === 20 && evOnTrip[i]) {
+          const rtOneWayKwh  = ev.tripMiles / ev.efficiency;
+          const rtDcfcTarget = ev.kwh * ev.destL2TargetPct;
+          evE[i] = Math.max(evE[i], rtDcfcTarget);
+          if (evE[i] >= rtOneWayKwh + evMn[i]) {
+            evE[i] -= rtOneWayKwh;
+          } else if (rtDcfcTarget >= rtOneWayKwh + evMn[i]) {
+            const added = Math.max(0, rtDcfcTarget - evE[i]);
+            dcfcKwh += added / CHARGE_RTE; dcfcCount++;
+            dcfcThisHour = true;
+            if (inWw) { wwDcfcKwh += added / CHARGE_RTE; wwDcfcCount++; }
+            enrouteDcfcKwh += added / CHARGE_RTE; enrouteDcfcCount++;
+            if (inWw) wwEnrouteDcfcCount++;
+            evE[i] = rtDcfcTarget - rtOneWayKwh;
+          } else {
+            const added = Math.max(0, rtDcfcTarget - evE[i]);
+            if (added > 0.1) {
+              dcfcKwh += added / CHARGE_RTE; dcfcCount++;
+              dcfcThisHour = true;
+              if (inWw) { wwDcfcKwh += added / CHARGE_RTE; wwDcfcCount++; }
+              emergencyDcfcKwh += added / CHARGE_RTE; emergencyDcfcCount++;
+              emergencyRoadTripInfeasible++;
+              if (inWw) wwEmergencyDcfcCount++;
+            }
+            evE[i] = Math.max(evE[i] + added - rtOneWayKwh, 0);
+          }
+          evAway[i]   = false;
+          evOnTrip[i] = false;
+        }
+
+        // Regular trip departure and return
+        if (ev.tripsPerWeek > 0) {
+          if (hr === 7 && tripDay && !evAway[i] && !evOnTrip[i]) {
+            if (evE[i] >= ev.tripCheckKwh) {
+              evAway[i] = true;
+              if (chargeToday[i] && evE[i] >= ev.roundTripKwh * 1.10) chargeToday[i] = false;
+            }
+          }
+          if (hr === 18 && evAway[i] && !evOnTrip[i]) {
+            evAway[i] = false;
+            if (ev.destCharging === "l2_free" || ev.destCharging === "l2_paid") {
+              const preDrive = evE[i];
+              evE[i] = ev.kwh * ev.destL2TargetPct;
+              if (ev.destCharging === "l2_paid" && ev.destChargeRate > 0) {
+                const drivingUsed = ev.tripMiles / ev.efficiency;
+                const preWork = Math.max(preDrive - drivingUsed, evMn[i]);
+                const addedAtWork = Math.max(0, ev.kwh * ev.destL2TargetPct - preWork);
+                workChargeCostTotal += addedAtWork * ev.destChargeRate;
+              }
+            } else if (ev.dcfcPlannedPerYear > 0 && chargeToday[i]) {
+              const natural = Math.max(evE[i] - ev.roundTripKwh, 0);
+              const added   = Math.max(0, ev.kwh * ev.dcfcTargetPct - natural);
+              dcfcKwh += added / CHARGE_RTE; dcfcCount++;
+              dcfcThisHour = true;
+              if (inWw) { wwDcfcKwh += added / CHARGE_RTE; wwDcfcCount++; }
+              enrouteDcfcKwh += added / CHARGE_RTE; enrouteDcfcCount++;
+              if (inWw) wwEnrouteDcfcCount++;
+              evE[i] = ev.kwh * ev.dcfcTargetPct;
+              chargeToday[i] = false;
+            } else {
+              evE[i] = Math.max(evE[i] - ev.roundTripKwh, 0);
+              if (chargeToday[i]) {
+                const added = Math.max(0, ev.kwh * ev.dcfcTargetPct - evE[i]);
+                if (added > 0.1) {
+                  dcfcKwh += added / CHARGE_RTE; dcfcCount++;
+                  dcfcThisHour = true;
+                  if (inWw) { wwDcfcKwh += added / CHARGE_RTE; wwDcfcCount++; }
+                  emergencyDcfcKwh += added / CHARGE_RTE; emergencyDcfcCount++;
+                  emergencyCommuteReturn++;
+                  if (inWw) wwEmergencyDcfcCount++;
+                  evE[i] = ev.kwh * ev.dcfcTargetPct;
+                }
+                chargeToday[i] = false;
+              }
+            }
+          }
+        }
+
+        // Home-based EV emergency DCFC at hr===18
+        if (ev.tripsPerWeek === 0 && !evOnTrip[i] && hr === 18 && chargeToday[i]) {
+          const added = Math.max(0, ev.kwh * ev.dcfcTargetPct - evE[i]);
+          if (added > 0.1) {
+            dcfcKwh += added / CHARGE_RTE; dcfcCount++;
+            dcfcThisHour = true;
+            if (inWw) { wwDcfcKwh += added / CHARGE_RTE; wwDcfcCount++; }
+            emergencyDcfcKwh += added / CHARGE_RTE; emergencyDcfcCount++;
+            emergencyHomeBased++;
+            if (inWw) wwEmergencyDcfcCount++;
+            evE[i] = ev.kwh * ev.dcfcTargetPct;
+            chargeToday[i] = false;
+          }
+        }
+      }  // end per-EV loop
+    }  // end if (nEv > 0)
+
+    const evKwhPreDispatch = nEv > 0 ? [...evE] : [];
 
     // Road-trip load reduction
     let rtFactor = 1.0;
-    for (let i = 0; i < n; i++) {
+    for (let i = 0; i < nEv; i++) {
       if (evOnTrip[i]) rtFactor = Math.min(rtFactor, evs[i].rtLoadFactor);
     }
     const effectiveLd = ld * rtFactor;
 
-    // Energy dispatch
-    let direct = Math.min(sol, effectiveLd);
-    let excess  = sol - direct;
-    let res     = effectiveLd - direct;
+    // ── Energy dispatch ────────────────────────────────────────────────────────
+    const totalSupply = sol + genOut;
+    let direct  = Math.min(totalSupply, effectiveLd);
+    let excess   = totalSupply - direct;
+    let deficit  = effectiveLd - direct;
 
-    // Surplus dispatch — spec: EV battery is FIRST charged.
-    // Three-phase order: (1) EVs up to transport minimum, (2) stationary battery, (3) EVs top-up.
-    // Phase 1 is a small, targeted step: only EVs below their round-trip threshold get priority.
-    // This ensures a commuter returning home on a solar afternoon recovers transport charge before
-    // the battery absorbs all the surplus. On days when EVs are already above threshold, phase 1
-    // is a no-op and battery charges normally.
-    const evSolarOrder = [];
-    for (let i = 0; i < n; i++) {
-      if (evAway[i] || evOnTrip[i]) continue;
-      const head = (evs[i].kwh * 0.95 - evE[i]) / CHARGE_RTE;
-      if (head <= 0) continue;
-      const tomorrowTrip = isTripDay(evs[i].tripsPerWeek, sd + 1);
-      evSolarOrder.push({ i, tripsPerWeek: evs[i].tripsPerWeek, tomorrowTrip, soc: evE[i] / evs[i].kwh });
-    }
-    // Charge priority: most-traveled EV first (highest tripsPerWeek), then trip-tomorrow tiebreak,
-    // then lowest SOC. This ensures the EV with the greatest transport demand is charged first.
-    evSolarOrder.sort((a, b) => {
-      const td = (b.tripsPerWeek || 0) - (a.tripsPerWeek || 0); // most-traveled first
-      if (Math.abs(td) > 0.001) return td;
-      if (a.tomorrowTrip !== b.tomorrowTrip) return a.tomorrowTrip ? -1 : 1;
-      return a.soc - b.soc; // lower SOC first within same group
-    });
-
-    // Phase 1: EV transport minimum — only fill EVs below roundTripKwh×1.10 (commuters) or evMn (WFH)
-    for (const { i } of evSolarOrder) {
-      if (excess <= 0) break;
-      const tripMin = evs[i].tripsPerWeek > 0
-        ? evs[i].roundTripKwh * 1.10
-        : evMn[i] * 1.5;
-      if (evE[i] >= tripMin) continue;                 // already transport-ready, skip phase 1
-      const head = (tripMin - evE[i]) / CHARGE_RTE;
-      const chg  = Math.min(excess, Math.max(0, head));
-      evE[i] += chg * CHARGE_RTE;
-      excess -= chg;
-    }
-
-    // Phase 2: stationary battery
-    const batChg = Math.min(excess, (batMax - batE) / BATTERY_RTE);
-    batE   += batChg * BATTERY_RTE;
-    excess -= batChg;
-
-    // Phase 3: EVs general top-up to 95%
-    for (const { i } of evSolarOrder) {
-      if (excess <= 0) break;
-      const head = (evs[i].kwh * 0.95 - evE[i]) / CHARGE_RTE;
-      const chg  = Math.min(excess, Math.max(0, head));
-      evE[i] += chg * CHARGE_RTE;
-      excess -= chg;
-    }
-
-    // Deficit discharge — spec: EV battery is LAST drained, stationary battery is FIRST.
-    // Enabling V2G should not degrade EV transport charge relative to a non-V2G EV.
-    // Stationary battery (designed for cycling) covers load first; bidi EVs serve as
-    // a backup layer only when the battery cannot cover the remaining deficit.
-    //
-    // Bidi EV discharge order (when battery is insufficient):
-    // Discharge priority: least-traveled EV first (lowest tripsPerWeek), preserving range
-    // for the most-traveled commuter. WFH EVs (tripsPerWeek=0) discharge before commuters.
-    // Within each tripsPerWeek group: higher SOC discharges first (most energy to give).
-    const bidiOrder = [];
-    for (let ci = 0; ci < n; ci++) {
-      if (!evs[ci].canV2G) continue;
-      if (evAway[ci] || evOnTrip[ci]) continue;
-      const isWfh        = evs[ci].tripsPerWeek === 0;
-      const tomorrowTrip = isTripDay(evs[ci].tripsPerWeek, sd + 1);
-      const halfRangeKwh = evs[ci].tripMiles > 0 ? evs[ci].tripMiles / (2 * evs[ci].efficiency) : 0;
-      const v2gSafeFloor = evMn[ci] + halfRangeKwh;
-      const floor = (!isWfh && tomorrowTrip) ? Math.max(v2gSafeFloor, evs[ci].roundTripKwh) : v2gSafeFloor;
-      bidiOrder.push({ ci, tripsPerWeek: evs[ci].tripsPerWeek, floor, socRatio: evE[ci] / evs[ci].kwh });
-    }
-    bidiOrder.sort((a, b) => {
-      const td = (a.tripsPerWeek || 0) - (b.tripsPerWeek || 0); // least-traveled first
-      if (Math.abs(td) > 0.001) return td;
-      return b.socRatio - a.socRatio; // higher SOC discharges first within group
-    });
-
-    // Stationary battery FIRST
-    const availBat = Math.min(Math.max(0, batE - batMin), batKw);
-    const bd = Math.min(res, availBat);
-    batE -= bd;
-    res  -= bd;
-
-    // Bidi EVs SECOND — only discharge EVs when stationary battery cannot cover remaining deficit
-    for (const { ci, floor } of bidiOrder) {
-      if (res <= 0) break;
-      const avail = Math.max(0, evE[ci] - floor) * V2G_RTE;
-      const vd    = Math.min(res, avail, EVSE_KW);
-      evE[ci] -= vd / V2G_RTE;
-      res    -= vd;
-    }
-
-    // Bidi EV → EV peer charging at night. Large/WFH bidi EVs with surplus charge depleted
-    // EVs before the stationary battery is used. No-trip-tomorrow bidi sources discharge
-    // first; source floor protects tomorrow's trip energy.
-    // Runs BEFORE battery→EV so peer energy is used first, reducing battery drain.
-    //
-    // Bidi EV targets: only peer-charge a bidi EV if it has a trip tomorrow AND is below
-    // its round-trip energy threshold. WFH bidi EVs are V2H sources — they recharge from
-    // solar during the day and must not become a drain on other bidi EVs overnight.
-    if (sol < 0.5) {
-      // Peer-charge sources: least-traveled bidi EV donates first (preserves most-traveled's range)
-      const bidiSources = [];
-      for (let w = 0; w < n; w++) {
-        if (!evs[w].canV2G || evAway[w] || evOnTrip[w]) continue;
-        bidiSources.push({ w, tripsPerWeek: evs[w].tripsPerWeek });
+    if (nEv > 0) {
+      // Three-phase surplus: (1) EVs to transport min, (2) battery, (3) EVs general top-up
+      const evSolarOrder = [];
+      for (let i = 0; i < nEv; i++) {
+        if (evAway[i] || evOnTrip[i]) continue;
+        const head = (evs[i].kwh * 0.95 - evE[i]) / CHARGE_RTE;
+        if (head <= 0) continue;
+        const tomorrowTrip = isTripDay(evs[i].tripsPerWeek, seqDayH[h] + 1);
+        evSolarOrder.push({ i, tripsPerWeek: evs[i].tripsPerWeek, tomorrowTrip, soc: evE[i] / evs[i].kwh });
       }
-      bidiSources.sort((a, b) => (a.tripsPerWeek || 0) - (b.tripsPerWeek || 0));
+      evSolarOrder.sort((a, b) => {
+        const td = (b.tripsPerWeek || 0) - (a.tripsPerWeek || 0);
+        if (Math.abs(td) > 0.001) return td;
+        if (a.tomorrowTrip !== b.tomorrowTrip) return a.tomorrowTrip ? -1 : 1;
+        return a.soc - b.soc;
+      });
+      // Phase 1: EV transport minimum
+      for (const { i } of evSolarOrder) {
+        if (excess <= 0) break;
+        const tripMin = evs[i].tripsPerWeek > 0 ? evs[i].roundTripKwh * 1.10 : evMn[i] * 1.5;
+        if (evE[i] >= tripMin) continue;
+        const head = (tripMin - evE[i]) / CHARGE_RTE;
+        const chg  = Math.min(excess, Math.max(0, head));
+        evE[i] += chg * CHARGE_RTE;
+        excess -= chg;
+      }
+      // Phase 2: battery
+      const batChg = Math.min(excess, (batMax - batE) / BATTERY_RTE);
+      batE   += batChg * BATTERY_RTE;
+      excess -= batChg;
+      // Phase 3: EVs general top-up to 95%
+      for (const { i } of evSolarOrder) {
+        if (excess <= 0) break;
+        const head = (evs[i].kwh * 0.95 - evE[i]) / CHARGE_RTE;
+        const chg  = Math.min(excess, Math.max(0, head));
+        evE[i] += chg * CHARGE_RTE;
+        excess -= chg;
+      }
 
-      for (let c = 0; c < n; c++) {
-        if (evAway[c] || evOnTrip[c]) continue;
-        // Bidi EVs as targets: commuters below round-trip energy threshold get peer-charged
-        // regardless of tomorrow's trip schedule. WFH bidi EVs are V2H sources — excluded.
-        if (evs[c].canV2G) {
-          if (evs[c].tripsPerWeek === 0) continue; // WFH bidi: source only, never target
-          if (evE[c] >= evs[c].roundTripKwh * 1.10) continue; // already has enough
+      // Deficit discharge: stationary battery first, bidi EVs second
+      const sd = seqDayH[h];
+      const bidiOrder = [];
+      for (let ci = 0; ci < nEv; ci++) {
+        if (!evs[ci].canV2G || evAway[ci] || evOnTrip[ci]) continue;
+        const isWfh        = evs[ci].tripsPerWeek === 0;
+        const tomorrowTrip = isTripDay(evs[ci].tripsPerWeek, sd + 1);
+        const halfRangeKwh = evs[ci].tripMiles > 0 ? evs[ci].tripMiles / (2 * evs[ci].efficiency) : 0;
+        const v2gSafeFloor = evMn[ci] + halfRangeKwh;
+        const floor = (!isWfh && tomorrowTrip) ? Math.max(v2gSafeFloor, evs[ci].roundTripKwh) : v2gSafeFloor;
+        bidiOrder.push({ ci, tripsPerWeek: evs[ci].tripsPerWeek, floor, socRatio: evE[ci] / evs[ci].kwh });
+      }
+      bidiOrder.sort((a, b) => {
+        const td = (a.tripsPerWeek || 0) - (b.tripsPerWeek || 0);
+        if (Math.abs(td) > 0.001) return td;
+        return b.socRatio - a.socRatio;
+      });
+      const availBat = Math.min(Math.max(0, batE - batMin), batKw);
+      const bd = Math.min(deficit, availBat);
+      batE    -= bd;
+      deficit -= bd;
+      for (const { ci, floor } of bidiOrder) {
+        if (deficit <= 0) break;
+        const avail = Math.max(0, evE[ci] - floor) * V2G_RTE;
+        const vd    = Math.min(deficit, avail, EVSE_KW);
+        evE[ci] -= vd / V2G_RTE;
+        deficit -= vd;
+      }
+
+      // Bidi EV → EV peer charging at night
+      if (sol < 0.5) {
+        const bidiSources = [];
+        for (let w = 0; w < nEv; w++) {
+          if (!evs[w].canV2G || evAway[w] || evOnTrip[w]) continue;
+          bidiSources.push({ w, tripsPerWeek: evs[w].tripsPerWeek });
         }
-        const commTarget = evs[c].canV2G ? evs[c].roundTripKwh * 1.10 : evs[c].kwh * 0.90;
-        if (evE[c] >= commTarget - 0.1) continue;
-        for (const { w } of bidiSources) {
-          if (w === c) continue;
-          const srcTomorrowTrip = isTripDay(evs[w].tripsPerWeek, sd + 1);
-          const wfhMin = srcTomorrowTrip ? Math.max(evMn[w], evs[w].roundTripKwh) : evMn[w];
-          const wfhAvl = Math.max(0, evE[w] - wfhMin) * V2G_RTE;
-          const evNeed = Math.max(0, commTarget - evE[c]) / CHARGE_RTE;
-          const xfer   = Math.min(evNeed, wfhAvl, EVSE_KW);
-          if (xfer > 0.01) {
-            evE[w] -= xfer / V2G_RTE;
-            evE[c] += xfer * CHARGE_RTE;
+        bidiSources.sort((a, b) => (a.tripsPerWeek || 0) - (b.tripsPerWeek || 0));
+        for (let c = 0; c < nEv; c++) {
+          if (evAway[c] || evOnTrip[c]) continue;
+          if (evs[c].canV2G) {
+            if (evs[c].tripsPerWeek === 0) continue;
+            if (evE[c] >= evs[c].roundTripKwh * 1.10) continue;
           }
-          if (evE[c] >= commTarget - 0.1) break;
+          const commTarget = evs[c].canV2G ? evs[c].roundTripKwh * 1.10 : evs[c].kwh * 0.90;
+          if (evE[c] >= commTarget - 0.1) continue;
+          for (const { w } of bidiSources) {
+            if (w === c) continue;
+            const srcTomorrowTrip = isTripDay(evs[w].tripsPerWeek, sd + 1);
+            const wfhMin = srcTomorrowTrip ? Math.max(evMn[w], evs[w].roundTripKwh) : evMn[w];
+            const wfhAvl = Math.max(0, evE[w] - wfhMin) * V2G_RTE;
+            const evNeed = Math.max(0, commTarget - evE[c]) / CHARGE_RTE;
+            const xfer   = Math.min(evNeed, wfhAvl, EVSE_KW);
+            if (xfer > 0.01) { evE[w] -= xfer / V2G_RTE; evE[c] += xfer * CHARGE_RTE; }
+            if (evE[c] >= commTarget - 0.1) break;
+          }
         }
       }
-    }
 
-    // Battery → EV: charge home EVs from battery, priority-ordered.
-    // Priority 0 = below erMinKwh (emergency — always serve regardless of battery level)
-    // Priority 1 = tomorrow IS a trip day AND below tripCheckKwh (pre-departure minimum)
-    // Priority 2 = below 90% target (general top-up — only when battery > 70% capacity)
-    //
-    // IMPORTANT: Prio-0 and prio-1 charge to a CONSERVATIVE target, not 90%.
-    // Charging a fleet of 3 EVs to 90% from battery overnight (~70 kWh per EV) would
-    // deplete even a large stationary battery, leaving home load unserved in the worst window.
-    // Prio-0/1 target = max(evMn×1.5, roundTripKwh×1.10): enough to exit emergency state and
-    // make tomorrow's trip. Solar surplus (free energy) handles top-up to 95% via evSolarOrder.
-    //
-    // Prio-2 keeps the 90% target but is gated by the 70% battery reserve.
-    // DAYTIME RESTRICTION (sol > 0.5 kW): skip priority 1 and 2 (solar surplus handles them).
-    const evChargeOrder = [];
-    for (let ci = 0; ci < n; ci++) {
-      if (evAway[ci] || evOnTrip[ci]) continue;
-      const evTarget     = evs[ci].kwh * 0.90;
-      if (evE[ci] >= evTarget - 0.1) continue;
-      const belowMin     = evE[ci] < evMn[ci];
-      const tomorrowTrip = isTripDay(evs[ci].tripsPerWeek, sd + 1);
-      const belowTripChk = tomorrowTrip && evE[ci] < evs[ci].roundTripKwh * 1.10;
-      const prio = belowMin ? 0 : belowTripChk ? 1 : 2;
-      evChargeOrder.push({ ci, prio, soc: evE[ci] / evs[ci].kwh });
-    }
-    evChargeOrder.sort((a, b) => a.prio !== b.prio ? a.prio - b.prio : a.soc - b.soc);
-
-    for (const { ci, prio } of evChargeOrder) {
-      if (sol > 0.5 && prio > 0) continue;  // daytime: prio-1/2 skipped — solar surplus handles
-      if (sol <= 0.5 && prio >= 2) continue; // nighttime: prio-2 skipped — solar surplus only
-      // Bidi EVs are excluded from prio-2 battery charging: peer charging (WFH bidi → commuter
-      // bidi) and solar surplus handle general top-up. Prio-1 (transport-critical: tomorrow IS a
-      // trip day and EV is below roundTrip threshold) is NOT excluded — peer charging is
-      // opportunistic and may not fully charge a commuter bidi EV overnight, leaving it in the
-      // dangerous zone above tripCheckKwh (can depart) but below roundTripKwh×1.10 (can't finish
-      // round trip), which triggers emergency DCFC on return. Battery prio-1 is the fallback.
-      if (prio >= 2 && evs[ci].canV2G) continue;
-      // Prio-0/1: conservative target to avoid draining stationary battery overnight.
-      // Three candidates; take the largest:
-      //   1. evMn × 1.5 — clear the emergency floor with margin
-      //   2. roundTripKwh × 1.10 — enough for tomorrow's commute round trip
-      //   3. tripCheckKwh + evMn — guarantees road-trip pre-departure threshold is cleared
-      //      (rtOneWayKwh + evMn). Without this, short-trip EVs (~30 mi) can sit below
-      //      the road-trip departure floor and generate spurious pre-departure DCFC stops.
-      // Prio-2: full 90% target, gated by 70% battery reserve below.
-      const evTarget = (prio <= 1)
-        ? Math.max(evMn[ci] * 1.5, evs[ci].roundTripKwh * 1.10, evs[ci].tripCheckKwh + evMn[ci])
-        : evs[ci].kwh * 0.90;
-      const evNeed   = Math.max(0, evTarget - evE[ci]) / CHARGE_RTE;
-      // Prio-2 top-up: only use battery capacity above 70% to avoid single-hour drain to minimum
-      const batReserve = prio === 2 ? Math.max(batMin, batMax * 0.70) : batMin;
-      const batAvl     = Math.max(0, batE - batReserve);
-      const xfer       = Math.min(evNeed, batAvl, EVSE_KW);
-      if (xfer > 0.01) {
-        batE   -= xfer;
-        evE[ci] += xfer * CHARGE_RTE;
+      // Battery → EV charging
+      const evChargeOrder = [];
+      for (let ci = 0; ci < nEv; ci++) {
+        if (evAway[ci] || evOnTrip[ci]) continue;
+        const evTarget = evs[ci].kwh * 0.90;
+        if (evE[ci] >= evTarget - 0.1) continue;
+        const belowMin     = evE[ci] < evMn[ci];
+        const tomorrowTrip = isTripDay(evs[ci].tripsPerWeek, sd + 1);
+        const belowTripChk = tomorrowTrip && evE[ci] < evs[ci].roundTripKwh * 1.10;
+        const prio = belowMin ? 0 : belowTripChk ? 1 : 2;
+        evChargeOrder.push({ ci, prio, soc: evE[ci] / evs[ci].kwh });
       }
+      evChargeOrder.sort((a, b) => a.prio !== b.prio ? a.prio - b.prio : a.soc - b.soc);
+      for (const { ci, prio } of evChargeOrder) {
+        if (sol > 0.5 && prio > 0) continue;
+        if (sol <= 0.5 && prio >= 2) continue;
+        if (prio >= 2 && evs[ci].canV2G) continue;
+        const evTarget = (prio <= 1)
+          ? Math.max(evMn[ci] * 1.5, evs[ci].roundTripKwh * 1.10, evs[ci].tripCheckKwh + evMn[ci])
+          : evs[ci].kwh * 0.90;
+        const evNeed    = Math.max(0, evTarget - evE[ci]) / CHARGE_RTE;
+        const batReserve = prio === 2 ? Math.max(batMin, batMax * 0.70) : batMin;
+        const batAvl     = Math.max(0, batE - batReserve);
+        const xfer       = Math.min(evNeed, batAvl, EVSE_KW);
+        if (xfer > 0.01) { batE -= xfer; evE[ci] += xfer * CHARGE_RTE; }
+      }
+    } else {
+      // No EVs: simple battery charge / discharge
+      const batChg = Math.min(excess * BATTERY_RTE, batMax - batE, batKw * BATTERY_RTE);
+      batE   += batChg;
+      excess -= batChg / BATTERY_RTE;
+      const avail = Math.min(Math.max(0, batE - batMin), batKw);
+      const bd    = Math.min(deficit, avail);
+      batE    -= bd;
+      deficit -= bd;
     }
 
-
-    const uns = Math.max(0.0, res);
-    if (inWw) {
-      wwLoad += effectiveLd;
-      wwUns  += uns;
-    }
+    const uns = Math.max(0, deficit);
+    if (uns > 0.001) { unservedKwh += uns; unservedHours++; }
+    if (inWw) { wwLoad += effectiveLd; wwUns += uns; }
 
     if (returnTrace) {
       traceRows.push({
         h,
-        month:         mo,
-        day:           dy,
-        year:          yr,
-        hourOfDay:     hr,
-        solarKw:       sol,
-        loadKw:        effectiveLd,
+        month:           r.month,
+        day:             r.day,
+        year:            r.year,
+        hourOfDay:       hr,
+        solarKw:         sol,
+        loadKw:          effectiveLd,
         batKwhStart,
-        batKwhEnd:     batE,
+        batKwhEnd:       batE,
         evKwhStart,
         evKwhPreDispatch,
-        evKwhEnd:      [...evE],
-        evAway:        [...evAway],
-        triggerSet:    [...chargeToday],
-        triggerFired:  [...triggerFired],
-        dcfcEvent:     dcfcThisHour,
-        curtailed:     parseFloat(Math.max(0, excess).toFixed(3)),
-        unserved:      parseFloat(uns.toFixed(3)),
-        isWorstWindow: inWw,
-        isPostWindow:  r.isPostWindow || false,
+        evKwhEnd:        nEv > 0 ? [...evE] : [],
+        evAway:          nEv > 0 ? [...evAway] : [],
+        triggerSet:      nEv > 0 ? [...chargeToday] : [],
+        triggerFired,
+        dcfcEvent:       dcfcThisHour,
+        genRunning:      hasGen && genRunning,
+        genKwOut:        genOut,
+        curtailed:       parseFloat(Math.max(0, excess).toFixed(3)),
+        unserved:        parseFloat(uns.toFixed(3)),
+        isWorstWindow:   inWw,
+        isPostWindow:    r.isPostWindow || false,
       });
+      traceBat[h]      = batE;
+      traceGen[h]      = (hasGen && genRunning) ? 1 : 0;
+      traceUnserved[h] = uns;
     }
-  }
+  }  // end main loop
 
-  const wwPct  = wwLoad > 0 ? (1.0 - wwUns / wwLoad) * 100 : 100.0;
+  const wwPct  = wwLoad > 0 ? (1 - wwUns / wwLoad) * 100 : 100;
   const wwPass = wwUns < 0.01;
-
-  const simDays    = N / 24.0;
-  const annualScale = 365.0 / simDays;
+  const simDays = N / 24;
+  const annualScale = 365 / Math.max(simDays, 1);
 
   const result = {
     wwPass,
     wwPct:                    Math.round(wwPct * 10) / 10,
     wwUnservedKwh:            Math.round(wwUns * 100) / 100,
+    simGenHours,
+    wwGenHours,
+    annGenHoursOrdinance,
+    simGenCost:               hasGen ? Math.round(simGenHours * fuelCostPerKwHr * genKw) : 0,
+    unservedKwh:              Math.round(unservedKwh * 10) / 10,
+    unservedHours,
+    simDays,
+    // EV DCFC metrics (zero when no EVs)
     wwDcfcTrips:              wwDcfcCount,
-    wwDcfcCost:               Math.round(wwDcfcKwh        * dcfcCostPerKwh * 100) / 100,
+    wwDcfcCost:               Math.round(wwDcfcKwh * dcfcCostPerKwh * 100) / 100,
     simDcfcTrips:             dcfcCount,
-    simDcfcCost:              Math.round(dcfcKwh           * dcfcCostPerKwh * 100) / 100,
-    annualDcfcTrips:          Math.round(dcfcCount         * annualScale),
-    annualDcfcCost:           Math.round(dcfcKwh           * dcfcCostPerKwh * annualScale * 100) / 100,
-    // En-route DCFC: planned stops for dcfc_enroute drivers on workdays
-    annualEnrouteDcfcTrips:   Math.round(enrouteDcfcCount   * annualScale),
-    annualEnrouteDcfcCost:    Math.round(enrouteDcfcKwh     * dcfcCostPerKwh * annualScale * 100) / 100,
+    simDcfcCost:              Math.round(dcfcKwh * dcfcCostPerKwh * 100) / 100,
+    annualDcfcTrips:          Math.round(dcfcCount * annualScale),
+    annualDcfcCost:           Math.round(dcfcKwh * dcfcCostPerKwh * annualScale * 100) / 100,
+    annualEnrouteDcfcTrips:   Math.round(enrouteDcfcCount * annualScale),
+    annualEnrouteDcfcCost:    Math.round(enrouteDcfcKwh * dcfcCostPerKwh * annualScale * 100) / 100,
     simEnrouteDcfcTrips:      enrouteDcfcCount,
     wwEnrouteDcfcTrips:       wwEnrouteDcfcCount,
-    // Emergency DCFC: all unplanned stops (weekends, WFH EVs, home_only commuters)
-    annualEmergencyDcfcTrips: Math.round(emergencyDcfcCount  * annualScale),
-    annualEmergencyDcfcCost:  Math.round(emergencyDcfcKwh    * dcfcCostPerKwh * annualScale * 100) / 100,
+    annualEmergencyDcfcTrips: Math.round(emergencyDcfcCount * annualScale),
+    annualEmergencyDcfcCost:  Math.round(emergencyDcfcKwh * dcfcCostPerKwh * annualScale * 100) / 100,
     simEmergencyDcfcTrips:    emergencyDcfcCount,
     wwEmergencyDcfcTrips:     wwEmergencyDcfcCount,
-    // Emergency sub-category raw counts (sim window, not annualized)
     simEmergencyRoadTripInfeasible: emergencyRoadTripInfeasible,
     simEmergencyCommuteReturn:      emergencyCommuteReturn,
     simEmergencyHomeBased:          emergencyHomeBased,
     annualWorkChargeCost:     Math.round(workChargeCostTotal * annualScale * 100) / 100,
   };
-  if (returnTrace) result.trace = traceRows;
+  if (returnTrace) {
+    result.trace = traceRows;
+    result.traceBat = traceBat;
+    result.traceGen = traceGen;
+    result.traceUnserved = traceUnserved;
+  }
   return result;
+}
+
+// ── DISPATCH (wrapper around simulatePeriod) ──────────────────────────────────
+function dispatch(solarH, loadH, batKwh, batKw, evScenario, weather, dcfcCostPerKwh, returnTrace, erMinKwh) {
+  return simulatePeriod(solarH, loadH, batKwh, batKw, 0, evScenario || [], weather, {
+    dcfcCostPerKwh, erMinKwh, returnTrace,
+  });
 }
 
 // ── FIND OPTIMUM ──────────────────────────────────────────────────────────────
@@ -1124,302 +1171,47 @@ function applyLoadShift(loadH, pct) {
   return out;
 }
 
-// ── GENERATOR DISPATCH ────────────────────────────────────────────────────────
-
-// fuelCostPerKwHr: fuel + maintenance cost per rated kW per hour of operation.
-// A 5 kW gen at $0.50/kW-hr costs $2.50/hr; a 1 kW gen costs $0.50/hr.
-// This correctly reflects that fuel consumption scales with rated output.
-function dispatchGenerator(solarH, loadH, batKwh, batKw, genKw, weather, lookaheadDays=4, fuelCostPerKwHr=0.50) {
-  const N = solarH.length;
-  const batMin = batKwh * BATTERY_MIN_SOC;
-  const batMax = batKwh;
-  let batE = batKwh * 0.5;
-  let genRunning    = false;
-  let genByPlanning = false;   // true when current run was started by the planning lookahead trigger
-                                // (vs. the emergency floor trigger).  Planning runs skip canStop —
-                                // they charge all the way to 95% rather than stopping early on the
-                                // optimistic assumption that tomorrow's solar can finish the job.
-  let genHours = 0;      // total hours running across full stress window (spinup + WW)
-  let wwGenHours = 0;    // hours running only during the worst 10-day window (emergency operation)
-  let wwLoad = 0, wwUns = 0;
-
-  // shortageExpected: called at any hour; looks at remaining hours today then
-  // lookaheadDays complete days from the following midnight.
-  // Solar window per day: hours 6-17 (6am–5pm) of that calendar day.
-  // Worst-window days: solar de-rated by 50%.
-  // planThresh: consistent planning threshold used by both shortageExpected and
-  // canStop.  Set 5 percentage points above the 20% emergency level so the
-  // planning trigger always fires before the hardware emergency does.
-  const planThresh = batMax * 0.25;
-
-  // shortageExpected(h):
-  //   "Will tonight's discharge drive the battery below planThresh before
-  //    tomorrow's solar recovers?"
-  //   seenDark ensures we don't accept a same-afternoon solar blip as a
-  //   next-morning recovery.
-  function shortageExpected(h) {
-    let projE     = batE;
-    const hrNow   = weather[Math.min(h, N-1)].hourOfDay;
-    const maxHrs  = (24 - hrNow) + lookaheadDays * 24;
-    let pastSolar = solarH[Math.min(h, N-1)] < loadH[Math.min(h, N-1)];
-    let seenDark  = pastSolar; // already dark at call site?
-    for (let j = 0; j < maxHrs; j++) {
-      const idx = h + j;
-      if (idx >= N) break; // past end of simulation data — do not extrapolate from stale last row
-      const net = solarH[idx] - loadH[idx];
-      if (solarH[idx] === 0) seenDark = true;        // confirmed full darkness
-      if (!pastSolar && net < 0) pastSolar = true;
-      projE += net > 0 ? net * BATTERY_RTE : net;
-      projE  = Math.min(projE, batMax);
-      if (projE < planThresh)              return true;  // would hit threshold
-      if (pastSolar && seenDark && net >= 0) return false; // survived to next solar
-    }
-    return false;
-  }
-
-  // canStop(h):
-  //   "If I stop now, will the battery survive the rest of tonight (above
-  //    planThresh) AND will tomorrow's PV surplus top it back to ≥90%?"
-  function canStop(h) {
-    let projE     = batE;
-    let pastSolar = solarH[Math.min(h, N-1)] < loadH[Math.min(h, N-1)];
-    let seenDark  = pastSolar;
-    let recovIdx  = -1;
-    for (let j = 0; j < 48; j++) {
-      const idx = h + j;
-      if (idx >= N) break; // past end of simulation data — treat as safe to stop
-      const net = solarH[idx] - loadH[idx];
-      if (solarH[idx] === 0) seenDark = true;
-      if (!pastSolar && net < 0) pastSolar = true;
-      projE += net > 0 ? net * BATTERY_RTE : net;
-      projE  = Math.min(projE, batMax);
-      if (projE < planThresh)              return false; // depletes — keep running
-      if (pastSolar && seenDark && net >= 0) { recovIdx = idx; break; }
-    }
-    if (recovIdx < 0) return false;
-    // Sum tomorrow's net PV charging from the recovery point
-    let tmrCharge = 0;
-    for (let j = 0; j < 20; j++) {
-      const idx = Math.min(recovIdx + j, N - 1);
-      const net = solarH[idx] - loadH[idx];
-      if (net > 0) tmrCharge += net * BATTERY_RTE;
-      else if (j > 4) break;                           // past tomorrow's solar peak
-    }
-    return Math.min(projE + tmrCharge, batMax) >= batMax * 0.90;
-  }
-
-  const trace = [];
-
-  for (let h = 0; h < N; h++) {
-    const r   = weather[h];
-    const hr  = r.hourOfDay;
-    const sol = solarH[h];
-    const ld  = loadH[h];
-    const inWW = r.isWorstWindow;
-
-    // ── Stop conditions ──────────────────────────────────────────────────────
-    // 1. Battery full — always stops the generator (applies to both planning and emergency runs)
-    if (genRunning && batE >= batMax * 0.95) { genRunning = false; genByPlanning = false; }
-    // 2. Solar alone covers load — hand off to solar+battery
-    if (genRunning && sol >= ld)             { genRunning = false; genByPlanning = false; }
-    // 3. Tomorrow's PV will finish the job — stop early.
-    //    SKIPPED for planning runs: canStop is optimistic about consecutive bad days and
-    //    causes a "small boost" pattern where the generator stops at 65-70% SOC then must
-    //    restart the next night.  Planning runs always charge to 95%; only emergency runs
-    //    (genByPlanning = false) use this early-stop optimisation.
-    if (genRunning && !genByPlanning && canStop(h)) genRunning = false;
-
-    // ── Start conditions ─────────────────────────────────────────────────────
-    // Emergency: battery hit floor — resets planning flag (this is not a planning run)
-    if (!genRunning && batE <= batMax * 0.20) { genRunning = true; genByPlanning = false; }
-
-    // Planning: afternoon trigger — will tonight drain to batMin?
-    // Guard: only start when battery has discharged below 75%.  Starting when the battery
-    // is near-full is wasteful — a 10 kW generator serving a 2 kW load can only push
-    // 8 kW into the battery, but if the battery is already at 95-100% there is nowhere
-    // for that energy to go and the output is curtailed.  The 95% stop condition then
-    // fires after just one hour (battery still full), wasting a run, while the battery
-    // drains overnight anyway and the emergency trigger fires again.  Waiting until the
-    // battery is below 75% ensures every planning run does useful charging work.
-    // genByPlanning = true so this run charges to 95% without canStop cutting it short.
-    const afternoonTrigger = (hr >= 12 && sol < ld) || hr === 18;
-    if (afternoonTrigger && !genRunning && batE < batMax * 0.75) {
-      if (shortageExpected(h)) { genRunning = true; genByPlanning = true; }
-    }
-
-    const genOut = genRunning ? genKw : 0;
-    if (genRunning) genHours++;
-    if (inWW && genRunning) wwGenHours++;   // count worst-window generator hours separately
-
-    const totalSupply = sol + genOut;
-    const direct = Math.min(totalSupply, ld);
-    let res = ld - direct;
-    let excess = totalSupply - direct;
-
-    const batChg = Math.min(excess * BATTERY_RTE, batMax - batE, batKw * BATTERY_RTE);
-    batE += batChg;
-    excess -= batChg / BATTERY_RTE;
-
-    const avail = Math.min(Math.max(0, batE - batMin), batKw);
-    const bd = Math.min(res, avail);
-    batE -= bd;
-    res -= bd;
-
-    const uns = Math.max(0, res);
-    const curtailed = parseFloat(Math.max(0, excess).toFixed(3));
-    if (inWW) { wwLoad += ld; wwUns += uns; }
-
-    trace.push({ h, month: r.month, day: r.day, year: r.year, hourOfDay: hr,
-                 solarKw: sol, loadKw: ld, batKwhEnd: batE,
-                 genRunning, genKwOut: genOut, wwGenHours, curtailed, isWorstWindow: inWW, isPostWindow: r.isPostWindow || false });
-  }
-
-  const wwPct = wwLoad > 0 ? (1 - wwUns / wwLoad) * 100 : 100;
-  const wwPass = wwUns < 0.01;
-  const simDays = Math.round(N / 24);
-  // annualScale = 1.0: the stress-window simulation IS the generator's run season.
-  // The generator doesn't run during the other ~295 days (spring/summer/fall have
-  // far more solar than the worst window). Scaling by 365/70 would overestimate
-  // annual fuel cost by ~5×.
-  return { wwPass, wwPct: Math.round(wwPct * 10) / 10, wwUnservedKwh: Math.round(wwUns * 100) / 100,
-           simGenHours: genHours, wwGenHours,  // wwGenHours = hours running only in worst 10-day window
-           annualGenHours: genHours, simDays,
-           annualGenCost: Math.round(genHours * fuelCostPerKwHr * genKw), trace };
+// ── DISPATCH GENERATOR (wrapper around simulatePeriod) ───────────────────────
+function dispatchGenerator(solarH, loadH, batKwh, batKw, genKw, weather, lookaheadDays = 4, fuelCostPerKwHr = 0.50) {
+  const r = simulatePeriod(solarH, loadH, batKwh, batKw, genKw, [], weather, {
+    fuelCostPerKwHr, lookaheadDays, returnTrace: true,
+  });
+  return {
+    wwPass:         r.wwPass,
+    wwPct:          r.wwPct,
+    wwUnservedKwh:  r.wwUnservedKwh,
+    simGenHours:    r.simGenHours,
+    wwGenHours:     r.wwGenHours,
+    annualGenHours: r.simGenHours,   // backward compat: stress-window hours used as proxy
+    annualGenCost:  r.simGenCost,
+    simDays:        r.simDays,
+    trace:          r.trace,
+  };
 }
 
-// Counts generator-on hours over a full annual (8760-h) simulation.
-// Uses IDENTICAL dispatch logic to dispatchGenerator — same shortageExpected lookahead,
-// same canStop logic, same genByPlanning flag, same start/stop thresholds.
-// The only difference: no weather object (hourOfDay = h % 24) and no per-hour trace.
-// This ensures the rules are the same between the stress-window simulation and the annual
-// simulation — if the generator only fires 3 times in the worst 10 days, it should fire
-// proportionally few times in a typical year (where solar is generally better).
-// wwStartH/wwLenH: worst-window hours are excluded from annualGenHours (ordinance count)
-// but included in genHoursTotal (fuel cost). Pass wwStartH=-1 to count all hours.
+// ── COUNT ANNUAL GEN HOURS (wrapper around simulatePeriod) ───────────────────
+// Runs a full-year (8760-h or custom-length) battery+generator simulation to
+// count ordinance-reportable generator hours.  Uses buildAnnualWeather() to
+// supply the required weather array (no real weather object needed for annual sim).
+// Starting SOC = 100 % — system finishes summer fully charged.
 function countAnnualGenHours(solarH, loadH, batKwh, batKw, genKw, fuelCostPerKwHr,
                              wwStartH = -1, wwLenH = 0, lookaheadDays = 4, returnTrace = false) {
-  const N = solarH.length;
-  const batMin = batKwh * BATTERY_MIN_SOC;
-  const batMax = batKwh;
-  const planThresh = batMax * 0.25;  // matches dispatchGenerator
-  // Start at full charge — correct initial condition for a system that finished summer fully charged.
-  let batE = batKwh;
-  let genRunning    = false;
-  let genByPlanning = false;
-  let genHoursTotal   = 0;
-  let genHoursNonWw   = 0;
-  let unservedKwh     = 0;
-  let unservedHours   = 0;
-  const traceBat      = returnTrace ? new Float32Array(N) : null;
-  const traceGen      = returnTrace ? new Uint8Array(N)   : null;
-  const traceUnserved = returnTrace ? new Float32Array(N) : null;
-
-  // shortageExpected — identical to dispatchGenerator but uses h%24 for hourOfDay
-  function shortageExpected(h) {
-    let projE    = batE;
-    const hrNow  = h % 24;
-    const maxHrs = (24 - hrNow) + lookaheadDays * 24;
-    let pastSolar = solarH[Math.min(h, N-1)] < loadH[Math.min(h, N-1)];
-    let seenDark  = pastSolar;
-    for (let j = 0; j < maxHrs; j++) {
-      const idx = h + j;
-      if (idx >= N) break;
-      const net = solarH[idx] - loadH[idx];
-      if (solarH[idx] === 0) seenDark = true;
-      if (!pastSolar && net < 0) pastSolar = true;
-      projE += net > 0 ? net * BATTERY_RTE : net;
-      projE  = Math.min(projE, batMax);
-      if (projE < planThresh)              return true;
-      if (pastSolar && seenDark && net >= 0) return false;
-    }
-    return false;
-  }
-
-  // canStop — identical to dispatchGenerator
-  function canStop(h) {
-    let projE    = batE;
-    let pastSolar = solarH[Math.min(h, N-1)] < loadH[Math.min(h, N-1)];
-    let seenDark  = pastSolar;
-    let recovIdx  = -1;
-    for (let j = 0; j < 48; j++) {
-      const idx = h + j;
-      if (idx >= N) break;
-      const net = solarH[idx] - loadH[idx];
-      if (solarH[idx] === 0) seenDark = true;
-      if (!pastSolar && net < 0) pastSolar = true;
-      projE += net > 0 ? net * BATTERY_RTE : net;
-      projE  = Math.min(projE, batMax);
-      if (projE < planThresh)              return false;
-      if (pastSolar && seenDark && net >= 0) { recovIdx = idx; break; }
-    }
-    if (recovIdx < 0) return false;
-    let tmrCharge = 0;
-    for (let j = 0; j < 20; j++) {
-      const idx = Math.min(recovIdx + j, N - 1);
-      const net = solarH[idx] - loadH[idx];
-      if (net > 0) tmrCharge += net * BATTERY_RTE;
-      else if (j > 4) break;
-    }
-    return Math.min(projE + tmrCharge, batMax) >= batMax * 0.90;
-  }
-
-  for (let h = 0; h < N; h++) {
-    const sol = solarH[h];
-    const ld  = loadH[h];
-    const hr  = h % 24;
-
-    // Stop conditions — identical to dispatchGenerator
-    if (genRunning && batE >= batMax * 0.95) { genRunning = false; genByPlanning = false; }
-    if (genRunning && sol >= ld)             { genRunning = false; genByPlanning = false; }
-    if (genRunning && !genByPlanning && canStop(h)) genRunning = false;
-
-    // Start: emergency floor
-    if (!genRunning && batE <= batMax * 0.20) { genRunning = true; genByPlanning = false; }
-
-    // Start: planning trigger with shortageExpected lookahead — same as dispatchGenerator
-    const afternoonTrigger = (hr >= 12 && sol < ld) || hr === 18;
-    if (afternoonTrigger && !genRunning && batE < batMax * 0.75) {
-      if (shortageExpected(h)) { genRunning = true; genByPlanning = true; }
-    }
-
-    const genOut = genRunning ? genKw : 0;
-    if (genRunning) {
-      genHoursTotal++;
-      const inWw = wwStartH >= 0 && wwLenH > 0 && (
-        wwStartH + wwLenH <= N
-          ? (h >= wwStartH && h < wwStartH + wwLenH)
-          : (h >= wwStartH || h < (wwStartH + wwLenH) - N)
-      );
-      if (!inWw) genHoursNonWw++;
-    }
-
-    const totalSupply = sol + genOut;
-    const direct = Math.min(totalSupply, ld);
-    let res = ld - direct;
-    let excess = totalSupply - direct;
-
-    const batChg = Math.min(excess * BATTERY_RTE, batMax - batE, batKw * BATTERY_RTE);
-    batE += batChg;
-    excess -= batChg / BATTERY_RTE;
-
-    const avail = Math.min(Math.max(0, batE - batMin), batKw);
-    const bd = Math.min(res, avail);
-    batE -= bd;
-    const unsv = Math.max(0, res - bd);  // load not covered by direct + battery
-    if (unsv > 0.001) { unservedKwh += unsv; unservedHours++; }
-    if (returnTrace) {
-      traceBat[h]      = batE;
-      traceGen[h]      = genRunning ? 1 : 0;
-      traceUnserved[h] = unsv;
-    }
-  }
-
+  const annWeather = buildAnnualWeather(solarH.length);
+  const r = simulatePeriod(solarH, loadH, batKwh, batKw, genKw, [], annWeather, {
+    fuelCostPerKwHr, lookaheadDays,
+    initialSoc:       1.0,
+    returnTrace,
+    wwExcludeStartH:  wwStartH,
+    wwExcludeLen:     wwLenH,
+  });
   return {
-    annualGenHours:  genHoursNonWw,
-    annualGenCost:   Math.round(genHoursTotal * fuelCostPerKwHr * genKw),
-    unservedKwh:     Math.round(unservedKwh * 10) / 10,
-    unservedHours,
-    traceBat, traceGen, traceUnserved,
+    annualGenHours:  r.annGenHoursOrdinance,
+    annualGenCost:   r.simGenCost,
+    unservedKwh:     r.unservedKwh,
+    unservedHours:   r.unservedHours,
+    traceBat:        r.traceBat,
+    traceGen:        r.traceGen,
+    traceUnserved:   r.traceUnserved,
   };
 }
 
@@ -2883,29 +2675,37 @@ function App() {
       // Process allPassing in cost order; first with zero annual unserved becomes
       // the true battery-only optimum.  WW-only optimum is saved for Phase 2a
       // (generators fix the unserved load, so WW-sizing is the right base).
+      res._v2gEffKwh   = Math.round(v2gEffKwh);
+      res._sweepHasV2g = hasV2gAtSweep;
+
       if (loadHourly && res.allPassing.length > 0) {
-        setRunStatus("Annual coverage check — testing full-year load coverage for all passing configs...");
-        await new Promise(resolve => setTimeout(resolve, 10));
-        let annualOptimum = null;
-        for (const candidate of res.allPassing) {  // already sorted by cost (cheapest first)
-          const candMount = mountOptions.find(m => m.label === candidate.mountLabel);
-          if (!candMount) continue;
-          const candSolar = candMount.solarNormalized.map(x => x * candidate.pvKw);
-          // Boost effective battery with V2G available kWh (approximation: treats V2G as
-          // always-available storage; actual availability depends on EV schedule).
-          const effBatKwh = candidate.batteryKwh + v2gEffKwh;
-          const candAnn = countAnnualGenHours(
-            candSolar, loadHourly, effBatKwh, candidate.batteryKw,
-            0, 0, -1, 0, 4, false
-          );
-          if (candAnn.unservedKwh === 0) { annualOptimum = candidate; break; }
+        if (hasV2gAtSweep) {
+          // V2G EVs are part of the design — the stress-window dispatch already correctly
+          // models V2G discharge covering nighttime load. countAnnualGenHours cannot model
+          // EV dispatch, so boosting batKwh would produce a misleading (always-full) trace.
+          // Trust the stress-window pass: if the system survives the worst 70 days with V2G,
+          // V2G covers the less severe nights in the rest of the year.
+          res._wwOnlyOptimum = res.optimum;  // WW optimum IS the annual optimum
+          // res.optimum stays as the WW-passing cost-minimum config
+        } else {
+          // No V2G: run full annual coverage check (stationary battery only).
+          setRunStatus("Annual coverage check — testing full-year load coverage for all passing configs...");
+          await new Promise(resolve => setTimeout(resolve, 10));
+          let annualOptimum = null;
+          for (const candidate of res.allPassing) {  // sorted by cost (cheapest first)
+            const candMount = mountOptions.find(m => m.label === candidate.mountLabel);
+            if (!candMount) continue;
+            const candSolar = candMount.solarNormalized.map(x => x * candidate.pvKw);
+            const candAnn = countAnnualGenHours(
+              candSolar, loadHourly, candidate.batteryKwh, candidate.batteryKw,
+              0, 0, -1, 0, 4, false
+            );
+            if (candAnn.unservedKwh === 0) { annualOptimum = candidate; break; }
+          }
+          // Save WW-only optimum so Phase 2a always has a fixed PV+battery point.
+          res._wwOnlyOptimum = res.optimum;
+          res.optimum = annualOptimum;   // null → no battery-only config covers full year
         }
-        // Save WW-only optimum even when it equals the annual optimum, so Phase 2a
-        // always has a fixed PV+battery point to sweep generators against.
-        res._wwOnlyOptimum = res.optimum;
-        res.optimum = annualOptimum;   // null → no battery-only config covers full year
-        res._v2gEffKwh   = Math.round(v2gEffKwh);
-        res._sweepHasV2g = hasV2gAtSweep;
       }
 
       // Phase 2a base config: use annual-valid optimum if it exists, else fall back
@@ -2924,27 +2724,29 @@ function App() {
         if (optMount && optBat) {
           const solarSw = extractWindow(optMount.solarNormalized, res.spinupStartDoy, res.nHours);
           const solarH  = solarSw.map(x => x * opt.pvKw);
+          // Use sweep EVs in trace so the chart is consistent with how the battery was sized.
           const traceResult = dispatch(solarH, res._loadSw, optBat.kwh, optBat.kw,
-            [], res._weather, 0, true);
+            sweepFleetScen, res._weather, dcfcCostPerKwh, true, erMinKwhSweep);
           res._traceData = traceResult.trace;
           res._optSolarH = solarH;
 
           // Battery-only annual trace — full 8760-h dispatch for the annual dispatch chart.
-          // genKw=0 → pure battery dispatch.  Includes traceUnserved so the chart can show
-          // any hours where load is shed (should be zero for an annual-valid config).
-          if (loadHourly) {
+          // Only generated when NO V2G EVs are in the sweep: countAnnualGenHours cannot model
+          // EV dispatch, so running it with a V2G-capable fleet would show an inflated
+          // (never-discharging) battery.  When V2G is present, the stress-window chart
+          // (which correctly models V2G) is the primary validation display.
+          if (loadHourly && !hasV2gAtSweep) {
             const annSolar8760 = optMount.solarNormalized.map(x => x * opt.pvKw);
-            const annEffBatKwh = optBat.kwh + (v2gEffKwh || 0);
             const batAnnTr = countAnnualGenHours(
-              annSolar8760, loadHourly, annEffBatKwh, optBat.kw, 0, 0, -1, 0, 4, true
+              annSolar8760, loadHourly, optBat.kwh, optBat.kw, 0, 0, -1, 0, 4, true
             );
             res._annualTrace = {
-              bat:          batAnnTr.traceBat,
-              unserved:     batAnnTr.traceUnserved,
-              sol:          new Float32Array(annSolar8760),
-              ld:           new Float32Array(loadHourly),
-              batKwh:       optBat.kwh,
-              v2gEffKwh:    Math.round(v2gEffKwh || 0),
+              bat:              batAnnTr.traceBat,
+              unserved:         batAnnTr.traceUnserved,
+              sol:              new Float32Array(annSolar8760),
+              ld:               new Float32Array(loadHourly),
+              batKwh:           optBat.kwh,
+              v2gEffKwh:        0,
               annUnservedKwh:   batAnnTr.unservedKwh,
               annUnservedHours: batAnnTr.unservedHours,
             };
@@ -4533,7 +4335,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.112</span>
+        <span style={S.version}>v0.4.114</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto"}}>
           <a href="https://tools.cc-energy.org/index.html"
