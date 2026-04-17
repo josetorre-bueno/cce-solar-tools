@@ -1,5 +1,5 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.97
+// Version: v0.4.98
 // Updated: 2026-04-16 PT
 // Part of: Wipomo / CCE Solar Tools
 
@@ -1323,15 +1323,25 @@ function countAnnualGenHours(solarH, loadH, batKwh, batKw, genKw, fuelCostPerKwH
   for (let h = 0; h < N; h++) {
     const sol = solarH[h];
     const ld  = loadH[h];
+    // Hour of day (0–23) derived from position in the 8760-h TMY array.
+    const hr  = h % 24;
 
     // Stop: battery recharged or solar covers load
     if (genRunning && batE >= batMax * 0.95) genRunning = false;
     if (genRunning && sol >= ld)             genRunning = false;
-    // Start: battery has hit the HARD FLOOR (BATTERY_MIN_SOC = 10%) AND solar cannot cover
-    // load without the generator.  The "sol < ld" guard prevents a same-timestep stop-restart
-    // race: without it, the "sol >= ld" stop above fires, then this start immediately fires
-    // again because batE is still at the floor — logging a spurious run-hour every morning
-    // when solar rises to cover load after a generator-assisted night.
+
+    // Planning trigger (mirrors dispatchGenerator): fire in the afternoon/evening when
+    // the battery is below 75% SOC and solar is not covering load.  This prevents the
+    // battery from draining to the hard floor overnight on high-load days, which is how
+    // the system actually operates (and is far more fuel-efficient: a 1-hr top-up at 75%
+    // vs a 4-hr emergency refill from 10% covers the same energy deficit in 4× less time).
+    // Without this trigger, countAnnualGenHours over-counts annual hours on high-load
+    // scenarios — causing the optimizer to require over-sized batteries and PV.
+    if (!genRunning && ((hr >= 14 && sol < ld) || hr === 18) && batE < batMax * 0.75) genRunning = true;
+
+    // Emergency fallback: battery has hit the HARD FLOOR (BATTERY_MIN_SOC = 10%) AND
+    // solar cannot cover load.  Also prevents the same-timestep stop-restart race on
+    // mornings when solar rises to cover load after a generator-assisted night.
     if (!genRunning && batE <= batMax * BATTERY_MIN_SOC && sol < ld) genRunning = true;
 
     const genOut = genRunning ? genKw : 0;
@@ -3971,7 +3981,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.97</span>
+        <span style={S.version}>v0.4.98</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto"}}>
           <a href="https://tools.cc-energy.org/index.html"
