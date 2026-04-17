@@ -1,5 +1,5 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.93
+// Version: v0.4.94
 // Updated: 2026-04-16 PT
 // Part of: Wipomo / CCE Solar Tools
 
@@ -1385,17 +1385,26 @@ function findOptimumGenerator({ mountOptions, pvSizesKw, batteryOptions, genSize
       const annualSolarH = loadAnnual ? mount.solarNormalized.map(x => x * pvKw) : null;
       for (const bat of batteryOptions) {
         if (bat.kwh < codeMinBatKwh) continue; // below 3× winter-avg minimum
+        // Pre-check: does this pvKw + battery already survive the stress window WITHOUT a generator?
+        // If yes, the generator never fires in a typical TMY year either (stress window is the worst
+        // period), so annual generator hours = 0 and Criterion 2 is trivially satisfied for every
+        // generator size at this pvKw/battery combination.  This prevents the paradox where adding a
+        // generator appears to require MORE solar than battery-only.
+        const batOnlyCheck = dispatchGenerator(solarH, loadSw, bat.kwh, bat.kw, 0, weather, lookaheadDays, 0);
+        const batAlreadyPasses = batOnlyCheck.wwPass;
         for (const genKw of [...genSizesKw].sort((a, b) => a - b)) {
           const r = dispatchGenerator(solarH, loadSw, bat.kwh, bat.kw, genKw, weather, lookaheadDays, fuelCostPerKwHr);
           if (!r.wwPass) continue;
           // Emergency limit: worst-window generator hours — permissive ceiling (default 200 hr)
           if (r.wwGenHours > emergencyGenHrLimit) continue;
-          // Annual gen hours (TMY 8760-h, emergency-floor trigger only) — hard filter for Criterion 2.
-          // Must be computed before the genHrLimit check.
-          const ann = (annualSolarH && loadAnnual)
-            ? countAnnualGenHours(annualSolarH, loadAnnual, bat.kwh, bat.kw, genKw, fuelCostPerKwHr)
-            : { annualGenHours: r.simGenHours, annualGenCost: r.annualGenCost };
-          // Criterion 2 hard filter: typical-year generator hours must be within ordinance limit.
+          // Annual gen hours — Criterion 2 hard filter.
+          // If battery-only already passes the stress window, the generator never fires in a typical
+          // year → annual hours = 0.  Otherwise, run the full TMY simulation.
+          const ann = batAlreadyPasses
+            ? { annualGenHours: 0, annualGenCost: 0 }
+            : (annualSolarH && loadAnnual)
+              ? countAnnualGenHours(annualSolarH, loadAnnual, bat.kwh, bat.kw, genKw, fuelCostPerKwHr)
+              : { annualGenHours: r.simGenHours, annualGenCost: r.annualGenCost };
           if (ann.annualGenHours > genHrLimit) continue;
           const pvCost    = Math.round(pvKw  * mount.pvCostPerKw);
           const batCost   = Math.round(bat.fixedCost);
@@ -3907,7 +3916,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.93</span>
+        <span style={S.version}>v0.4.94</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto"}}>
           <a href="https://tools.cc-energy.org/index.html"
