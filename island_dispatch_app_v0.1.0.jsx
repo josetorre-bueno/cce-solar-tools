@@ -1,6 +1,6 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.88
-// Updated: 2026-04-16 17:30 PT
+// Version: v0.4.89
+// Updated: 2026-04-16 18:45 PT
 // Part of: Wipomo / CCE Solar Tools
 
 "use strict";
@@ -2916,7 +2916,7 @@ function App() {
     });
 
     // Generator on/off from no-EV trace (same time window — used as overlay background)
-    const genTrace = result._genTrace1 ? result._genTrace1.slice(displayStart, displayEnd) : null;
+    const genTrace = result._genTrace1 ? result._genTrace1.slice(displayStart, totalH) : null;
     const genRunArr = genTrace ? genTrace.map(r => r.genRunning) : null;
 
     function makeGenRunPlugin(id, runArr) {
@@ -3894,7 +3894,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.88</span>
+        <span style={S.version}>v0.4.89</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto"}}>
           <a href="https://tools.cc-energy.org/index.html"
