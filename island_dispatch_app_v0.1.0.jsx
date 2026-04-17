@@ -1,6 +1,6 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.84
-// Updated: 2026-04-16 13:00 PT
+// Version: v0.4.85
+// Updated: 2026-04-16 14:00 PT
 // Part of: Wipomo / CCE Solar Tools
 
 "use strict";
@@ -1282,8 +1282,11 @@ function countAnnualGenHours(solarH, loadH, batKwh, batKw, genKw, fuelCostPerKwH
     // Stop: battery recharged or solar covers load
     if (genRunning && batE >= batMax * 0.95) genRunning = false;
     if (genRunning && sol >= ld)             genRunning = false;
-    // Start: true emergency — battery hit floor
-    if (!genRunning && batE <= batMax * 0.20) genRunning = true;
+    // Start: battery has hit the HARD FLOOR (BATTERY_MIN_SOC = 10%).
+    // Using the actual floor — not the 20% conservative trigger used in the stress-window
+    // simulation — ensures the generator only fires in a typical year when load would
+    // actually go unserved without it (same threshold as battery-only unserved-energy).
+    if (!genRunning && batE <= batMax * BATTERY_MIN_SOC) genRunning = true;
 
     const genOut = genRunning ? genKw : 0;
     if (genRunning) genHours++;
@@ -3791,7 +3794,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.84</span>
+        <span style={S.version}>v0.4.85</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto"}}>
           <a href="https://tools.cc-energy.org/index.html"
