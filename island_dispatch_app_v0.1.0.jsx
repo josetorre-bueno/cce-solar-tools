@@ -1,6 +1,6 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.109
-// Updated: 2026-04-17 16:30 PT
+// Version: v0.4.111
+// Updated: 2026-04-17 17:30 PT
 // Part of: Wipomo / CCE Solar Tools
 
 "use strict";
@@ -155,6 +155,8 @@ function evConfigToDispatch(ev) {
     canV2G:              ev.canV2G === true,
     roadTripDays: 10,
     rtLoadFactor: 0.6,
+    dcfcTargetPct:   ev.dcfcTargetPct  ?? 0.80,   // fraction — DCFC charge target (default 80 %)
+    destL2TargetPct: ev.destL2TargetPct ?? 0.95,   // fraction — destination L2 charge target (default 95 %)
   };
 }
 
@@ -340,8 +342,8 @@ function dispatch(solarH, loadH, batKwh, batKw, evScenario, weather, dcfcCostPer
       // Floor: EV's own 90% target, so only surplus above target flows to battery.
       if (!evAway[i] && !evOnTrip[i] && sol > 0.5 && ev.canV2G) {
         const batNeed   = batMax - batE;
-        const evTarget  = ev.kwh * 0.90;
-        const evFloor   = Math.max(evMn[i], evTarget);
+        const halfRangeKwh = ev.tripMiles > 0 ? ev.tripMiles / (2 * ev.efficiency) : 0;
+        const evFloor = evMn[i] + halfRangeKwh;
         const evSurplus = Math.max(0, evE[i] - evFloor) * V2G_RTE;
         if (batNeed > 0.05 && evSurplus > 0.05) {
           const tr = Math.min(batNeed / BATTERY_RTE, evSurplus, EVSE_KW);
@@ -401,7 +403,7 @@ function dispatch(solarH, loadH, batKwh, batKw, evScenario, weather, dcfcCostPer
       if (hr === 7 && roadTrip && !evAway[i] && !evOnTrip[i]) {
         const rtOneWayKwh = ev.tripMiles / ev.efficiency;
         const rtRoundTripNeeded = rtOneWayKwh * 2 + evMn[i];
-        const rtDcfcCeil = ev.kwh * 0.80;
+        const rtDcfcCeil = ev.kwh * ev.dcfcTargetPct;
         if (evE[i] < rtOneWayKwh + evMn[i]) {
           // Not enough to depart — pre-departure DCFC (en-route category)
           const dcfcTo = Math.min(rtDcfcCeil, Math.max(rtRoundTripNeeded, rtOneWayKwh + evMn[i]));
@@ -436,15 +438,15 @@ function dispatch(solarH, loadH, batKwh, batKw, evScenario, weather, dcfcCostPer
         evAway[i]   = true;
       }
       // Road trip return hr===20
-      // EV has been at destination all day. Model: destination L2 charging brings EV to 80%
-      // (hotel, family, destination charger — normal road-trip behavior; no home energy cost).
-      // If EV already has more than 80%, keep its natural level.
+      // EV has been at destination all day. Model: destination L2 charging brings EV to destL2TargetPct
+      // (hotel, family, destination charger — overnight L2 has plenty of time; no home energy cost).
+      // If EV already has more than destL2TargetPct, keep its natural level.
       // After destination charge, check if it can drive home; if not, add a DCFC stop.
-      // If even charging to 80% doesn't cover the one-way return + emergency reserve, flag
+      // If even charging to destL2TargetPct doesn't cover the one-way return + emergency reserve, flag
       // this configuration as infeasible (trip too long for the battery).
       if (hr === 20 && evOnTrip[i]) {
         const rtOneWayKwh = ev.tripMiles / ev.efficiency;
-        const rtDcfcTarget = ev.kwh * 0.80;
+        const rtDcfcTarget = ev.kwh * ev.destL2TargetPct;
         // Destination L2 top-up (external energy, no home battery cost)
         evE[i] = Math.max(evE[i], rtDcfcTarget);
         if (evE[i] >= rtOneWayKwh + evMn[i]) {
@@ -495,17 +497,17 @@ function dispatch(solarH, loadH, batKwh, batKw, evScenario, weather, dcfcCostPer
           evAway[i] = false;
           if (ev.destCharging === "l2_free" || ev.destCharging === "l2_paid") {
             const preDrive = evE[i];
-            evE[i] = ev.kwh * 0.90;
+            evE[i] = ev.kwh * ev.destL2TargetPct;
             if (ev.destCharging === "l2_paid" && ev.destChargeRate > 0) {
               const drivingUsed = ev.tripMiles / ev.efficiency; // one-way drive to work
               const preWork = Math.max(preDrive - drivingUsed, evMn[i]);
-              const addedAtWork = Math.max(0, ev.kwh * 0.90 - preWork);
+              const addedAtWork = Math.max(0, ev.kwh * ev.destL2TargetPct - preWork);
               workChargeCostTotal += addedAtWork * ev.destChargeRate;
             }
           } else if (ev.dcfcPlannedPerYear > 0 && chargeToday[i]) {
             // En-route DCFC: planned stop on the way home
             const natural = Math.max(evE[i] - ev.roundTripKwh, 0);
-            const added   = Math.max(0, ev.kwh * 0.90 - natural);
+            const added   = Math.max(0, ev.kwh * ev.dcfcTargetPct - natural);
             dcfcKwh   += added / CHARGE_RTE;
             dcfcCount += 1;
             dcfcThisHour = true;
@@ -513,14 +515,14 @@ function dispatch(solarH, loadH, batKwh, batKw, evScenario, weather, dcfcCostPer
             enrouteDcfcKwh   += added / CHARGE_RTE;
             enrouteDcfcCount += 1;
             if (inWw) wwEnrouteDcfcCount += 1;
-            evE[i] = ev.kwh * 0.90;
+            evE[i] = ev.kwh * ev.dcfcTargetPct;
             chargeToday[i] = false;
           } else {
             // Home charging only or no DCFC planned: apply round-trip driving deduction
             evE[i] = Math.max(evE[i] - ev.roundTripKwh, 0);
             if (chargeToday[i]) {
               // Emergency DCFC on return
-              const added = Math.max(0, ev.kwh * 0.90 - evE[i]);
+              const added = Math.max(0, ev.kwh * ev.dcfcTargetPct - evE[i]);
               if (added > 0.1) {
                 dcfcKwh   += added / CHARGE_RTE;
                 dcfcCount += 1;
@@ -530,7 +532,7 @@ function dispatch(solarH, loadH, batKwh, batKw, evScenario, weather, dcfcCostPer
                 emergencyDcfcCount += 1;
                 emergencyCommuteReturn += 1;
                 if (inWw) wwEmergencyDcfcCount += 1;
-                evE[i] = ev.kwh * 0.90;
+                evE[i] = ev.kwh * ev.dcfcTargetPct;
               }
               chargeToday[i] = false;
             }
@@ -542,7 +544,7 @@ function dispatch(solarH, loadH, batKwh, batKw, evScenario, weather, dcfcCostPer
       // For tripsPerWeek > 0: handled by the departure/return block above
       // Emergency DCFC for home-based EVs: check chargeToday at hr === 18
       if (ev.tripsPerWeek === 0 && !evOnTrip[i] && hr === 18 && chargeToday[i]) {
-        const added = Math.max(0, ev.kwh * 0.90 - evE[i]);
+        const added = Math.max(0, ev.kwh * ev.dcfcTargetPct - evE[i]);
         if (added > 0.1) {
           dcfcKwh   += added / CHARGE_RTE;
           dcfcCount += 1;
@@ -552,7 +554,7 @@ function dispatch(solarH, loadH, batKwh, batKw, evScenario, weather, dcfcCostPer
           emergencyDcfcCount += 1;
           emergencyHomeBased += 1;
           if (inWw) wwEmergencyDcfcCount += 1;
-          evE[i]         = ev.kwh * 0.90;
+          evE[i]         = ev.kwh * ev.dcfcTargetPct;
           chargeToday[i] = false;
         }
       }
@@ -638,7 +640,9 @@ function dispatch(solarH, loadH, batKwh, batKw, evScenario, weather, dcfcCostPer
       if (evAway[ci] || evOnTrip[ci]) continue;
       const isWfh        = evs[ci].tripsPerWeek === 0;
       const tomorrowTrip = isTripDay(evs[ci].tripsPerWeek, sd + 1);
-      const floor   = (!isWfh && tomorrowTrip) ? Math.max(evMn[ci], evs[ci].roundTripKwh) : evMn[ci];
+      const halfRangeKwh = evs[ci].tripMiles > 0 ? evs[ci].tripMiles / (2 * evs[ci].efficiency) : 0;
+      const v2gSafeFloor = evMn[ci] + halfRangeKwh;
+      const floor = (!isWfh && tomorrowTrip) ? Math.max(v2gSafeFloor, evs[ci].roundTripKwh) : v2gSafeFloor;
       bidiOrder.push({ ci, tripsPerWeek: evs[ci].tripsPerWeek, floor, socRatio: evE[ci] / evs[ci].kwh });
     }
     bidiOrder.sort((a, b) => {
@@ -2343,7 +2347,7 @@ function App() {
 
   const addEv = () => {
     if (evList.length >= 3) return;
-    setEvList(prev => [...prev, { kwh: 88, tripsPerWeek: 5, tripMiles: 15, destCharging: "none", destChargeRate: 0.25, dcfcPlannedPerYear: 0, canV2G: false }]);
+    setEvList(prev => [...prev, { kwh: 88, tripsPerWeek: 5, tripMiles: 15, destCharging: "none", destChargeRate: 0.25, dcfcPlannedPerYear: 0, canV2G: false, dcfcTargetPct: 0.80, destL2TargetPct: 0.95 }]);
   };
   const removeEv = (i) => setEvList(prev => prev.filter((_, idx) => idx !== i));
   const updateEv = (i, field, val) => setEvList(prev => prev.map((ev, idx) => idx === i ? { ...ev, [field]: val } : ev));
@@ -4502,7 +4506,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.109</span>
+        <span style={S.version}>v0.4.111</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto"}}>
           <a href="https://tools.cc-energy.org/index.html"
@@ -4777,6 +4781,21 @@ function App() {
                       onChange={e => updateEv(i, "dcfcPlannedPerYear", parseInt(e.target.value) || 0)}
                       title="En-route planned fast-charge stops driver accepts per year (0 = home charging only)" />
                     <span style={{ fontSize: "11px", color: "#888" }}>planned stops/yr this driver accepts</span>
+                  </div>
+                  {/* Row 4: Charge targets */}
+                  <div style={{ display: "flex", alignItems: "center", gap: "10px", marginTop: "4px", flexWrap: "wrap" }}>
+                    <label style={{ ...S.label, minWidth: "auto" }}>DCFC target</label>
+                    <input style={{ ...S.input, width: "56px" }} type="number" step="1" min="50" max="100"
+                      value={Math.round((ev.dcfcTargetPct ?? 0.80) * 100)}
+                      onChange={e => updateEv(i, "dcfcTargetPct", Math.max(0.5, Math.min(1.0, (parseInt(e.target.value) || 80) / 100)))}
+                      title="DC fast charger target SOC % (industry standard 80 %)" />
+                    <span style={{ fontSize: "11px", color: "#888" }}>%</span>
+                    <label style={{ ...S.label, minWidth: "auto", marginLeft: "8px" }}>Dest L2 target</label>
+                    <input style={{ ...S.input, width: "56px" }} type="number" step="1" min="50" max="100"
+                      value={Math.round((ev.destL2TargetPct ?? 0.95) * 100)}
+                      onChange={e => updateEv(i, "destL2TargetPct", Math.max(0.5, Math.min(1.0, (parseInt(e.target.value) || 95) / 100)))}
+                      title="Destination L2 charger target SOC % (hotel / workplace overnight, default 95 %)" />
+                    <span style={{ fontSize: "11px", color: "#888" }}>%</span>
                   </div>
                   {/* Summary hint — mirrors evConfigToDispatch defaults exactly */}
                   <div style={{ fontSize: "11px", color: "#888", marginTop: "4px" }}>
