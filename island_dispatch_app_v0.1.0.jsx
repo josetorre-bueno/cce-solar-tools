@@ -1,6 +1,6 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.116
-// Updated: 2026-04-17 21:30 PT
+// Version: v0.4.118
+// Updated: 2026-04-17 22:15 PT
 // Part of: Wipomo / CCE Solar Tools
 
 "use strict";
@@ -440,7 +440,7 @@ function simulatePeriod(solarH, loadH, batKwh, batKw, genKw, evScenario, weather
       if (genRunning && !genByPlanning && canStop(h))      genRunning = false;
       if (!genRunning && batE <= batMax * 0.20)          { genRunning = true;  genByPlanning = false; }
       const aft = (hr >= 12 && sol < ld) || hr === 18;
-      if (aft && !genRunning && batE < batMax * 0.75 && shortageExpected(h)) {
+      if (aft && !genRunning && batE < batMax * 0.50 && shortageExpected(h)) {
         genRunning = true; genByPlanning = true;
       }
     }
@@ -938,10 +938,6 @@ function findOptimum(params) {
 
   const allResults = [];
 
-  // If V2G EVs are in the scenario, annual sim cannot model their discharge contribution,
-  // so we skip the annual check and trust the stress-window pass (same as pre-v0.4.116 behaviour).
-  const hasV2gInScenario = evScenario.some(ev => ev.canV2G);
-
   for (const mount of mountOptions) {
     const solarSw = extractWindow(mount.solarNormalized, spinupDoy, cell.n_hours);
 
@@ -960,20 +956,18 @@ function findOptimum(params) {
         // null = WW failed (annual check skipped entirely).
         let annualUnservedKwh   = null;
         let annualUnservedHours = null;
-        if (r.wwPass) {
-          if (hasV2gInScenario) {
-            // Trust WW pass for V2G-assisted designs — annual sim would undercount storage
-            annualUnservedKwh   = 0;
-            annualUnservedHours = 0;
-          } else if (loadHourly) {
-            const annSolarH  = mount.solarNormalized.map(x => x * pvKw);
-            const annWeather = buildAnnualWeather(annSolarH.length);
-            const annR = simulatePeriod(annSolarH, loadHourly, bat.kwh, bat.kw, 0, [], annWeather, {
-              initialSoc: 1.0,
-            });
-            annualUnservedKwh   = annR.unservedKwh;
-            annualUnservedHours = annR.unservedHours;
-          }
+        if (r.wwPass && loadHourly) {
+          // Annual check always runs on stationary battery alone (evScenario=[]).
+          // For V2G designs: this is conservative — V2G will reduce actual unserved load
+          // during normal days, so the annual trace shows worst-case (stationary-only).
+          // The pass criterion is the same regardless of V2G.
+          const annSolarH  = mount.solarNormalized.map(x => x * pvKw);
+          const annWeather = buildAnnualWeather(annSolarH.length);
+          const annR = simulatePeriod(annSolarH, loadHourly, bat.kwh, bat.kw, 0, [], annWeather, {
+            initialSoc: 1.0,
+          });
+          annualUnservedKwh   = annR.unservedKwh;
+          annualUnservedHours = annR.unservedHours;
         }
 
         const pvCost   = Math.round(pvKw * mount.pvCostPerKw);
@@ -2826,10 +2820,11 @@ function App() {
           res._traceData = traceResult.trace;
           res._optSolarH = solarH;
 
-          // Annual trace — always generated; unserved load shows in red when annual
-          // coverage fails.  Skipped for V2G designs (countAnnualGenHours cannot model
-          // V2G dispatch; the stress-window chart is the primary validation display).
-          if (loadHourly && !hasV2gAtSweep) {
+          // Annual trace — always generated for stationary battery alone (no EVs).
+          // For V2G designs this shows the battery-only baseline; V2G provides supplemental
+          // coverage during the worst window and better days.  The chart note indicates
+          // when V2G was part of the design.
+          if (loadHourly) {
             const annSolar8760 = optMount.solarNormalized.map(x => x * opt.pvKw);
             const batAnnTr = countAnnualGenHours(
               annSolar8760, loadHourly, optBat.kwh, optBat.kw, 0, 0, -1, 0, 4, true
@@ -4433,7 +4428,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.116</span>
+        <span style={S.version}>v0.4.118</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto"}}>
           <a href="https://tools.cc-energy.org/index.html"
@@ -5246,7 +5241,7 @@ function App() {
                   const centerH = Math.min(8759, Math.floor(annZoomH + annZoomW / 2));
                   const batTr   = result._annualTrace;
                   const genTr   = result._genOptResult?.annualTrace;
-                  const batOpt  = result.optimum;
+                  const batOpt  = result.optimum || result._wwOnlyOptimum;
                   const genOpt  = result._genOptResult?.optimum;
                   const fmtKw   = v => (v || 0).toFixed(2);
                   const fmtKwh  = v => (v || 0).toFixed(1);
@@ -5340,7 +5335,15 @@ function App() {
                         <div style={S.card}>
                           <div style={{ fontSize: "12px", fontWeight: 700, color: "#155724", marginBottom: "4px" }}>
                             📅 Battery-Only Annual — {batOpt.pvKw} kW {batOpt.mountLabel} · {batOpt.batteryLabel}
+                            {!result.optimum && result._wwOnlyOptimum && (
+                              <span style={{ fontWeight: 400, color: "#856404", marginLeft: "6px" }}>(⚠ WW-only — no config passes full-year coverage)</span>
+                            )}
                           </div>
+                          {result._sweepHasV2g && (
+                            <div style={{ background: "#e8f0fe", border: "1px solid #9ab0e8", borderRadius: "4px", padding: "4px 10px", marginBottom: "6px", fontSize: "10px", color: "#1a4080" }}>
+                              ℹ Stationary battery only — V2G EVs supplement coverage during the worst-window period but are excluded from this annual trace for conservatism.
+                            </div>
+                          )}
                           {batHasUnsv ? (
                             <div style={{ background: "#fff3cd", border: "1px solid #ffc107", borderRadius: "4px", padding: "6px 10px", marginBottom: "6px", fontSize: "11px", color: "#856404", lineHeight: 1.6 }}>
                               <strong>⚠ {annUnsKwh.toLocaleString()} kWh unserved across {annUnsHours} hours/yr</strong> — red bars show days with unserved load
