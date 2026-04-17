@@ -1,6 +1,6 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.90
-// Updated: 2026-04-16 18:45 PT
+// Version: v0.4.92
+// Updated: 2026-04-16 PT
 // Part of: Wipomo / CCE Solar Tools
 
 "use strict";
@@ -791,6 +791,7 @@ function dispatch(solarH, loadH, batKwh, batKw, evScenario, weather, dcfcCostPer
         curtailed:     parseFloat(Math.max(0, excess).toFixed(3)),
         unserved:      parseFloat(uns.toFixed(3)),
         isWorstWindow: inWw,
+        isPostWindow:  r.isPostWindow || false,
       });
     }
   }
@@ -1380,18 +1381,13 @@ function findOptimumGenerator({ mountOptions, pvSizesKw, batteryOptions, genSize
           if (!r.wwPass) continue;
           // Emergency limit: worst-window generator hours — permissive ceiling (default 200 hr)
           if (r.wwGenHours > emergencyGenHrLimit) continue;
-          // Normal-year proxy: use stress-window total generator hours (r.simGenHours, 70-day
-          // worst period) as an upper bound on annual hours.  The stress window is the worst
-          // consecutive 70 days in 26 years of NSRDB data — a typical TMY year will be sunnier,
-          // so a configuration that runs the generator ≤ genHrLimit hr during those 70 days will
-          // almost certainly run ≤ genHrLimit hr in any ordinary year.  This ensures the
-          // battery+generator path always accepts any (PV, battery) pair that battery-only
-          // already accepts, i.e. adding a generator can only reduce required PV, never increase it.
-          if (r.simGenHours > genHrLimit) continue;
-          // Annual gen hours are still computed for fuel NPV — informational only, not a hard filter.
+          // Annual gen hours (TMY 8760-h, emergency-floor trigger only) — hard filter for Criterion 2.
+          // Must be computed before the genHrLimit check.
           const ann = (annualSolarH && loadAnnual)
             ? countAnnualGenHours(annualSolarH, loadAnnual, bat.kwh, bat.kw, genKw, fuelCostPerKwHr)
             : { annualGenHours: r.simGenHours, annualGenCost: r.annualGenCost };
+          // Criterion 2 hard filter: typical-year generator hours must be within ordinance limit.
+          if (ann.annualGenHours > genHrLimit) continue;
           const pvCost    = Math.round(pvKw  * mount.pvCostPerKw);
           const batCost   = Math.round(bat.fixedCost);
           const genCap    = genInstalledCost; // fixed installed cost regardless of kW size
@@ -2842,18 +2838,11 @@ function App() {
           const { ctx, chartArea, scales } = chart;
           if (!chartArea) return;
           ctx.save();
-          // Red tint: worst-window (10-day critical period)
+          // Red tint: worst-window (10-day critical period) only; post-window is white like spinup
           const x0 = scales.x.getPixelForValue(Math.max(0, wwMaskStart));
           const x1 = scales.x.getPixelForValue(Math.min(slice.length - 1, wwMaskEnd - 1));
           ctx.fillStyle = "rgba(192,57,43,0.07)";
           ctx.fillRect(x0, chartArea.top, x1 - x0, chartArea.bottom - chartArea.top);
-          // Green tint: post-window display context
-          if (hasPostWw && pwMaskStart < slice.length) {
-            const px0 = scales.x.getPixelForValue(Math.max(0, pwMaskStart));
-            const px1 = scales.x.getPixelForValue(Math.min(slice.length - 1, pwMaskEnd - 1));
-            ctx.fillStyle = "rgba(32,128,64,0.07)";
-            ctx.fillRect(px0, chartArea.top, px1 - px0, chartArea.bottom - chartArea.top);
-          }
           ctx.restore();
         },
       };
@@ -3001,7 +2990,6 @@ function App() {
       opts.layout = { padding: { right: Y2_W } };
       const LEG_CURT = { text: "Curtailed solar", fillStyle: "rgba(140,140,0,0.45)", strokeStyle: "rgba(0,0,0,0)", lineWidth: 0, lineDash: [], hidden: false, datasetIndex: null, pointStyle: "rect" };
       const p1Extras = [LEG_WW];
-      if (hasPostWw) p1Extras.push(LEG_PW);
       if (hasCurt) p1Extras.push(LEG_CURT);
       if (dcfcIdx.length > 0) p1Extras.push(LEG_DCFC);
       opts.plugins.legend = buildLegend(p1Extras);
@@ -3140,12 +3128,7 @@ function App() {
           const x1 = scales.x.getPixelForValue(Math.min(slice.length - 1, wwMaskEnd - 1));
           ctx.fillStyle = "rgba(192,57,43,0.07)";
           ctx.fillRect(x0, chartArea.top, x1 - x0, chartArea.bottom - chartArea.top);
-          if (hasPostWw2 && pwMaskStart2 < slice.length) {
-            const px0 = scales.x.getPixelForValue(Math.max(0, pwMaskStart2));
-            const px1 = scales.x.getPixelForValue(Math.min(slice.length - 1, pwMaskEnd2 - 1));
-            ctx.fillStyle = "rgba(32,128,64,0.07)";
-            ctx.fillRect(px0, chartArea.top, px1 - px0, chartArea.bottom - chartArea.top);
-          }
+          // Post-window has white background (same as spinup — no special tint)
           ctx.restore();
         },
       };
@@ -3212,7 +3195,7 @@ function App() {
       const opts = commonOpts(false);
       opts.scales.y = { title: { display: true, text: "Power (kW)", font: { size: 10 } }, beginAtZero: true, grid: { color: "#f0f0f0" }, afterFit: yFit };
       opts.layout = { padding: { right: Y2_W } };
-      opts.plugins.legend = buildLegend(hasPostWw2 ? [LEG_WW, LEG_PW] : [LEG_WW]);
+      opts.plugins.legend = buildLegend([LEG_WW]);
       evImpP1Inst.current = new Chart(evImpP1Ref.current, {
         type: "line",
         data: { labels, datasets: [
@@ -3428,10 +3411,10 @@ function App() {
         ctx.save();
         for (let i = 0; i < slice.length - 1; i++) {
           const r = slice[i];
-          if (!r.isWorstWindow && !r.isPostWindow) continue;
+          if (!r.isWorstWindow) continue; // post-window is white like spinup
           const x0 = scales.x.getPixelForValue(i);
           const x1 = scales.x.getPixelForValue(i + 1);
-          ctx.fillStyle = r.isWorstWindow ? "rgba(192,57,43,0.07)" : "rgba(32,128,64,0.07)";
+          ctx.fillStyle = "rgba(192,57,43,0.07)";
           ctx.fillRect(x0, chartArea.top, x1 - x0, chartArea.bottom - chartArea.top);
         }
         ctx.restore();
@@ -3442,8 +3425,7 @@ function App() {
       const opts = commonOpts(false);
       opts.scales.y = { title: { display: true, text: "Power (kW)", font: { size: 10 } }, beginAtZero: true, grid: { color: "#f0f0f0" }, afterFit: yFit };
       opts.layout = { padding: { right: Y2_W } };
-      const legExtras = hasPostWw3 ? [LEG_WW, LEG_PW] : [LEG_WW];
-      opts.plugins.legend = buildLegend(legExtras);
+      opts.plugins.legend = buildLegend([LEG_WW]);
       evImpDiagP1Inst.current = new Chart(evImpDiagP1Ref.current, {
         type: "line",
         data: { labels, datasets: [
@@ -3598,12 +3580,7 @@ function App() {
           const x1 = scales.x.getPixelForValue(Math.min(slice.length - 1, wwMaskEnd - 1));
           ctx.fillStyle = "rgba(192,57,43,0.07)";
           ctx.fillRect(x0, chartArea.top, x1 - x0, chartArea.bottom - chartArea.top);
-          if (hasPostWw4 && pwMaskStart4 < slice.length) {
-            const px0 = scales.x.getPixelForValue(Math.max(0, pwMaskStart4));
-            const px1 = scales.x.getPixelForValue(Math.min(slice.length - 1, pwMaskEnd4 - 1));
-            ctx.fillStyle = "rgba(32,128,64,0.07)";
-            ctx.fillRect(px0, chartArea.top, px1 - px0, chartArea.bottom - chartArea.top);
-          }
+          // Post-window is white like spinup — no tint
           ctx.restore();
         },
       };
@@ -3690,7 +3667,7 @@ function App() {
     { const opts = commonOpts(false); opts.scales.y = { title: { display: true, text: "Power (kW)", font: { size: 10 } }, beginAtZero: true, grid: { color: "#f0f0f0" }, afterFit: yFit };
       opts.layout = { padding: { right: Y2_W } };
       const LEG_CURT_G = { text: "Curtailed solar", fillStyle: "rgba(140,140,0,0.60)", strokeStyle: "rgba(0,0,0,0)", lineWidth: 0, lineDash: [], hidden: false, datasetIndex: null, pointStyle: "rect" };
-      const p1gLeg = [LEG_WW]; if (hasPostWw4) p1gLeg.push(LEG_PW); if (hasCurt) p1gLeg.push(LEG_CURT_G);
+      const p1gLeg = [LEG_WW]; if (hasCurt) p1gLeg.push(LEG_CURT_G);
       opts.plugins.legend = buildLegend(p1gLeg);
       opts.plugins.tooltip = { enabled: false };
       genP1Inst.current = new Chart(genP1Ref.current, { type: "line",
@@ -3708,7 +3685,7 @@ function App() {
       const opts = commonOpts(true);
       opts.scales.y  = { title: { display: true, text: "Battery (kWh) / Generator (kW)", font: { size: 10 } }, beginAtZero: true, max: yMax, grid: { color: "#f0f0f0" }, afterFit: yFit };
       opts.scales.y2 = makeSocAxisY2(batKwhCap, yMax);
-      opts.plugins.legend = buildLegend(hasPostWw4 ? [LEG_WW, LEG_PW, LEG_GEN] : [LEG_WW, LEG_GEN]);
+      opts.plugins.legend = buildLegend([LEG_WW, LEG_GEN]);
       opts.plugins.tooltip = { enabled: false };
       genP2Inst.current = new Chart(genP2Ref.current, { type: "line",
         data: { labels, datasets: [
@@ -3921,7 +3898,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.90</span>
+        <span style={S.version}>v0.4.92</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto"}}>
           <a href="https://tools.cc-energy.org/index.html"
@@ -5142,7 +5119,7 @@ function App() {
                           <div style={S2.row}><span style={S2.lbl}>EV away</span><span style={{ ...S2.val, color:"#555" }}>{displayRow.evAway.length > 0 ? (displayRow.evAway[0]?"Yes":"No") : "—"}</span></div>
                           <div style={S2.row}><span style={S2.lbl}>DCFC sched</span><span style={{ ...S2.val, color:"#555" }}>{displayRow.triggerSet && displayRow.triggerSet.length > 0 ? (displayRow.triggerFired&&displayRow.triggerFired[0]?"→fired":displayRow.triggerSet[0]?"active":"No") : "—"}</span></div>
                           <div style={S2.row}><span style={S2.lbl}>DCFC event</span><span style={{ ...S2.val, color:displayRow.dcfcEvent?"#c0392b":"#555" }}>{displayRow.dcfcEvent?"Yes":"No"}</span></div>
-                          <div style={S2.row}><span style={S2.lbl}>Period</span><span style={{ ...S2.val, color: displayRow.isWorstWindow?"#c0392b": displayRow.isPostWindow?"#207040":"#555" }}>{displayRow.isWorstWindow?"Worst window": displayRow.isPostWindow?"Post-window":"Spinup"}</span></div>
+                          <div style={S2.row}><span style={S2.lbl}>Period</span><span style={{ ...S2.val, color: displayRow.isWorstWindow?"#c0392b": displayRow.isPostWindow?"#555":"#555" }}>{displayRow.isWorstWindow?"Worst window": displayRow.isPostWindow?"Post-window":"Spinup"}</span></div>
                         </div>
                         {isPinned && (
                           <div style={{ display:"flex", gap:"4px", marginTop:"8px" }}>
@@ -5207,7 +5184,7 @@ function App() {
                             <div style={S2.row}><span style={S2.lbl}>Gen run</span><span style={{ ...S2.val, color:"#802000" }}>{displayRow.genRunning?"Yes":"No"}</span></div>
                           </div>
                           <div style={{ borderTop: "1px solid #dee2e6", marginTop: "4px", paddingTop: "4px" }}>
-                            <div style={S2.row}><span style={S2.lbl}>Period</span><span style={{ ...S2.val, color: displayRow.isWorstWindow?"#c0392b": displayRow.isPostWindow?"#207040":"#555" }}>{displayRow.isWorstWindow?"Worst window": displayRow.isPostWindow?"Post-window":"Spinup"}</span></div>
+                            <div style={S2.row}><span style={S2.lbl}>Period</span><span style={{ ...S2.val, color: displayRow.isWorstWindow?"#c0392b": displayRow.isPostWindow?"#555":"#555" }}>{displayRow.isWorstWindow?"Worst window": displayRow.isPostWindow?"Post-window":"Spinup"}</span></div>
                           </div>
                           {isPinned && (
                             <button style={{ marginTop: "8px", fontSize: "10px", padding: "3px 8px", background: "#ffe0a0", border: "1px solid #d0a000", borderRadius: "4px", cursor: "pointer", width: "100%" }}
@@ -5272,7 +5249,7 @@ function App() {
                           <div style={{ fontWeight:700, marginBottom:"6px", fontSize:"12px" }}>
                             {displayRow.month}/{displayRow.day} {String(displayRow.hourOfDay).padStart(2,"0")}:00
                             {displayRow.isWorstWindow && <span style={{color:"#c0392b",marginLeft:"5px",fontSize:"10px"}}>WW</span>}
-                            {displayRow.isPostWindow  && <span style={{color:"#207040",marginLeft:"5px",fontSize:"10px"}}>PW</span>}
+                            {displayRow.isPostWindow  && <span style={{color:"#888",marginLeft:"5px",fontSize:"10px"}}>PW</span>}
                           </div>
                           <div style={S2.row}><span style={S2.lbl}>PV →</span><span style={{ ...S2.val, color:"#d48000" }}>{solar.toFixed(2)} kW</span></div>
                           <div style={S2.row}><span style={S2.lbl}>← Load</span><span style={{ ...S2.val, color:"#204090" }}>{load.toFixed(2)} kW</span></div>
@@ -5443,7 +5420,7 @@ function App() {
                             <div style={{ fontWeight:700, marginBottom:"6px", fontSize:"12px" }}>
                               {dr.month}/{dr.day} {String(dr.hourOfDay).padStart(2,"0")}:00
                               {dr.isWorstWindow && <span style={{ color:"#c0392b", marginLeft:"5px", fontSize:"10px" }}>WW</span>}
-                              {dr.isPostWindow  && <span style={{ color:"#207040", marginLeft:"5px", fontSize:"10px" }}>PW</span>}
+                              {dr.isPostWindow  && <span style={{ color:"#888", marginLeft:"5px", fontSize:"10px" }}>PW</span>}
                             </div>
                             <div style={S2.row}><span style={S2.lbl}>PV →</span><span style={{ ...S2.val, color:"#d48000" }}>{(dr.solarKw||0).toFixed(2)} kW</span></div>
                             <div style={S2.row}><span style={S2.lbl}>← Load</span><span style={{ ...S2.val, color:"#204090" }}>{(dr.loadKw||0).toFixed(2)} kW</span></div>
@@ -5526,7 +5503,7 @@ function App() {
                                   <td style={TD({ color: "#107040" })}>{(r.batKwhEnd||0).toFixed(2)}</td>
                                   <td style={TD({ color: r.dcfcEvent?"#c0392b":"#aaa" })}>{r.dcfcEvent?"⚡":""}</td>
                                   <td style={TD({ color: r.isWorstWindow?"#c0392b":"#aaa" })}>{r.isWorstWindow?"●":""}</td>
-                                  <td style={TD({ color: r.isPostWindow?"#207040":"#aaa" })}>{r.isPostWindow?"●":""}</td>
+                                  <td style={TD({ color: r.isPostWindow?"#aaa":"#aaa" })}>{r.isPostWindow?"●":""}</td>
                                   {evColLabels.flatMap((_, i) => {
                                     const away = r.evAway?.[i];
                                     const soc  = r.evKwhEnd?.[i];
@@ -5653,7 +5630,7 @@ function App() {
                               )}
                             </div>
                             <div style={{ borderTop: "1px solid #dee2e6", marginTop: "4px", paddingTop: "4px" }}>
-                              <div style={S2.row}><span style={S2.lbl}>Period</span><span style={{ ...S2.val, color: dr.isWorstWindow?"#c0392b": dr.isPostWindow?"#207040":"#555" }}>{dr.isWorstWindow?"Worst window": dr.isPostWindow?"Post-window":"Spinup"}</span></div>
+                              <div style={S2.row}><span style={S2.lbl}>Period</span><span style={{ ...S2.val, color: dr.isWorstWindow?"#c0392b": dr.isPostWindow?"#555":"#555" }}>{dr.isWorstWindow?"Worst window": dr.isPostWindow?"Post-window":"Spinup"}</span></div>
                             </div>
                           </div>
                         );
