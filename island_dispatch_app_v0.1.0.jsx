@@ -1,6 +1,6 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.108
-// Updated: 2026-04-17 16:00 PT
+// Version: v0.4.109
+// Updated: 2026-04-17 16:30 PT
 // Part of: Wipomo / CCE Solar Tools
 
 "use strict";
@@ -1514,13 +1514,13 @@ function findOptimumGenerator({ mountOptions, pvSizesKw, batteryOptions, genSize
             row.rejection = "wwGenHours_exceed";
             diagRows.push(row); diag.rejectWwHours++; continue;
           }
-          // Annual gen hours — Criterion 2 hard filter
-          const ann = batAlreadyPasses
-            ? { annualGenHours: 0, annualGenCost: 0 }
-            : (annualSolarH && loadAnnual)
-              ? countAnnualGenHours(annualSolarH, loadAnnual, bat.kwh, bat.kw, genKw, fuelCostPerKwHr,
-                                    wwStartH8760, wwLenH8760, lookaheadDays)
-              : { annualGenHours: r.simGenHours, annualGenCost: r.annualGenCost };
+          // Annual gen hours — Criterion 2 hard filter.
+          // Always run the full TMY simulation — worst-window pass does not guarantee the
+          // generator is unused in a typical year (e.g. August low-solar nights can trigger it).
+          const ann = (annualSolarH && loadAnnual)
+            ? countAnnualGenHours(annualSolarH, loadAnnual, bat.kwh, bat.kw, genKw, fuelCostPerKwHr,
+                                  wwStartH8760, wwLenH8760, lookaheadDays)
+            : { annualGenHours: r.simGenHours, annualGenCost: r.annualGenCost };
           row.annGenHours = ann.annualGenHours;
           row.annFuelCostPerYr = ann.annualGenCost;
           if (ann.annualGenHours > genHrLimit) {
@@ -1558,7 +1558,7 @@ function findOptimumGenerator({ mountOptions, pvSizesKw, batteryOptions, genSize
               criterion1GenHours: Math.round(c1hrs * 10) / 10,
               criterion1Pass: c1hrs <= emergencyGenHrLimit,
               pvCost, batCost, genCap, fuelNpv, totalCost,
-              batAlreadyPasses,   // true → battery alone passes stress window, generator not needed in typical year
+              batAlreadyPasses,   // true → battery alone passes stress window (diagnostic only; generator may still run in typical year)
             };
             bestTrace = r.trace;
           }
@@ -4502,7 +4502,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.108</span>
+        <span style={S.version}>v0.4.109</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto"}}>
           <a href="https://tools.cc-energy.org/index.html"
