@@ -1,6 +1,6 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.130
-// Updated: 2026-04-18 05:00 PT
+// Version: v0.4.131
+// Updated: 2026-04-18 06:00 PT
 // Part of: Wipomo / CCE Solar Tools
 
 "use strict";
@@ -624,27 +624,35 @@ function simulatePeriod(solarH, loadH, batKwh, batKw, genKw, evScenario, weather
         }
 
         // Regular trip departure and return
+        // Trip energy is split: one-way deducted at departure (hr=7) so the trace shows the
+        // EV leaving home with less charge, and one-way deducted at return (hr=18) so the
+        // return-leg consumption is visible before any solar top-up in the same timestep.
         if (ev.tripsPerWeek > 0) {
           if (hr === 7 && tripDay && !evAway[i] && !evOnTrip[i]) {
             if (evE[i] >= ev.tripCheckKwh) {
+              const oneWayKwh = ev.tripMiles / ev.efficiency;
+              evE[i] = Math.max(evE[i] - oneWayKwh, 0);  // deduct outbound trip energy now
               evAway[i] = true;
-              if (chargeToday[i] && evE[i] >= ev.roundTripKwh * 1.10) chargeToday[i] = false;
+              // Clear DCFC trigger if remaining charge already covers return trip + 10% buffer
+              if (chargeToday[i] && evE[i] >= oneWayKwh * 1.10) chargeToday[i] = false;
             }
           }
           if (hr === 18 && evAway[i] && !evOnTrip[i]) {
             evAway[i] = false;
             if (ev.destCharging === "l2_free" || ev.destCharging === "l2_paid") {
-              const preDrive = evE[i];
-              // Charged at destination to destL2TargetPct, then drove home (one-way trip energy).
+              // evE[i] is now departure_soc − oneWayKwh (= SOC on arrival at work).
+              // Destination charger topped up to destL2TargetPct; drove home, losing oneWayKwh.
+              const arrivalAtWork = evE[i];  // outbound energy already deducted at hr=7
               evE[i] = Math.max(ev.kwh * ev.destL2TargetPct - ev.tripMiles / ev.efficiency, evMn[i]);
               if (ev.destCharging === "l2_paid" && ev.destChargeRate > 0) {
-                const drivingUsed = ev.tripMiles / ev.efficiency;
-                const preWork = Math.max(preDrive - drivingUsed, evMn[i]);
-                const addedAtWork = Math.max(0, ev.kwh * ev.destL2TargetPct - preWork);
+                // addedAtWork = charge added by the employer charger during the work day
+                const addedAtWork = Math.max(0, ev.kwh * ev.destL2TargetPct - arrivalAtWork);
                 workChargeCostTotal += addedAtWork * ev.destChargeRate;
               }
             } else if (ev.dcfcPlannedPerYear > 0 && chargeToday[i]) {
-              const natural = Math.max(evE[i] - ev.roundTripKwh, 0);
+              // outbound energy already deducted at hr=7; only return-leg remains
+              const oneWayKwh = ev.tripMiles / ev.efficiency;
+              const natural = Math.max(evE[i] - oneWayKwh, 0);
               const added   = Math.max(0, ev.kwh * ev.dcfcTargetPct - natural);
               dcfcKwh += added / CHARGE_RTE; dcfcCount++;
               dcfcThisHour = true;
@@ -655,7 +663,8 @@ function simulatePeriod(solarH, loadH, batKwh, batKw, genKw, evScenario, weather
               evE[i] = ev.kwh * ev.dcfcTargetPct;
               chargeToday[i] = false;
             } else {
-              evE[i] = Math.max(evE[i] - ev.roundTripKwh, 0);
+              // outbound energy already deducted at hr=7; only return-leg remains
+              evE[i] = Math.max(evE[i] - ev.tripMiles / ev.efficiency, 0);
               if (chargeToday[i]) {
                 const added = Math.max(0, ev.kwh * ev.dcfcTargetPct - evE[i]);
                 if (added > 0.1) {
@@ -4894,7 +4903,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.130</span>
+        <span style={S.version}>v0.4.131</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto"}}>
           <a href="https://tools.cc-energy.org/index.html"
