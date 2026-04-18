@@ -1,6 +1,6 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.133
-// Updated: 2026-04-18 09:00 PT
+// Version: v0.4.134
+// Updated: 2026-04-18 10:00 PT
 // Part of: Wipomo / CCE Solar Tools
 
 "use strict";
@@ -1985,6 +1985,8 @@ function App() {
   });
   const [btnFeedback, setBtnFeedback]     = useState(""); // "saved" | "restored" | ""
 
+  const [showHelp, setShowHelp] = useState(false);
+
   // Run state
   const [running, setRunning]         = useState(false);
   const [runStatus, setRunStatus]     = useState("");
@@ -2184,7 +2186,7 @@ function App() {
     setEvseCost(3500); setMaxEmergencyDcfc(5); setMaxEnrouteDcfc(26);
     setNpvYears(10); setDiscountRate(6);
     setGenSizesStr("10"); setFuelCostPerHour(0.50); setGenLookaheadDays(4); setGenInstalledCost(12000);
-    setGenHrLimit(52); setEmergencyGenHrLimit(200); setClimateZone(10); setCfa(1626); setNdu(1); setCriticalLoadKwhPerDay(15);
+    setGenHrLimit(52); setEmergencyGenHrLimit(200); setClimateZone(""); setCfa(""); setNdu(1); setCriticalLoadKwhPerDay(15);
     setLastSavedTime(""); setResult(null);
   };
 
@@ -4926,6 +4928,17 @@ function App() {
 
   // ── Render ────────────────────────────────────────────────────────────────
 
+  // Help modal style helpers
+  const Hd2 = { fontSize:"14px", fontWeight:700, color:"#1a4a7a", marginTop:"18px", marginBottom:"4px", borderBottom:"1px solid #dce3ec", paddingBottom:"3px" };
+  const Hd3 = { fontSize:"13px", fontWeight:700, color:"#333", marginTop:"12px", marginBottom:"3px" };
+  const TBL = { width:"100%", borderCollapse:"collapse", marginTop:"4px", marginBottom:"6px", fontSize:"12px" };
+  const Tr  = ({ l, v }) => (
+    <tr>
+      <td style={{ padding:"3px 8px 3px 0", verticalAlign:"top", width:"34%", color:"#555", fontWeight:500 }}>{l}</td>
+      <td style={{ padding:"3px 0 3px 8px", verticalAlign:"top", borderLeft:"2px solid #e8edf3" }}>{v}</td>
+    </tr>
+  );
+
   return (
     <div>
       <style>{`
@@ -4942,9 +4955,17 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.133</span>
+        <span style={S.version}>v0.4.134</span>
         <span style={S.version}>MOD-06</span>
-        <span style={{...S.tagline, marginLeft:"auto"}}>
+        <span style={{...S.tagline, marginLeft:"auto", display:"flex", alignItems:"center", gap:"10px"}}>
+          <button
+            onClick={() => setShowHelp(true)}
+            title="User manual"
+            style={{ background:"rgba(255,255,255,0.18)", border:"1px solid rgba(255,255,255,0.4)",
+                     color:"#fff", borderRadius:"50%", width:"24px", height:"24px", fontSize:"13px",
+                     fontWeight:700, cursor:"pointer", lineHeight:1, padding:0 }}>
+            ?
+          </button>
           <a href="https://tools.cc-energy.org/index.html"
              style={{color:"rgba(255,255,255,0.7)",textDecoration:"none",fontSize:"12px"}}>
             ← All Tools
@@ -6521,6 +6542,188 @@ function App() {
         </div>
 
       </div>
+
+      {/* ── Help / Manual modal ─────────────────────────────────── */}
+      {showHelp && (
+        <div
+          onClick={() => setShowHelp(false)}
+          style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.55)", zIndex:9999,
+                   display:"flex", alignItems:"center", justifyContent:"center" }}>
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{ background:"#fff", borderRadius:"8px", width:"min(860px,95vw)",
+                     maxHeight:"90vh", display:"flex", flexDirection:"column",
+                     boxShadow:"0 8px 32px rgba(0,0,0,0.35)" }}>
+            {/* Modal header */}
+            <div style={{ padding:"12px 20px", borderBottom:"2px solid #ddd", background:"#1a4a7a",
+                          borderRadius:"8px 8px 0 0", display:"flex", justifyContent:"space-between",
+                          alignItems:"center" }}>
+              <span style={{ color:"#fff", fontWeight:700, fontSize:"15px" }}>
+                MOD-06 Island Dispatch Sizer — User Manual
+              </span>
+              <button onClick={() => setShowHelp(false)}
+                      style={{ background:"rgba(255,255,255,0.2)", border:"none", color:"#fff",
+                               borderRadius:"50%", width:"26px", height:"26px", fontSize:"16px",
+                               cursor:"pointer", lineHeight:1 }}>✕</button>
+            </div>
+            {/* Scrollable content */}
+            <div style={{ padding:"20px 24px", overflowY:"auto", lineHeight:1.7, fontSize:"13px", color:"#222" }}>
+
+              {/* --- Overview --- */}
+              <h2 style={Hd2}>What this tool does</h2>
+              <p>The Island Dispatch Sizer sizes a PV + battery (+ optional generator) system for a fully <em>off-grid</em> home. It sweeps combinations of PV array size and battery bank and finds the lowest-cost configuration that survives the <strong>worst consecutive 10-day low-solar window</strong> in 26 years of NSRDB weather data for your site — while also covering the full calendar year with zero load-shedding.</p>
+              <p style={{marginTop:6}}>Two results are always shown side-by-side: a <strong>battery-only</strong> path and a <strong>battery&nbsp;+&nbsp;generator</strong> path. The annual dispatch chart lets you visually inspect the selected design across a full simulated year.</p>
+
+              {/* --- Inputs --- */}
+              <h2 style={Hd2}>Input fields</h2>
+              <table style={TBL}>
+                <tbody>
+                  <Tr l="Site name / Address" v="Free-text label and geocode lookup. Enter a street address and press ⌖ Geocode — lat/lon are filled automatically. Or enter lat/lon directly." />
+                  <Tr l="Annual load (kWh/yr)" v="Household electricity consumption. 16,000 kWh/yr is a typical all-electric single-family home. Alternatively upload a Green Button hourly CSV for a real load profile." />
+                  <Tr l="Daytime shift %" v="Shifts a fraction of evening load to midday (e.g. pre-cooling, pool pump). Zero for no shift." />
+                  <Tr l="PV sizes (kW)" v="Comma-separated list of AC capacities to sweep. The optimizer tests every combination with every battery." />
+                  <Tr l="Mount types" v="One or more mounting configurations. Each has a cost ($/kW AC), DC:AC ratio, tilt, azimuth, and loss %. PVWatts is called once per mount type per size." />
+                  <Tr l="Battery options" v="Select which battery products to include. Each has an editable installed cost ($/system). The optimizer picks the cheapest option that passes all criteria." />
+                  <Tr l="EV fleet" v="Up to 3 vehicles. EVs can act as additional storage (V2G/V2H) or as a large load. Each EV has its own trip schedule, charge topology, and efficiency." />
+                  <Tr l="Climate zone / Floor area" v="Used for Title 24 §150.1-C code compliance check (minimum battery size). Clear these between sites." />
+                  <Tr l="Generator sizes (kW)" v="Comma-separated list of generator capacities. The generator path sweeps all combinations. Leave as '10' for a standard 10 kW propane unit." />
+                </tbody>
+              </table>
+
+              {/* --- Criteria --- */}
+              <h2 style={Hd2}>Pass/fail criteria</h2>
+              <p>Every (PV kW × battery × generator kW) combination is tested against three criteria:</p>
+              <ol style={{paddingLeft:20, marginTop:4}}>
+                <li><strong>Criterion 1 — 3-day no-solar test:</strong> stationary battery alone must power critical loads for 72 h with zero PV. Checks Title 24 §150.1-C code compliance.</li>
+                <li><strong>Criterion 2 — Worst-window pass:</strong> the full system (PV + battery + EVs if co-designed) must cover 100% of load during the worst 10-day window without running the generator above the emergency limit (200 hr for the window).</li>
+                <li><strong>Criterion 3 — Full-year coverage:</strong> a complete 8,760-hour simulation from Jan 1 must show zero unserved load hours. Systems that survive the worst window may still shed load on other multi-day cloudy stretches; this test catches those.</li>
+              </ol>
+              <p style={{marginTop:6}}>If no battery-only configuration passes all three criteria, the tool shows the closest miss with a ⚠ warning and promotes the battery+generator path.</p>
+
+              {/* --- Annual chart --- */}
+              <h2 style={Hd2}>Annual Dispatch Charts</h2>
+              <p>After a sweep completes, two synchronized charts appear — <em>Battery-only Annual</em> and <em>Generator Annual</em> — each with an <strong>overview strip</strong> and <strong>two detail panels</strong>.</p>
+
+              <h3 style={Hd3}>Overview strip (top band)</h3>
+              <p>365 daily columns. <strong>Click anywhere</strong> on the strip to jump the detail view to that date. The strip encodes:</p>
+              <table style={TBL}>
+                <tbody>
+                  <Tr l="Blue bars" v="Daily average battery state of charge (SOC), stacked below EV bars." />
+                  <Tr l="Amber / green / teal bars" v="Daily average SOC for EV 1 / EV 2 / EV 3 (stacked above battery). Color matches EV curve in the P2 detail panel." />
+                  <Tr l="Orange bars (generator chart only)" v="Generator run-hours per day. Tall bars in winter = frequent generator use." />
+                  <Tr l="Yellow bars at top" v="Daily curtailed solar kWh (normalized). Appears in summer when battery + EVs are full." />
+                  <Tr l="Red bars at top" v="Days with unserved load (hours/day). Should be absent in a passing design." />
+                </tbody>
+              </table>
+
+              <h3 style={Hd3}>Detail panel P1 — Power (kW)</h3>
+              <table style={TBL}>
+                <tbody>
+                  <Tr l={<><span style={{color:"#2a6496"}}>■</span> Blue-green fill</>} v="Solar generation (kW AC)." />
+                  <Tr l={<><span style={{color:"#666600"}}>■</span> Olive overlay</>} v="Curtailed solar — energy that could not be absorbed because battery + EVs were full. Sits on top of the blue-green solar fill." />
+                  <Tr l={<><span style={{color:"#8b2020"}}>■</span> Dark red line</>} v="Total load demand (kW). When solar > load, surplus charges the battery/EVs." />
+                  <Tr l={<><span style={{color:"#c05010"}}>■</span> Orange line/fill (gen chart)</>} v="Generator output (kW). Appears in winter when the battery is running low." />
+                  <Tr l={<><span style={{color:"rgba(192,20,20,0.9)"}}>■</span> Red fill</>} v="Unserved load (kW) — energy the system could not supply. Should be zero in a passing design." />
+                  <Tr l={<><span style={{color:"#0b7a6e"}}>| teal dashed</span></>} v="En-route / planned DCFC event — the EV stopped at a public fast-charger on schedule." />
+                  <Tr l={<><span style={{color:"#c01414"}}>| red solid</span></>} v="Emergency DCFC event — the EV returned home below transport minimum and had to stop for an unplanned charge. Red lines start at 50% of chart height." />
+                </tbody>
+              </table>
+
+              <h3 style={Hd3}>Detail panel P2 — Stored energy (kWh)</h3>
+              <p>Stacked area chart. From bottom to top:</p>
+              <table style={TBL}>
+                <tbody>
+                  <Tr l={<><span style={{color:"#b07010"}}>■</span> Amber area</>} v="EV 1 (least trips/week) state of charge in kWh. EV batteries are ordered by trip frequency — the least-used EV is on the bottom because it is the best storage." />
+                  <Tr l={<><span style={{color:"#107050"}}>■</span> Green area</>} v="EV 2." />
+                  <Tr l={<><span style={{color:"#186090"}}>■</span> Teal area</>} v="EV 3." />
+                  <Tr l={<><span style={{color:"#1a3a90"}}>■</span> Dark blue area</>} v="Stationary battery SOC in kWh. Always on top." />
+                  <Tr l="Dashed reference line" v="Minimum SOC (usable floor, typically 10–20% of rated capacity)." />
+                </tbody>
+              </table>
+
+              <h3 style={Hd3}>EV away-state shading (P2 background)</h3>
+              <p>When an EV is away from home, a <em>semi-transparent colored band</em> fills the P2 background behind its stack layer. The color matches the EV's chart color:</p>
+              <table style={TBL}>
+                <tbody>
+                  <Tr l={<><span style={{color:"#b07010"}}>■</span> Amber tint</>} v="EV 1 is away (commuting or road trip)." />
+                  <Tr l={<><span style={{color:"#107050"}}>■</span> Green tint</>} v="EV 2 is away." />
+                  <Tr l={<><span style={{color:"#186090"}}>■</span> Teal tint</>} v="EV 3 is away. Multiple EVs away simultaneously produce overlapping tints." />
+                </tbody>
+              </table>
+              <p style={{marginTop:4}}>The EV SOC trace is shown even while the EV is away — this lets you see:</p>
+              <ul style={{paddingLeft:20, marginTop:2}}>
+                <li>The <strong>departure dip</strong> at 7 am (outbound trip energy deducted immediately).</li>
+                <li>A <strong>DCFC charge jump</strong> at the event hour (teal dashed line on P1 aligns with SOC rise on P2).</li>
+                <li><strong>Destination L2 charging</strong> raising the SOC while the EV is parked at work or a hotel.</li>
+                <li>The <strong>return dip</strong> at 6 pm / 8 pm when the inbound trip energy is deducted.</li>
+              </ul>
+
+              {/* --- Navigation --- */}
+              <h2 style={Hd2}>Navigating the charts</h2>
+              <table style={TBL}>
+                <tbody>
+                  <Tr l="Click overview strip" v="Centers the detail view on the clicked date. The fastest way to jump to a specific season or event." />
+                  <Tr l="Scroll wheel (hover P1 or P2)" v="Zooms in (fewer hours visible) or out (more hours visible). Range: 2 days to full year." />
+                  <Tr l="← → buttons" v="Pan left or right by half the current window width." />
+                  <Tr l="Range slider" v="Drag to move the window to any position in the year." />
+                  <Tr l="Arrow keys ← →" v="Step ±1 hour. Requires keyboard focus — click anywhere on the chart card first, then use arrow keys for frame-by-frame inspection." />
+                  <Tr l="Battery-only and Generator charts" v="Both charts are always synchronized — zooming or panning one moves the other. The center-of-window values panel updates both columns simultaneously." />
+                </tbody>
+              </table>
+
+              {/* --- Values panel --- */}
+              <h2 style={Hd2}>Center-of-window values panel</h2>
+              <p>The panel below the slider shows the exact values at the <em>center hour</em> of the current zoom window, in two columns — one for each design path.</p>
+              <p style={{marginTop:6}}>Each row also shows a <strong>Δ annotation</strong> (change since the previous hour) with a source label:</p>
+              <table style={TBL}>
+                <tbody>
+                  <Tr l="↑ solar" v="Battery or EV gained charge from solar surplus." />
+                  <Tr l="↑ gen" v="Battery gained charge from the running generator." />
+                  <Tr l="↑ bat→EV" v="Battery discharged to charge the EV (prio-0 emergency top-up — EV was below transport minimum; happens at night with no solar)." />
+                  <Tr l="↑ gen→EV" v="Generator output used to charge the EV directly." />
+                  <Tr l="↓ load / ↓ load/EV" v="Battery discharged to cover house load (and/or EV charging)." />
+                  <Tr l="↓ departed" v="EV SOC dropped because the car left home — outbound trip energy deducted." />
+                  <Tr l="↓ return trip" v="EV SOC dropped on arrival — inbound trip energy deducted." />
+                  <Tr l="↓ trip + ↑ bat→EV" v="Net positive: EV returned from trip AND received emergency battery top-up in the same hour." />
+                  <Tr l="↓ V2H/drive" v="EV battery discharged to power the house (V2G/V2H mode) or consumed by driving." />
+                </tbody>
+              </table>
+
+              {/* --- Phase 1 results --- */}
+              <h2 style={Hd2}>Phase 1 results — comparison cards</h2>
+              <p>Two design columns appear after the sweep:</p>
+              <ul style={{paddingLeft:20}}>
+                <li><strong>Battery-only:</strong> lowest-cost PV + battery that passes all three criteria (or the WW-only best if no annual-passing design exists).</li>
+                <li><strong>Battery + Generator:</strong> lowest-cost configuration including a standby generator. Always shown — it is the recommended path when no battery-only design passes full-year coverage.</li>
+              </ul>
+              <p style={{marginTop:6}}>The cards show criteria pass/fail (✓ / ⚠), NPV cost breakdown, and annual operating costs (en-route and emergency DCFC trip counts, generator fuel).</p>
+
+              {/* --- EV topologies --- */}
+              <h2 style={Hd2}>EV topologies</h2>
+              <table style={TBL}>
+                <tbody>
+                  <Tr l="Topology A — WFH" v="EV is home during solar hours. Acts as primary storage — the EV battery is charged from solar surplus and can export back to the house (V2H). Best off-grid economics." />
+                  <Tr l="Topology B — Commuter, no workplace charging" v="EV absent during solar hours and returns with depleted battery. Creates chronic curtailment in summer and may require emergency DCFC. Usually impractical." />
+                  <Tr l="Topology C — Commuter, free workplace L2" v="Employer grid charges the EV to 95% daily. EV returns home with a full tank — effectively a large battery that costs the employer to fill. Reduces on-site storage needed." />
+                  <Tr l="V2G / V2H" v="A bidirectional EV (e.g. Ford F-150 Lightning) can export back to the house when the stationary battery is depleted. Enable by setting topology to V2G. The EV is always charged before being asked to export." />
+                </tbody>
+              </table>
+
+              {/* --- Tips --- */}
+              <h2 style={Hd2}>Tips</h2>
+              <ul style={{paddingLeft:20}}>
+                <li>If the battery-only path shows ⚠ full-year failures, zoom the annual chart to the flagged period (red bars on overview) to see exactly when and why load is unserved.</li>
+                <li>Emergency DCFC events (red lines on P1) are the strongest signal that the EV fleet sizing is insufficient or that trip schedules are too aggressive for the available solar.</li>
+                <li>Curtailment in summer (olive overlay on P1, yellow on overview) means excess solar — the system is over-built for summer, sized for winter. This is expected for off-grid.</li>
+                <li>Use <strong>Save inputs</strong> to preserve your site configuration. <strong>Reset defaults</strong> clears site-specific data (address, floor area, climate zone, EVs) while keeping product prices.</li>
+                <li>The PVWatts API key is stored separately in your browser and is not cleared by Reset defaults.</li>
+              </ul>
+
+            </div>{/* end scroll */}
+          </div>{/* end modal box */}
+        </div>
+      )}
+
     </div>
   );
 }
