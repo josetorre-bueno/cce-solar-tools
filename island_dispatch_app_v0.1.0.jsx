@@ -1,6 +1,6 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.118
-// Updated: 2026-04-17 22:15 PT
+// Version: v0.4.119
+// Updated: 2026-04-17 22:45 PT
 // Part of: Wipomo / CCE Solar Tools
 
 "use strict";
@@ -594,7 +594,8 @@ function simulatePeriod(solarH, loadH, batKwh, batKw, genKw, evScenario, weather
             evAway[i] = false;
             if (ev.destCharging === "l2_free" || ev.destCharging === "l2_paid") {
               const preDrive = evE[i];
-              evE[i] = ev.kwh * ev.destL2TargetPct;
+              // Charged at destination to destL2TargetPct, then drove home (one-way trip energy).
+              evE[i] = Math.max(ev.kwh * ev.destL2TargetPct - ev.tripMiles / ev.efficiency, evMn[i]);
               if (ev.destCharging === "l2_paid" && ev.destChargeRate > 0) {
                 const drivingUsed = ev.tripMiles / ev.efficiency;
                 const preWork = Math.max(preDrive - drivingUsed, evMn[i]);
@@ -951,23 +952,25 @@ function findOptimum(params) {
 
         // ── Criterion 2: annual full-year coverage ─────────────────────────
         // Only run for WW-passing configs (saves time on clear failures).
-        // V2G EVs are skipped: countAnnualGenHours cannot model V2G discharge, so
-        // we conservatively assume annual coverage passes when the stress window passes.
+        // Annual sim — always includes the full EV fleet so the optimizer can discover
+        // that a smaller stationary battery + EV storage covers the full year.
+        // Running the full 8760-hr simulation gives actual annual DCFC counts with no
+        // extrapolation needed (annualScale = 365/365 = 1 inside simulatePeriod).
         // null = WW failed (annual check skipped entirely).
         let annualUnservedKwh   = null;
         let annualUnservedHours = null;
+        let annualEnrouteDcfc   = null;   // actual full-year count (no scaling)
+        let annualEmergencyDcfc = null;
         if (r.wwPass && loadHourly) {
-          // Annual check always runs on stationary battery alone (evScenario=[]).
-          // For V2G designs: this is conservative — V2G will reduce actual unserved load
-          // during normal days, so the annual trace shows worst-case (stationary-only).
-          // The pass criterion is the same regardless of V2G.
           const annSolarH  = mount.solarNormalized.map(x => x * pvKw);
           const annWeather = buildAnnualWeather(annSolarH.length);
-          const annR = simulatePeriod(annSolarH, loadHourly, bat.kwh, bat.kw, 0, [], annWeather, {
+          const annR = simulatePeriod(annSolarH, loadHourly, bat.kwh, bat.kw, 0, evScenario, annWeather, {
             initialSoc: 1.0,
           });
           annualUnservedKwh   = annR.unservedKwh;
           annualUnservedHours = annR.unservedHours;
+          annualEnrouteDcfc   = annR.simEnrouteDcfcTrips;   // 365-day sim → already full-year count
+          annualEmergencyDcfc = annR.simEmergencyDcfcTrips;
         }
 
         const pvCost   = Math.round(pvKw * mount.pvCostPerKw);
@@ -977,6 +980,7 @@ function findOptimum(params) {
         const npvDcfc  = Math.round(r.annualDcfcCost * npvFactor * 100) / 100;
         const totalCost = Math.round((sysCost + npvDcfc) * 100) / 100;
 
+        // Stress-window DCFC sub-totals (for display — non-WW portion scaled to annual)
         const nonWwEnrouteSim     = r.simEnrouteDcfcTrips  - (r.wwEnrouteDcfcTrips  || 0);
         const nonWwEmergencySim   = r.simEmergencyDcfcTrips - (r.wwEmergencyDcfcTrips || 0);
         const nonWwEnrouteAnnual  = Math.round(nonWwEnrouteSim   * annualScale);
@@ -1017,6 +1021,8 @@ function findOptimum(params) {
           totalCost,
           annualUnservedKwh,      // null = WW failed; 0 = passes annual coverage; >0 = fails
           annualUnservedHours,
+          annualEnrouteDcfc,      // actual full-year en-route DCFC count (null if WW failed)
+          annualEmergencyDcfc,    // actual full-year emergency DCFC count (null if WW failed)
         });
       }
     }
@@ -1025,22 +1031,24 @@ function findOptimum(params) {
   // ── Pass filters ──────────────────────────────────────────────────────────────
   // WW-only: Criterion 3 (worst window) + DCFC limits, no annual check.
   // Used as fallback display when no fully-valid config exists.
+  // DCFC filter uses actual annual counts from the 8760-hr sim (no extrapolation).
   const passingWwOnly = allResults.filter(r =>
     r.wwPass &&
-    r.nonWwAnnualEnrouteDcfc   <= effectiveEnrouteLimit &&
-    r.nonWwAnnualEmergencyDcfc <= effectiveEmergencyLimit
+    (r.annualEnrouteDcfc   ?? 0) <= effectiveEnrouteLimit &&
+    (r.annualEmergencyDcfc ?? 0) <= effectiveEmergencyLimit
   );
   const wwOnlyOptimum = passingWwOnly.length > 0
     ? passingWwOnly.reduce((best, r) => r.totalCost < best.totalCost ? r : best, passingWwOnly[0])
     : null;
 
-  // Full: Criterion 2 (annual coverage) + 3 + DCFC — the true battery-only optimum.
+  // Full: Criterion 2 (annual coverage) + 3 + DCFC — the true optimum.
   // annualUnservedKwh===null means WW failed and annual check was skipped.
+  // DCFC filter uses actual annual counts from the 8760-hr sim (no extrapolation).
   const passing = allResults.filter(r =>
     r.wwPass &&
     r.annualUnservedKwh === 0 &&
-    r.nonWwAnnualEnrouteDcfc   <= effectiveEnrouteLimit &&
-    r.nonWwAnnualEmergencyDcfc <= effectiveEmergencyLimit
+    (r.annualEnrouteDcfc   ?? 0) <= effectiveEnrouteLimit &&
+    (r.annualEmergencyDcfc ?? 0) <= effectiveEmergencyLimit
   );
   const optimum = passing.length > 0
     ? passing.reduce((best, r) => r.totalCost < best.totalCost ? r : best, passing[0])
@@ -4428,7 +4436,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.118</span>
+        <span style={S.version}>v0.4.119</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto"}}>
           <a href="https://tools.cc-energy.org/index.html"
@@ -4976,7 +4984,9 @@ function App() {
                 {/* ── COMPARISON CARD: Battery-Only vs Battery+Generator ── */}
                 <div style={S.compareCard}>
                   <div style={{ fontSize: "15px", fontWeight: 700, color: "#1a4a7a", marginBottom: "12px" }}>
-                    Phase 1 — No-EV System Design
+                    {sweepEvList.length > 0
+                      ? `Phase 1 — Co-designed System (${sweepEvList.length} EV${sweepEvList.length > 1 ? "s" : ""} included in sizing)`
+                      : "Phase 1 — System Sizing (no EVs)"}
                   </div>
                   <div style={{ display: "flex", gap: "12px", flexWrap: "wrap" }}>
 
@@ -5555,17 +5565,22 @@ function App() {
                   )}
                 </div>
 
-                {/* Phase 2: EV impact button + results */}
-                {evList.length > 0 && (
+                {/* Phase 2: EV impact — only for EVs added AFTER the last sweep.
+                    EVs that were part of the sweep are already in the Phase 1 design;
+                    showing "impact" for them would compare the system to itself. */}
+                {evList.length > sweepEvList.length && (
                   <div style={{ ...S.card, background: "#f0f4ff", border: "1px solid #b8cce0", overflowX: "auto" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
                       <div style={{ flex: 1 }}>
                         <div style={{ fontWeight: 700, fontSize: "13px", color: "#1a4a7a", marginBottom: "3px" }}>
-                          Phase 2 — EV Impact Analysis
+                          Post-design EV Addition — Retrofit Impact
+                        </div>
+                        <div style={{ fontSize: "10px", color: "#555", marginBottom: "3px" }}>
+                          {evList.length - sweepEvList.length} EV{evList.length - sweepEvList.length > 1 ? "s" : ""} added after sweep — shows required system changes
                         </div>
                         {chosenPath ? (
                           <div style={{ fontSize: "11px", color: "#555" }}>
-                            Based on <strong>{chosenPath === "battery_gen" ? "Battery + Generator" : "Battery-Only"}</strong> system selected in Phase 1
+                            Based on <strong>{chosenPath === "battery_gen" ? "Battery + Generator" : "Battery-Only"}</strong> system from Phase 1
                           </div>
                         ) : (
                           <div style={{ fontSize: "11px", color: "#856404" }}>
