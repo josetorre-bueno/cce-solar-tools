@@ -1,6 +1,6 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.124
-// Updated: 2026-04-18 00:15 PT
+// Version: v0.4.125
+// Updated: 2026-04-18 01:00 PT
 // Part of: Wipomo / CCE Solar Tools
 
 "use strict";
@@ -1296,6 +1296,7 @@ function countAnnualGenHours(solarH, loadH, batKwh, batKw, genKw, fuelCostPerKwH
     traceBat:          r.traceBat,
     traceGen:          r.traceGen,
     traceUnserved:     r.traceUnserved,
+    traceEvE:          r.traceEvE,   // Float32Array[] per EV, null when no EVs
   };
 }
 
@@ -2977,13 +2978,23 @@ function App() {
                 winSolar, loadHourly, winOpt.batteryKwh, winOpt.batteryKw, winOpt.genKw,
                 fuelCostPerHour, _wwSA, _wwLA, genLookaheadDays, true, sweepFleetScen, erMinKwhSweep
               );
+              // Sort EV fleet ascending by tripsPerWeek — same order as battery-only trace
+              const genEvOrder = sweepFleetScen
+                .map((ev, i) => ({ i, trips: ev.tripsPerWeek || 0, kwh: ev.kwh,
+                                   label: sweepEvList[i]?.label || `EV ${i + 1}` }))
+                .sort((a, b) => a.trips - b.trips);
               genOptResult.annualTrace = {
-                bat: annTr.traceBat,
-                gen: annTr.traceGen,
-                sol: new Float32Array(winSolar),
-                ld:  new Float32Array(loadHourly),
-                batKwh: winOpt.batteryKwh,
-                genKw:  winOpt.genKw,
+                bat:       annTr.traceBat,
+                gen:       annTr.traceGen,
+                unserved:  annTr.traceUnserved,
+                sol:       new Float32Array(winSolar),
+                ld:        new Float32Array(loadHourly),
+                batKwh:    winOpt.batteryKwh,
+                genKw:     winOpt.genKw,
+                evTraces:  genEvOrder.map(e => annTr.traceEvE?.[e.i] || null),
+                evKwh:     genEvOrder.map(e => e.kwh),
+                evLabels:  genEvOrder.map(e => e.label),
+                evTrips:   genEvOrder.map(e => e.trips),
               };
             }
           }
@@ -3331,7 +3342,7 @@ function App() {
     return `Dec 31 ${String(hr).padStart(2,"0")}:00`;
   }
 
-  // Overview canvas — full-year daily aggregates
+  // Overview canvas — generator annual chart, stacked EV+battery + generator hours
   useEffect(() => {
     const trace = result?._genOptResult?.annualTrace;
     const canvas = annOverviewRef.current;
@@ -3340,38 +3351,54 @@ function App() {
     canvas.width  = W;
     canvas.height = 72;
     const H = 72, N = 8760;
-    const { bat, gen, batKwh } = trace;
+    const { bat, gen, batKwh, evTraces, evKwh } = trace;
+    const nEvStack  = (evTraces || []).filter(Boolean).length;
+    const totalKwh  = batKwh + (evKwh ? evKwh.reduce((s, v) => s + v, 0) : 0);
+    const EV_FILL   = ["rgba(200,130,20,0.80)","rgba(20,155,80,0.80)","rgba(20,130,170,0.80)"];
+    const BAT_FILL  = "rgba(30,100,200,0.80)";
     // Daily aggregates
     const dailyGenHrs = new Float32Array(365);
     const dailyBatAvg = new Float32Array(365);
+    const dailyEvAvg  = evTraces ? evTraces.map(() => new Float32Array(365)) : [];
     for (let day = 0; day < 365; day++) {
       let gs = 0, bs = 0;
+      const evSums = new Array(nEvStack).fill(0);
       for (let hr = 0; hr < 24; hr++) {
         const h = day * 24 + hr;
         gs += gen[h]; bs += bat[h];
+        for (let ei = 0; ei < nEvStack; ei++) if (evTraces[ei]) evSums[ei] += evTraces[ei][h];
       }
       dailyGenHrs[day] = gs;
-      dailyBatAvg[day] = bs / 24 / batKwh;
+      dailyBatAvg[day] = bs / 24;
+      for (let ei = 0; ei < nEvStack; ei++) dailyEvAvg[ei][day] = evSums[ei] / 24;
     }
     const ctx = canvas.getContext("2d");
     ctx.fillStyle = "#fff";
     ctx.fillRect(0, 0, W, H);
-    const dw = W / 365;
+    const dw   = W / 365;
+    const barH = H * 0.82;
     for (let day = 0; day < 365; day++) {
       const x = day * dw, w = Math.max(1, dw);
-      // Battery SOC — blue fill from bottom
-      const soc = dailyBatAvg[day];
-      const bh = soc * H * 0.75;
-      ctx.fillStyle = `rgba(30,100,200,${0.12 + soc * 0.5})`;
-      ctx.fillRect(x, H - bh, w, bh);
-      // Generator hours — orange bar from bottom (layered above battery for visibility)
+      let yBase = H;
+      // EV layers (bottom → top: least-used first)
+      for (let ei = 0; ei < nEvStack; ei++) {
+        const bh = (dailyEvAvg[ei][day] / totalKwh) * barH;
+        ctx.fillStyle = EV_FILL[ei % EV_FILL.length];
+        ctx.fillRect(x, yBase - bh, w, bh);
+        yBase -= bh;
+      }
+      // Battery layer on top of EVs
+      const bbh = (dailyBatAvg[day] / totalKwh) * barH;
+      ctx.fillStyle = BAT_FILL;
+      ctx.fillRect(x, yBase - bbh, w, bbh);
+      // Generator hours — orange overlay from bottom
       if (dailyGenHrs[day] > 0) {
-        const gh = (dailyGenHrs[day] / 24) * H * 0.5;
-        ctx.fillStyle = "rgba(210,80,10,0.85)";
+        const gh = (dailyGenHrs[day] / 24) * H * 0.40;
+        ctx.fillStyle = "rgba(210,80,10,0.75)";
         ctx.fillRect(x, H - gh, w, gh);
       }
     }
-    // Month dividers (no text labels — rendered as HTML below the canvas)
+    // Month dividers
     const mStart = [0,31,59,90,120,151,181,212,243,273,304,334];
     mStart.forEach((d) => {
       const x = (d / 365) * W;
@@ -3384,7 +3411,6 @@ function App() {
     ctx.fillRect(z1, 0, z2 - z1, H);
     ctx.strokeStyle = "#1a4a7a"; ctx.lineWidth = 1.5;
     ctx.strokeRect(z1 + 0.5, 0.5, Math.max(1, z2 - z1 - 1), H - 1);
-    // Center tick — thin vertical line at zoom window midpoint
     const zc = (z1 + z2) / 2;
     ctx.strokeStyle = "rgba(40,40,40,0.7)"; ctx.lineWidth = 1;
     ctx.setLineDash([2, 2]);
@@ -3409,29 +3435,34 @@ function App() {
     return () => el.removeEventListener("wheel", handler);
   }, [result]);   // re-attach if result (and therefore the div) changes
 
-  // Detail charts — Power + Battery panels for zoom window
+  // Detail charts — Power + Battery/EV stacked panels for generator annual zoom window
   useEffect(() => {
     const trace = result?._genOptResult?.annualTrace;
     if (!trace || !annP1Ref.current || !annP2Ref.current) return;
     if (annP1Inst.current) { annP1Inst.current.destroy(); annP1Inst.current = null; }
     if (annP2Inst.current) { annP2Inst.current.destroy(); annP2Inst.current = null; }
-    const { bat, gen, sol, ld, batKwh, genKw } = trace;
+    const { bat, gen, unserved, sol, ld, batKwh, genKw, evTraces, evKwh, evLabels } = trace;
+    const nEvStack = (evTraces || []).filter(Boolean).length;
+    const totalKwhStack = batKwh + (evKwh ? evKwh.reduce((s, v) => s + v, 0) : 0);
     const startH = Math.max(0, annZoomH);
     const endH   = Math.min(8760, annZoomH + annZoomW);
     const nHours = endH - startH;
-    // Downsample when > 720 pts (30 days) to keep Chart.js snappy
     const step   = Math.max(1, Math.floor(nHours / 720));
-    const labels = [], solDs = [], ldDs = [], genDs = [], batDs = [];
+    const labels = [], solDs = [], ldDs = [], genDs = [], batDs = [], unsvDs = [];
+    const evDs   = Array.from({ length: nEvStack }, () => []);
     for (let h = startH; h < endH; h += step) {
       labels.push(hourToLabel(h));
       solDs.push(+sol[h].toFixed(2));
       ldDs.push(+ld[h].toFixed(2));
       genDs.push(gen[h] ? genKw : 0);
       batDs.push(+bat[h].toFixed(2));
+      unsvDs.push(unserved ? +(unserved[h].toFixed(2)) : 0);
+      for (let ei = 0; ei < nEvStack; ei++)
+        evDs[ei].push(evTraces[ei] ? +evTraces[ei][h].toFixed(2) : 0);
     }
+    const hasUnsv = unsvDs.some(v => v > 0.01);
     const batMinLine = new Array(labels.length).fill(+(batKwh * BATTERY_MIN_SOC).toFixed(2));
-    // Center line plugin — thin dashed vertical line at midpoint of zoom window
-    const centerIdx = Math.floor(labels.length / 2);
+    const centerIdx  = Math.floor(labels.length / 2);
     const annGenCenterLine = {
       id: 'annGenCenterLine',
       afterDraw(chart) {
@@ -3455,30 +3486,57 @@ function App() {
       plugins: { legend: { labels: { font: { size: 10 }, boxWidth: 10 } }, tooltip: { enabled: false } },
       layout: { padding: { right: 8 } },
     });
-    // Panel 1: Power kW
+    // Panel 1: Power kW — solar, load, generator overlay
     const opt1 = commonOpt(false);
     opt1.scales.y = { title: { display: true, text: "kW", font: { size: 10 } },
       beginAtZero: true, min: 0, ticks: { font: { size: 9 } }, grid: { color: "#f0f0f0" } };
+    const p1Datasets = [
+      { label: "Solar kW",  data: solDs, borderColor: "#d48000", backgroundColor: "rgba(244,160,32,0.25)", fill: true,  tension: 0, pointRadius: 0, borderWidth: 1.5 },
+      { label: "Load kW",   data: ldDs,  borderColor: "#204090", backgroundColor: "rgba(48,96,192,0.12)",  fill: true,  tension: 0, pointRadius: 0, borderWidth: 1.5 },
+      { label: `Generator ${genKw} kW`, data: genDs, borderColor: "#c05010", backgroundColor: "rgba(200,80,20,0.30)", fill: true, tension: 0, pointRadius: 0, borderWidth: 1.5 },
+    ];
+    if (hasUnsv) p1Datasets.push({ label: "⚠ Unserved kW", data: unsvDs, borderColor: "#c01414", backgroundColor: "rgba(192,20,20,0.40)", fill: true, tension: 0, pointRadius: 0, borderWidth: 1.5 });
     annP1Inst.current = new Chart(annP1Ref.current, {
       type: "line",
-      data: { labels, datasets: [
-        { label: "Solar kW",          data: solDs, borderColor: "#d48000", backgroundColor: "rgba(244,160,32,0.25)", fill: true,  tension: 0, pointRadius: 0, borderWidth: 1.5 },
-        { label: "Load kW",           data: ldDs,  borderColor: "#204090", backgroundColor: "rgba(48,96,192,0.12)",  fill: true,  tension: 0, pointRadius: 0, borderWidth: 1.5 },
-        { label: `Generator ${genKw} kW`, data: genDs, borderColor: "#c05010", backgroundColor: "rgba(200,80,20,0.30)", fill: true, tension: 0, pointRadius: 0, borderWidth: 1.5 },
-      ]},
+      data: { labels, datasets: p1Datasets },
       options: opt1,
       plugins: [WHITE_BG, annGenCenterLine],
     });
-    // Panel 2: Battery kWh
+    // Panel 2: Battery + EV stacked kWh (identical logic to battery-only annual chart)
+    const EV_BORDERS = ["#b07010","#107050","#186090"];
+    const EV_BGS     = ["rgba(200,130,20,0.55)","rgba(20,155,80,0.55)","rgba(20,130,170,0.55)"];
     const opt2 = commonOpt(true);
-    opt2.scales.y = { title: { display: true, text: "kWh", font: { size: 10 } },
-      beginAtZero: true, min: 0, max: batKwh * 1.05, ticks: { font: { size: 9 } }, grid: { color: "#f0f0f0" } };
+    const yMax2 = nEvStack > 0 ? totalKwhStack * 1.05 : batKwh * 1.05;
+    opt2.scales.y = { title: { display: true, text: "kWh stored", font: { size: 10 } },
+      stacked: nEvStack > 0,
+      beginAtZero: true, min: 0, max: yMax2, ticks: { font: { size: 9 } }, grid: { color: "#f0f0f0" } };
+    const p2Datasets = [];
+    for (let ei = 0; ei < nEvStack; ei++) {
+      p2Datasets.push({
+        label: evLabels?.[ei] || `EV ${ei + 1}`,
+        data: evDs[ei],
+        borderColor: EV_BORDERS[ei % EV_BORDERS.length],
+        backgroundColor: EV_BGS[ei % EV_BGS.length],
+        fill: true, tension: 0, pointRadius: 0, borderWidth: 1,
+        order: nEvStack - ei,
+      });
+    }
+    p2Datasets.push({
+      label: `Battery (${batKwh} kWh)`,
+      data: batDs,
+      borderColor: "#1a3a90",
+      backgroundColor: nEvStack > 0 ? "rgba(30,80,200,0.60)" : "rgba(32,160,96,0.25)",
+      fill: true, tension: 0, pointRadius: 0, borderWidth: 1.5,
+      order: 0,
+    });
+    if (nEvStack === 0) {
+      p2Datasets.push({ label: `Min SOC (${(batKwh * BATTERY_MIN_SOC).toFixed(1)} kWh)`,
+        data: batMinLine, borderColor: "#107040", borderDash: [4,3],
+        backgroundColor: "transparent", fill: false, pointRadius: 0, borderWidth: 1 });
+    }
     annP2Inst.current = new Chart(annP2Ref.current, {
       type: "line",
-      data: { labels, datasets: [
-        { label: `Battery (${batKwh} kWh)`, data: batDs, borderColor: "#107040", backgroundColor: "rgba(32,160,96,0.25)", fill: true,  tension: 0, pointRadius: 0, borderWidth: 1.5 },
-        { label: `Min SOC (${(batKwh * BATTERY_MIN_SOC).toFixed(1)} kWh)`, data: batMinLine, borderColor: "#107040", borderDash: [4,3], backgroundColor: "transparent", fill: false, pointRadius: 0, borderWidth: 1 },
-      ]},
+      data: { labels, datasets: p2Datasets },
       options: opt2,
       plugins: [WHITE_BG, { ...annGenCenterLine, id: 'annGenCenterLine2' }],
     });
@@ -4542,7 +4600,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.124</span>
+        <span style={S.version}>v0.4.125</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto"}}>
           <a href="https://tools.cc-energy.org/index.html"
