@@ -1,6 +1,6 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.128
-// Updated: 2026-04-18 03:00 PT
+// Version: v0.4.129
+// Updated: 2026-04-18 04:00 PT
 // Part of: Wipomo / CCE Solar Tools
 
 "use strict";
@@ -24,14 +24,22 @@ const BATTERY_LIBRARY = {
   "3x Enphase 10C": { label: "3x Enphase 10C", kwh:  30.0, kw: 21.24, fixedCost: 42000 },
   "4x Enphase 10C": { label: "4x Enphase 10C", kwh:  40.0, kw: 28.32, fixedCost: 56000 },
   "5x Enphase 10C": { label: "5x Enphase 10C", kwh:  50.0, kw: 35.40, fixedCost: 70000 },
-  "6x Enphase 10C": { label: "6x Enphase 10C", kwh:  60.0, kw: 42.48, fixedCost: 84000 },
+  "6x Enphase 10C":  { label: "6x Enphase 10C",  kwh:  60.0, kw: 42.48, fixedCost:  84000 },
+  "7x Enphase 10C":  { label: "7x Enphase 10C",  kwh:  70.0, kw: 49.56, fixedCost:  98000 },
+  "8x Enphase 10C":  { label: "8x Enphase 10C",  kwh:  80.0, kw: 56.64, fixedCost: 112000 },
+  "9x Enphase 10C":  { label: "9x Enphase 10C",  kwh:  90.0, kw: 63.72, fixedCost: 126000 },
+  "10x Enphase 10C": { label: "10x Enphase 10C", kwh: 100.0, kw: 70.80, fixedCost: 140000 },
   // Tesla Powerwall 3 — 13.5 kWh / 11.5 kW per unit (integrated inverter, stackable)
   "1x Powerwall 3": { label: "1x Powerwall 3", kwh:  13.5, kw: 11.5,  fixedCost: 15500 },
   "2x Powerwall 3": { label: "2x Powerwall 3", kwh:  27.0, kw: 23.0,  fixedCost: 31000 },
   "3x Powerwall 3": { label: "3x Powerwall 3", kwh:  40.5, kw: 34.5,  fixedCost: 46500 },
   "4x Powerwall 3": { label: "4x Powerwall 3", kwh:  54.0, kw: 46.0,  fixedCost: 62000 },
   "5x Powerwall 3": { label: "5x Powerwall 3", kwh:  67.5, kw: 57.5,  fixedCost: 77500 },
-  "6x Powerwall 3": { label: "6x Powerwall 3", kwh:  81.0, kw: 69.0,  fixedCost: 93000 },
+  "6x Powerwall 3":  { label: "6x Powerwall 3",  kwh:  81.0, kw:  69.0, fixedCost:  93000 },
+  "7x Powerwall 3":  { label: "7x Powerwall 3",  kwh:  94.5, kw:  80.5, fixedCost: 108500 },
+  "8x Powerwall 3":  { label: "8x Powerwall 3",  kwh: 108.0, kw:  92.0, fixedCost: 124000 },
+  "9x Powerwall 3":  { label: "9x Powerwall 3",  kwh: 121.5, kw: 103.5, fixedCost: 139500 },
+  "10x Powerwall 3": { label: "10x Powerwall 3", kwh: 135.0, kw: 115.0, fixedCost: 155000 },
 };
 
 // ── TITLE 24 TABLE 150.1-C: PV SIZING FACTORS ────────────────────────────────
@@ -427,7 +435,9 @@ function simulatePeriod(solarH, loadH, batKwh, batKw, genKw, evScenario, weather
   const traceCurtailed = returnTrace ? new Float32Array(N) : null;
   // Per-EV energy trace (one Float32Array per EV, only when EVs present + returnTrace)
   const traceEvE      = (returnTrace && nEv > 0) ? evs.map(() => new Float32Array(N)) : null;
-  const traceEvAway   = (returnTrace && nEv > 0) ? evs.map(() => new Uint8Array(N))    : null;
+  const traceEvAway        = (returnTrace && nEv > 0) ? evs.map(() => new Uint8Array(N))    : null;
+  const traceEnrouteDcfc   = (returnTrace && nEv > 0) ? new Uint8Array(N) : null;
+  const traceEmergencyDcfc = (returnTrace && nEv > 0) ? new Uint8Array(N) : null;
 
   // ── MAIN SIMULATION LOOP ───────────────────────────────────────────────────
   for (let h = 0; h < N; h++) {
@@ -485,6 +495,7 @@ function simulatePeriod(solarH, loadH, batKwh, batKw, genKw, evScenario, weather
     const triggerFired = nEv > 0 ? new Array(nEv).fill(false) : [];
     let dcfcThisHour = false;
     let emergencyDcfcThisHour = false;
+    let enrouteDcfcThisHour = false;
     const evKwhStart = nEv > 0 ? [...evE] : [];
     const batKwhStart = batE;
 
@@ -557,6 +568,7 @@ function simulatePeriod(solarH, loadH, batKwh, batKw, genKw, evScenario, weather
               dcfcThisHour = true;
               if (inWw) { wwDcfcKwh += added / CHARGE_RTE; wwDcfcCount++; }
               enrouteDcfcKwh += added / CHARGE_RTE; enrouteDcfcCount++;
+              enrouteDcfcThisHour = true;
               if (inWw) wwEnrouteDcfcCount++;
               evE[i] = dcfcTo;
             }
@@ -568,6 +580,7 @@ function simulatePeriod(solarH, loadH, batKwh, batKw, genKw, evScenario, weather
               dcfcThisHour = true;
               if (inWw) { wwDcfcKwh += added / CHARGE_RTE; wwDcfcCount++; }
               enrouteDcfcKwh += added / CHARGE_RTE; enrouteDcfcCount++;
+              enrouteDcfcThisHour = true;
               if (inWw) wwEnrouteDcfcCount++;
               evE[i] = dcfcTo;
             }
@@ -590,6 +603,7 @@ function simulatePeriod(solarH, loadH, batKwh, batKw, genKw, evScenario, weather
             dcfcThisHour = true;
             if (inWw) { wwDcfcKwh += added / CHARGE_RTE; wwDcfcCount++; }
             enrouteDcfcKwh += added / CHARGE_RTE; enrouteDcfcCount++;
+            enrouteDcfcThisHour = true;
             if (inWw) wwEnrouteDcfcCount++;
             evE[i] = rtDcfcTarget - rtOneWayKwh;
           } else {
@@ -636,6 +650,7 @@ function simulatePeriod(solarH, loadH, batKwh, batKw, genKw, evScenario, weather
               dcfcThisHour = true;
               if (inWw) { wwDcfcKwh += added / CHARGE_RTE; wwDcfcCount++; }
               enrouteDcfcKwh += added / CHARGE_RTE; enrouteDcfcCount++;
+              enrouteDcfcThisHour = true;
               if (inWw) wwEnrouteDcfcCount++;
               evE[i] = ev.kwh * ev.dcfcTargetPct;
               chargeToday[i] = false;
@@ -862,6 +877,8 @@ function simulatePeriod(solarH, loadH, batKwh, batKw, genKw, evScenario, weather
       if (traceEvE) for (let i = 0; i < nEv; i++) traceEvE[i][h] = evE[i];
       if (traceCurtailed) traceCurtailed[h] = Math.max(0, excess);
       if (traceEvAway)   for (let i = 0; i < nEv; i++) traceEvAway[i][h] = evAway[i] ? 1 : 0;
+      if (traceEnrouteDcfc)   traceEnrouteDcfc[h]   = enrouteDcfcThisHour   ? 1 : 0;
+      if (traceEmergencyDcfc) traceEmergencyDcfc[h] = emergencyDcfcThisHour ? 1 : 0;
     }
   }  // end main loop
 
@@ -908,7 +925,9 @@ function simulatePeriod(solarH, loadH, batKwh, batKw, genKw, evScenario, weather
     result.traceUnserved = traceUnserved;
     result.traceEvE = traceEvE;   // Float32Array[] — one per EV, null when no EVs
     result.traceCurtailed = traceCurtailed; // Float32Array — curtailed solar kW per hour
-    result.traceEvAway    = traceEvAway;   // Uint8Array[] per EV — 1 when EV is away from home
+    result.traceEvAway      = traceEvAway;   // Uint8Array[] per EV — 1 when EV is away from home
+    result.traceEnrouteDcfc   = traceEnrouteDcfc;   // Uint8Array — 1 when en-route DCFC occurred this hour
+    result.traceEmergencyDcfc = traceEmergencyDcfc; // Uint8Array — 1 when emergency DCFC occurred this hour
   }
   return result;
 }
@@ -1305,6 +1324,8 @@ function countAnnualGenHours(solarH, loadH, batKwh, batKw, genKw, fuelCostPerKwH
     traceEvE:          r.traceEvE,   // Float32Array[] per EV, null when no EVs
     traceCurtailed:    r.traceCurtailed,
   traceEvAway:       r.traceEvAway,
+  traceEnrouteDcfc:   r.traceEnrouteDcfc,
+  traceEmergencyDcfc: r.traceEmergencyDcfc,
   };
 }
 
@@ -1889,7 +1910,9 @@ function App() {
   // Battery selection
   const [selectedBatteries, setSelectedBatteries] = useState(new Set([
     "1x Powerwall 3", "2x Powerwall 3", "3x Powerwall 3", "4x Powerwall 3", "5x Powerwall 3", "6x Powerwall 3",
+    "7x Powerwall 3", "8x Powerwall 3", "9x Powerwall 3", "10x Powerwall 3",
     "1x Enphase 10C", "2x Enphase 10C", "3x Enphase 10C", "4x Enphase 10C", "5x Enphase 10C", "6x Enphase 10C",
+    "7x Enphase 10C", "8x Enphase 10C", "9x Enphase 10C", "10x Enphase 10C",
   ]));
   // Per-system installed cost ($/system) for each battery option. Editable in the UI.
   // Defaults from BATTERY_LIBRARY.fixedCost; user can override to match actual quotes.
@@ -2907,6 +2930,8 @@ function App() {
               evKwh:        evOrder.map(e => e.kwh),
               evLabels:     evOrder.map(e => e.label),
               evTrips:      evOrder.map(e => e.trips),
+              enrouteDcfc:   batAnnTr.traceEnrouteDcfc,
+              emergencyDcfc: batAnnTr.traceEmergencyDcfc,
             };
           }
         }
@@ -3007,6 +3032,8 @@ function App() {
                 evKwh:        genEvOrder.map(e => e.kwh),
                 evLabels:     genEvOrder.map(e => e.label),
                 evTrips:      genEvOrder.map(e => e.trips),
+                enrouteDcfc:   annTr.traceEnrouteDcfc,
+                emergencyDcfc: annTr.traceEmergencyDcfc,
               };
             }
           }
@@ -3503,6 +3530,16 @@ function App() {
     const hasUnsv = unsvDs.some(v => v > 0.01);
     const hasCurt = curtDs.some(v => v > 0.01);
     const solarBotDs = solDs.map((s, i) => Math.max(0, s - curtDs[i]));
+    // Collect DCFC event hours for vertical line drawing
+    const enrouteDcfcHours   = [];
+    const emergencyDcfcHours = [];
+    if (trace.enrouteDcfc || trace.emergencyDcfc) {
+      for (let h = startH; h < endH; h++) {
+        if (trace.enrouteDcfc?.[h])   enrouteDcfcHours.push(h - startH);
+        if (trace.emergencyDcfc?.[h]) emergencyDcfcHours.push(h - startH);
+      }
+    }
+    const hasDcfc = enrouteDcfcHours.length > 0 || emergencyDcfcHours.length > 0;
     const batMinLine = new Array(labels.length).fill(+(batKwh * BATTERY_MIN_SOC).toFixed(2));
     const centerIdx  = Math.floor(labels.length / 2);
     const annGenCenterLine = {
@@ -3550,11 +3587,46 @@ function App() {
     const opt1 = commonOpt(false);
     opt1.scales.y = { title: { display: true, text: "kW", font: { size: 10 } },
       beginAtZero: true, min: 0, ticks: { font: { size: 9 } }, grid: { color: "#f0f0f0" } };
-    if (hasCurt) opt1.plugins.legend.labels = { font: { size: 10 }, boxWidth: 10, generateLabels(chart) {
-      const items = Chart.defaults.plugins.legend.labels.generateLabels(chart).filter(item => !chart.data.datasets[item.datasetIndex]?._curtBot);
-      items.push({ text: "Curtailed solar", fillStyle: "rgba(140,140,0,0.45)", strokeStyle: "rgba(0,0,0,0)", lineWidth: 0, hidden: false, datasetIndex: null, pointStyle: "rect" });
-      return items;
-    }};
+    if (hasCurt || hasDcfc) {
+      opt1.plugins.legend.labels = { font: { size: 10 }, boxWidth: 10, generateLabels(chart) {
+        const items = Chart.defaults.plugins.legend.labels.generateLabels(chart).filter(item => !chart.data.datasets[item.datasetIndex]?._curtBot);
+        if (hasCurt) items.push({ text: "Curtailed solar", fillStyle: "rgba(140,140,0,0.45)", strokeStyle: "rgba(0,0,0,0)", lineWidth: 0, hidden: false, datasetIndex: null, pointStyle: "rect" });
+        if (enrouteDcfcHours.length)   items.push({ text: "En-route DCFC",  fillStyle: "transparent", strokeStyle: "rgba(0,140,130,0.75)",  lineWidth: 1.5, hidden: false, datasetIndex: null, pointStyle: "line" });
+        if (emergencyDcfcHours.length) items.push({ text: "Emergency DCFC", fillStyle: "transparent", strokeStyle: "rgba(192,20,20,0.80)",  lineWidth: 1.5, hidden: false, datasetIndex: null, pointStyle: "line" });
+        return items;
+      }};
+    }
+    const annDcfcPlugin = {
+      id: "annGenDcfcLines",
+      afterDraw(chart) {
+        if (!enrouteDcfcHours.length && !emergencyDcfcHours.length) return;
+        const { ctx, chartArea } = chart;
+        if (!chartArea) return;
+        const W = chartArea.right - chartArea.left;
+        const totalPts = labels.length;
+        ctx.save();
+        ctx.strokeStyle = "rgba(0,140,130,0.75)";
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([4, 3]);
+        for (const idx of enrouteDcfcHours) {
+          const sampleIdx = Math.floor(idx / step);
+          if (sampleIdx >= totalPts) continue;
+          const x = chartArea.left + (sampleIdx / (totalPts - 1)) * W;
+          ctx.beginPath(); ctx.moveTo(x, chartArea.top); ctx.lineTo(x, chartArea.bottom); ctx.stroke();
+        }
+        ctx.strokeStyle = "rgba(192,20,20,0.80)";
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([]);
+        for (const idx of emergencyDcfcHours) {
+          const sampleIdx = Math.floor(idx / step);
+          if (sampleIdx >= totalPts) continue;
+          const x = chartArea.left + (sampleIdx / (totalPts - 1)) * W;
+          const H = chartArea.bottom - chartArea.top;
+          ctx.beginPath(); ctx.moveTo(x, chartArea.top + H * 0.5); ctx.lineTo(x, chartArea.bottom); ctx.stroke();
+        }
+        ctx.restore();
+      }
+    };
     const p1Datasets = [
       { label: "Solar kW",  data: solDs, borderColor: "#d48000", backgroundColor: "rgba(244,160,32,0.25)", fill: true,  tension: 0, pointRadius: 0, borderWidth: 1.5 },
       { label: "Load kW",   data: ldDs,  borderColor: "#204090", backgroundColor: "rgba(48,96,192,0.12)",  fill: true,  tension: 0, pointRadius: 0, borderWidth: 1.5 },
@@ -3566,7 +3638,7 @@ function App() {
       type: "line",
       data: { labels, datasets: p1Datasets },
       options: opt1,
-      plugins: [WHITE_BG, annGenCenterLine, annGenCurtPlugin],
+      plugins: [WHITE_BG, annGenCenterLine, annGenCurtPlugin, annDcfcPlugin],
     });
     // EV-away background shading plugin for P2
     const annGenEvAwayPlugin = {
@@ -3781,6 +3853,16 @@ function App() {
     const hasUnsv = unsvDs.some(v => v > 0.01);
     const hasCurt = curtDs.some(v => v > 0.01);
     const solarBotDs = solDs.map((s, i) => Math.max(0, s - curtDs[i]));
+    // Collect DCFC event hours for vertical line drawing
+    const enrouteDcfcHours   = [];
+    const emergencyDcfcHours = [];
+    if (trace.enrouteDcfc || trace.emergencyDcfc) {
+      for (let h = startH; h < endH; h++) {
+        if (trace.enrouteDcfc?.[h])   enrouteDcfcHours.push(h - startH);
+        if (trace.emergencyDcfc?.[h]) emergencyDcfcHours.push(h - startH);
+      }
+    }
+    const hasDcfc = enrouteDcfcHours.length > 0 || emergencyDcfcHours.length > 0;
     const batMinLine = new Array(labels.length).fill(+(batKwh * BATTERY_MIN_SOC).toFixed(2));
     const centerIdx = Math.floor(labels.length / 2);
     const annCenterLine = {
@@ -3827,11 +3909,46 @@ function App() {
     const opt1 = commonOpt(false);
     opt1.scales.y = { title: { display: true, text: "kW", font: { size: 10 } },
       beginAtZero: true, min: 0, ticks: { font: { size: 9 } }, grid: { color: "#f0f0f0" } };
-    if (hasCurt) opt1.plugins.legend.labels = { font: { size: 10 }, boxWidth: 10, generateLabels(chart) {
-      const items = Chart.defaults.plugins.legend.labels.generateLabels(chart).filter(item => !chart.data.datasets[item.datasetIndex]?._curtBot);
-      items.push({ text: "Curtailed solar", fillStyle: "rgba(140,140,0,0.45)", strokeStyle: "rgba(0,0,0,0)", lineWidth: 0, hidden: false, datasetIndex: null, pointStyle: "rect" });
-      return items;
-    }};
+    if (hasCurt || hasDcfc) {
+      opt1.plugins.legend.labels = { font: { size: 10 }, boxWidth: 10, generateLabels(chart) {
+        const items = Chart.defaults.plugins.legend.labels.generateLabels(chart).filter(item => !chart.data.datasets[item.datasetIndex]?._curtBot);
+        if (hasCurt) items.push({ text: "Curtailed solar", fillStyle: "rgba(140,140,0,0.45)", strokeStyle: "rgba(0,0,0,0)", lineWidth: 0, hidden: false, datasetIndex: null, pointStyle: "rect" });
+        if (enrouteDcfcHours.length)   items.push({ text: "En-route DCFC",  fillStyle: "transparent", strokeStyle: "rgba(0,140,130,0.75)",  lineWidth: 1.5, hidden: false, datasetIndex: null, pointStyle: "line" });
+        if (emergencyDcfcHours.length) items.push({ text: "Emergency DCFC", fillStyle: "transparent", strokeStyle: "rgba(192,20,20,0.80)",  lineWidth: 1.5, hidden: false, datasetIndex: null, pointStyle: "line" });
+        return items;
+      }};
+    }
+    const annBatDcfcPlugin = {
+      id: "annBatDcfcLines",
+      afterDraw(chart) {
+        if (!enrouteDcfcHours.length && !emergencyDcfcHours.length) return;
+        const { ctx, chartArea } = chart;
+        if (!chartArea) return;
+        const W = chartArea.right - chartArea.left;
+        const totalPts = labels.length;
+        ctx.save();
+        ctx.strokeStyle = "rgba(0,140,130,0.75)";
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([4, 3]);
+        for (const idx of enrouteDcfcHours) {
+          const sampleIdx = Math.floor(idx / step);
+          if (sampleIdx >= totalPts) continue;
+          const x = chartArea.left + (sampleIdx / (totalPts - 1)) * W;
+          ctx.beginPath(); ctx.moveTo(x, chartArea.top); ctx.lineTo(x, chartArea.bottom); ctx.stroke();
+        }
+        ctx.strokeStyle = "rgba(192,20,20,0.80)";
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([]);
+        for (const idx of emergencyDcfcHours) {
+          const sampleIdx = Math.floor(idx / step);
+          if (sampleIdx >= totalPts) continue;
+          const x = chartArea.left + (sampleIdx / (totalPts - 1)) * W;
+          const H = chartArea.bottom - chartArea.top;
+          ctx.beginPath(); ctx.moveTo(x, chartArea.top + H * 0.5); ctx.lineTo(x, chartArea.bottom); ctx.stroke();
+        }
+        ctx.restore();
+      }
+    };
     const p1Datasets = [
       { label: "Solar kW", data: solDs, borderColor: "#d48000", backgroundColor: "rgba(244,160,32,0.25)", fill: true,  tension: 0, pointRadius: 0, borderWidth: 1.5 },
       { label: "Load kW",  data: ldDs,  borderColor: "#204090", backgroundColor: "rgba(48,96,192,0.12)",  fill: true,  tension: 0, pointRadius: 0, borderWidth: 1.5 },
@@ -3844,7 +3961,7 @@ function App() {
       type: "line",
       data: { labels, datasets: p1Datasets },
       options: opt1,
-      plugins: [WHITE_BG, annCenterLine, annBatCurtPlugin],
+      plugins: [WHITE_BG, annCenterLine, annBatCurtPlugin, annBatDcfcPlugin],
     });
     const EV_BORDERS = ["#b07010","#107050","#186090"];
     const EV_BGS     = ["rgba(200,130,20,0.55)","rgba(20,155,80,0.55)","rgba(20,130,170,0.55)"];
@@ -4771,7 +4888,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.128</span>
+        <span style={S.version}>v0.4.129</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto"}}>
           <a href="https://tools.cc-energy.org/index.html"
@@ -5639,12 +5756,15 @@ function App() {
                   return (
                     <>
                       {/* Shared zoom controls + center-of-window values panel */}
-                      <div style={S.card}>
+                      <div style={S.card} tabIndex={0} onKeyDown={e => {
+                        if (e.key === "ArrowLeft")  { e.preventDefault(); setAnnZoomH(h => Math.max(0, h - 1)); }
+                        if (e.key === "ArrowRight") { e.preventDefault(); setAnnZoomH(h => Math.min(Math.max(0, 8760 - annZoomW), h + 1)); }
+                      }}>
                         <div style={{ fontSize: "12px", fontWeight: 700, color: "#333", marginBottom: "6px" }}>
                           📅 Annual Dispatch — Comparison
                         </div>
                         <div style={{ fontSize: "10px", color: "#666", marginBottom: "4px" }}>
-                          Scroll wheel on any chart to zoom · click any overview to navigate · dashed line = values shown below
+                          Scroll wheel to zoom · click overview to navigate · arrow keys (when focused) = ±1 hr · dashed line = center values
                         </div>
 
                         {/* Center-of-window values panel — two columns */}
@@ -5654,41 +5774,99 @@ function App() {
                           </div>
                           <div style={{ display: "flex", gap: "12px" }}>
                             {/* Battery (+ EV if co-designed) column */}
-                            {batTr && batOpt && (
-                              <div style={{ flex: 1, fontSize: "10px", lineHeight: 1.9, minWidth: 0 }}>
-                                <div style={{ fontWeight: 700, color: "#155724", marginBottom: "2px", borderBottom: "1px solid #b8d6c0", paddingBottom: "2px" }}>
-                                  🔋 {sweepEvList.length > 0 ? `Battery + ${sweepEvList.length} EV` : "Battery-only"} — {batOpt.pvKw} kW · {batOpt.batteryLabel}
+                            {batTr && batOpt && (() => {
+                              const sol    = batTr.sol?.[centerH] || 0;
+                              const ld     = batTr.ld?.[centerH]  || 0;
+                              const bat    = batTr.bat?.[centerH] || 0;
+                              const curt   = batTr.curtailed?.[centerH] || 0;
+                              const unsrv  = batTr.unserved?.[centerH]  || 0;
+                              const nEv    = (batTr.evTraces || []).filter(Boolean).length;
+                              const EV_COLORS = ["#b07010","#107050","#186090","#8b2020"];
+                              return (
+                                <div style={{ flex: 1, fontSize: "10px", lineHeight: 1.9, minWidth: 0 }}>
+                                  <div style={{ fontWeight: 700, color: "#155724", marginBottom: "2px", borderBottom: "1px solid #b8d6c0", paddingBottom: "2px" }}>
+                                    🔋 {sweepEvList.length > 0 ? `Battery + ${sweepEvList.length} EV` : "Battery-only"} — {batOpt.pvKw} kW · {batOpt.batteryLabel}
+                                  </div>
+                                  <div><span style={{ color: "#888" }}>Solar:</span> <strong>{sol.toFixed(2)} kW</strong></div>
+                                  <div><span style={{ color: "#888" }}>Load:</span> <strong>{ld.toFixed(2)} kW</strong></div>
+                                  {curt > 0.01 && <div style={{ color: "#996600" }}><span style={{ color: "#888" }}>Curtailed PV:</span> <strong>{curt.toFixed(2)} kW</strong></div>}
+                                  <div>
+                                    <span style={{ color: unsrv > 0.01 ? "#c01414" : "#888" }}>Unserved (checksum):</span>{" "}
+                                    {unsrv > 0.01
+                                      ? <strong style={{ color: "#c01414" }}>⚠ {unsrv.toFixed(2)} kW</strong>
+                                      : <strong style={{ color: "#155724" }}>✓ 0 kW</strong>}
+                                  </div>
+                                  <div style={{ marginTop: "3px", borderTop: "1px solid #ccc", paddingTop: "2px" }}>
+                                    <span style={{ color: "#888" }}>Battery SOC:</span>{" "}
+                                    <strong>{fmtKwh(bat)} kWh</strong>
+                                    <span style={{ color: "#888", marginLeft: "4px" }}>({batTr.batKwh > 0 ? Math.round(bat / batTr.batKwh * 100) : 0}%)</span>
+                                  </div>
+                                  {Array.from({ length: nEv }, (_, ei) => {
+                                    const evKwh  = batTr.evTraces[ei]?.[centerH] || 0;
+                                    const evCap  = batTr.evKwh?.[ei]  || 1;
+                                    const isAway = batTr.evAwayTraces?.[ei]?.[centerH];
+                                    const label  = batTr.evLabels?.[ei] || `EV ${ei+1}`;
+                                    return (
+                                      <div key={ei} style={{ color: EV_COLORS[ei % 4] }}>
+                                        <span style={{ color: "#888" }}>{label}:</span>{" "}
+                                        {isAway
+                                          ? <span style={{ color: "#999" }}>Away</span>
+                                          : <><strong>{evKwh.toFixed(1)} kWh</strong><span style={{ color: "#888", marginLeft: "4px" }}>({Math.round(evKwh / evCap * 100)}%)</span></>}
+                                      </div>
+                                    );
+                                  })}
                                 </div>
-                                <div><span style={{ color: "#888" }}>Solar:</span> <strong>{fmtKw(batTr.sol[centerH])} kW</strong></div>
-                                <div><span style={{ color: "#888" }}>Load:</span> <strong>{fmtKw(batTr.ld[centerH])} kW</strong></div>
-                                <div><span style={{ color: "#888" }}>Battery:</span> <strong>{fmtKwh(batTr.bat[centerH])} kWh</strong>
-                                  <span style={{ color: "#888", marginLeft: "4px" }}>({batTr.batKwh > 0 ? Math.round(batTr.bat[centerH] / batTr.batKwh * 100) : 0}%)</span>
-                                </div>
-                                {batTr.unserved && batTr.unserved[centerH] > 0.01 ? (
-                                  <div style={{ color: "#c01414" }}><strong>⚠ Unserved: {fmtKw(batTr.unserved[centerH])} kW</strong></div>
-                                ) : (
-                                  <div style={{ color: "#155724" }}>✓ Load served</div>
-                                )}
-                              </div>
-                            )}
+                              );
+                            })()}
                             {/* Generator column */}
-                            {genTr && genOpt && (
-                              <div style={{ flex: 1, fontSize: "10px", lineHeight: 1.9, minWidth: 0 }}>
-                                <div style={{ fontWeight: 700, color: "#6b4a10", marginBottom: "2px", borderBottom: "1px solid #e0c870", paddingBottom: "2px" }}>
-                                  ⚡ Battery + Gen — {genOpt.pvKw} kW · {genOpt.batteryLabel} · {genOpt.genKw} kW
+                            {genTr && genOpt && (() => {
+                              const sol    = genTr.sol?.[centerH]       || 0;
+                              const ld     = genTr.ld?.[centerH]        || 0;
+                              const bat    = genTr.bat?.[centerH]       || 0;
+                              const curt   = genTr.curtailed?.[centerH] || 0;
+                              const unsrv  = genTr.unserved?.[centerH]  || 0;
+                              const genOn  = genTr.gen?.[centerH]       || 0;
+                              const nEv    = (genTr.evTraces || []).filter(Boolean).length;
+                              const EV_COLORS = ["#b07010","#107050","#186090","#8b2020"];
+                              return (
+                                <div style={{ flex: 1, fontSize: "10px", lineHeight: 1.9, minWidth: 0 }}>
+                                  <div style={{ fontWeight: 700, color: "#6b4a10", marginBottom: "2px", borderBottom: "1px solid #e0c870", paddingBottom: "2px" }}>
+                                    ⚡ Battery + Gen — {genOpt.pvKw} kW · {genOpt.batteryLabel} · {genOpt.genKw} kW
+                                  </div>
+                                  <div><span style={{ color: "#888" }}>Solar:</span> <strong>{sol.toFixed(2)} kW</strong></div>
+                                  <div><span style={{ color: "#888" }}>Load:</span> <strong>{ld.toFixed(2)} kW</strong></div>
+                                  {curt > 0.01 && <div style={{ color: "#996600" }}><span style={{ color: "#888" }}>Curtailed PV:</span> <strong>{curt.toFixed(2)} kW</strong></div>}
+                                  <div>
+                                    <span style={{ color: unsrv > 0.01 ? "#c01414" : "#888" }}>Unserved (checksum):</span>{" "}
+                                    {unsrv > 0.01
+                                      ? <strong style={{ color: "#c01414" }}>⚠ {unsrv.toFixed(2)} kW</strong>
+                                      : <strong style={{ color: "#155724" }}>✓ 0 kW</strong>}
+                                  </div>
+                                  <div style={{ marginTop: "3px", borderTop: "1px solid #ccc", paddingTop: "2px" }}>
+                                    <span style={{ color: "#888" }}>Battery SOC:</span>{" "}
+                                    <strong>{fmtKwh(bat)} kWh</strong>
+                                    <span style={{ color: "#888", marginLeft: "4px" }}>({genTr.batKwh > 0 ? Math.round(bat / genTr.batKwh * 100) : 0}%)</span>
+                                  </div>
+                                  {Array.from({ length: nEv }, (_, ei) => {
+                                    const evKwh  = genTr.evTraces[ei]?.[centerH] || 0;
+                                    const evCap  = genTr.evKwh?.[ei]  || 1;
+                                    const isAway = genTr.evAwayTraces?.[ei]?.[centerH];
+                                    const label  = genTr.evLabels?.[ei] || `EV ${ei+1}`;
+                                    return (
+                                      <div key={ei} style={{ color: EV_COLORS[ei % 4] }}>
+                                        <span style={{ color: "#888" }}>{label}:</span>{" "}
+                                        {isAway
+                                          ? <span style={{ color: "#999" }}>Away</span>
+                                          : <><strong>{evKwh.toFixed(1)} kWh</strong><span style={{ color: "#888", marginLeft: "4px" }}>({Math.round(evKwh / evCap * 100)}%)</span></>}
+                                      </div>
+                                    );
+                                  })}
+                                  <div style={{ marginTop: "3px", borderTop: "1px solid #ccc", paddingTop: "2px", color: genOn ? "#c05010" : "#555" }}>
+                                    🔧 Generator: <strong>{genOn ? `${genTr.genKw} kW running` : "off"}</strong>
+                                  </div>
                                 </div>
-                                <div><span style={{ color: "#888" }}>Solar:</span> <strong>{fmtKw(genTr.sol[centerH])} kW</strong></div>
-                                <div><span style={{ color: "#888" }}>Load:</span> <strong>{fmtKw(genTr.ld[centerH])} kW</strong></div>
-                                <div><span style={{ color: "#888" }}>Battery:</span> <strong>{fmtKwh(genTr.bat[centerH])} kWh</strong>
-                                  <span style={{ color: "#888", marginLeft: "4px" }}>({genTr.batKwh > 0 ? Math.round(genTr.bat[centerH] / genTr.batKwh * 100) : 0}%)</span>
-                                </div>
-                                {genTr.gen && genTr.gen[centerH] ? (
-                                  <div style={{ color: "#c05010" }}>🔧 Generator: <strong>{genTr.genKw} kW running</strong></div>
-                                ) : (
-                                  <div style={{ color: "#555" }}>Generator: off</div>
-                                )}
-                              </div>
-                            )}
+                              );
+                            })()}
                             {!batTr && !genTr && (
                               <div style={{ fontSize: "10px", color: "#888" }}>No annual trace available.</div>
                             )}
@@ -6232,644 +6410,6 @@ function App() {
           </div>
         </div>
 
-        {/* ── FULL-WIDTH CHART SECTION ── */}
-        {result && result._traceData && (
-          <div style={{ marginTop: "16px" }}>
-
-            {/* EV dispatch chart — full width */}
-            {(!chosenPath || chosenPath === "battery_only") && <div style={S.card}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "6px" }}>
-                <div style={S.cardTitle}>
-                  {result.optimum
-                    ? `Battery-Only Dispatch — ${result.optimum.pvKw} kW PV · ${result.optimum.batteryLabel} · no generator`
-                    : "Battery-Only Dispatch — no passing config"}
-                </div>
-                <button style={{ ...S.btnSmall, fontSize: "11px", padding: "3px 12px" }}
-                  onClick={() => downloadMultiPanel([evP1Ref, evP2Ref], `ev_dispatch_${siteName.replace(/\s+/g, "_")}.png`)}>
-                  Save PNG
-                </button>
-              </div>
-              <div style={{ fontSize: "11px", color: "#888", marginBottom: "8px" }}>
-                Worst-window period (light red tint). Panel 1: solar vs load kW. Panel 2: battery + EV SOC in kWh. Red dashed verticals = DCFC top-off events. Hover for values →
-              </div>
-              <div style={{ display: "flex", gap: "12px", alignItems: "flex-start" }}>
-                <div ref={evChartContainerRef} style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ position: "relative", height: "260px" }}><canvas ref={evP1Ref} /></div>
-                  <div style={{ position: "relative", height: "280px" }}><canvas ref={evP2Ref} /></div>
-                </div>
-                <div style={{ width: "170px", flexShrink: 0, fontSize: "11px", fontFamily: "monospace", paddingTop: "4px" }}>
-                  {(() => {
-                    const displayRow = pinnedEvRow || evHoverRow;
-                    const isPinned = !!pinnedEvRow;
-                    if (!displayRow) return (
-                      <div style={{ color: "#bbb", paddingTop: "80px", textAlign: "center" }}>
-                        ← hover<br/>right-click to pin
-                      </div>
-                    );
-                    const S2 = { row: { display:"flex", justifyContent:"space-between", marginBottom:"2px" }, lbl: { color:"#666" }, val: { textAlign:"right" } };
-                    const csvRow = () => {
-                      const fields = ["month","day","hourOfDay","solarKw","loadKw","curtailed","unserved","batKwhEnd","dcfcEvent","isWorstWindow","isPostWindow"];
-                      const header = fields.join(",");
-                      const evFields = displayRow.evKwhEnd.map((v,i) => `evKwh_${i}:${v.toFixed(2)}`).join(" ");
-                      const vals = fields.map(f => displayRow[f] !== undefined ? String(displayRow[f]) : "").join(",");
-                      const blob = new Blob([header + "\n" + vals + "\nEV:" + evFields], { type: "text/csv" });
-                      const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
-                      a.download = `ev_detail_${displayRow.month}_${displayRow.day}_h${displayRow.hourOfDay}.csv`; a.click();
-                    };
-                    return (
-                      <div style={{ background: isPinned ? "#fff8e1" : "#f8f9fa", border: `1px solid ${isPinned ? "#f0c040" : "#dee2e6"}`, borderRadius: "6px", padding: "10px" }}>
-                        {isPinned && <div style={{ color: "#996600", fontWeight: 700, marginBottom: "4px", fontSize: "10px" }}>📌 PINNED — right-click to move pin</div>}
-                        <div style={{ fontWeight: 700, marginBottom: "6px", fontSize: "12px" }}>
-                          {displayRow.month}/{displayRow.day} {String(displayRow.hourOfDay).padStart(2,"0")}:00
-                        </div>
-                        <div style={S2.row}><span style={S2.lbl}>Solar</span><span style={{ ...S2.val, color:"#d48000" }}>{(displayRow.solarKw||0).toFixed(2)} kW</span></div>
-                        <div style={S2.row}><span style={S2.lbl}>Load</span><span style={{ ...S2.val, color:"#204090" }}>{(displayRow.loadKw||0).toFixed(2)} kW</span></div>
-                        <div style={S2.row}><span style={S2.lbl}>Net</span><span style={{ ...S2.val, color:(displayRow.solarKw||0)>=(displayRow.loadKw||0)?"#107040":"#c0392b" }}>{((displayRow.solarKw||0)-(displayRow.loadKw||0)).toFixed(2)} kW</span></div>
-                        <div style={S2.row}><span style={S2.lbl}>Curtailed</span><span style={{ ...S2.val, color:"#996600" }}>{(displayRow.curtailed||0).toFixed(2)} kW</span></div>
-                        <div style={S2.row}><span style={S2.lbl}>Unserved</span><span style={{ ...S2.val, color:(displayRow.unserved||0)>0.01?"#c0392b":"#555" }}>{(displayRow.unserved||0).toFixed(2)} kW</span></div>
-                        <div style={{ borderTop: "1px solid #dee2e6", marginTop: "4px", paddingTop: "4px" }}>
-                          <div style={S2.row}><span style={S2.lbl}>Bat</span><span style={{ ...S2.val, color:"#107040" }}>{(displayRow.batKwhEnd||0).toFixed(2)} kWh</span></div>
-                          <div style={S2.row}><span style={S2.lbl}>EV</span><span style={{ ...S2.val, color:"#7b2d8b" }}>{displayRow.evKwhEnd.length > 0 ? displayRow.evKwhEnd[0].toFixed(2)+" kWh" : "—"}</span></div>
-                        </div>
-                        <div style={{ borderTop: "1px solid #dee2e6", marginTop: "4px", paddingTop: "4px" }}>
-                          <div style={S2.row}><span style={S2.lbl}>EV away</span><span style={{ ...S2.val, color:"#555" }}>{displayRow.evAway.length > 0 ? (displayRow.evAway[0]?"Yes":"No") : "—"}</span></div>
-                          <div style={S2.row}><span style={S2.lbl}>DCFC sched</span><span style={{ ...S2.val, color:"#555" }}>{displayRow.triggerSet && displayRow.triggerSet.length > 0 ? (displayRow.triggerFired&&displayRow.triggerFired[0]?"→fired":displayRow.triggerSet[0]?"active":"No") : "—"}</span></div>
-                          <div style={S2.row}><span style={S2.lbl}>DCFC event</span><span style={{ ...S2.val, color:displayRow.dcfcEvent?"#c0392b":"#555" }}>{displayRow.dcfcEvent?"Yes":"No"}</span></div>
-                          <div style={S2.row}><span style={S2.lbl}>Period</span><span style={{ ...S2.val, color: displayRow.isWorstWindow?"#c0392b": displayRow.isPostWindow?"#555":"#555" }}>{displayRow.isWorstWindow?"Worst window": displayRow.isPostWindow?"Post-window":"Spinup"}</span></div>
-                        </div>
-                        {isPinned && (
-                          <div style={{ display:"flex", gap:"4px", marginTop:"8px" }}>
-                            <button style={{ fontSize:"10px", padding:"3px 6px", background:"#ffe0a0", border:"1px solid #d0a000", borderRadius:"4px", cursor:"pointer", flex:1 }}
-                              onClick={() => { setPinnedEvRow(null); evCrosshairIdx.current = -1; [evP1Inst,evP2Inst].forEach(r=>{if(r.current)r.current.update("none");}); }}>× Unpin</button>
-                            <button style={{ fontSize:"10px", padding:"3px 6px", background:"#f0f0f0", border:"1px solid #ccc", borderRadius:"4px", cursor:"pointer", flex:1 }}
-                              onClick={csvRow}>↓ CSV</button>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })()}
-                </div>
-              </div>
-            </div>}
-
-            {/* Generator dispatch chart — shows joint-opt config */}
-            {(!chosenPath || chosenPath === "battery_gen") && (result._genOptResult?.trace || result._genTrace1) && (
-              <div style={{ ...S.card, marginTop: "16px" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "6px" }}>
-                  <div style={{ ...S.cardTitle, color: "#334e68" }}>
-                    {result._genOptResult?.optimum
-                      ? `Generator Dispatch — Joint Opt: ${result._genOptResult.optimum.pvKw} kW PV · ${result._genOptResult.optimum.batteryLabel} · ${result._genOptResult.optimum.genKw} kW gen`
-                      : `Generator Dispatch — ${result.optimum?.pvKw} kW PV · ${result.optimum?.batteryLabel} · ${result._genTrace1Kw} kW gen`}
-                  </div>
-                  <button style={{ ...S.btnSmall, fontSize: "11px", padding: "3px 12px" }}
-                    onClick={() => downloadMultiPanel([genP1Ref, genP2Ref], `gen_dispatch_${siteName.replace(/\s+/g, "_")}.png`)}>
-                    Save PNG
-                  </button>
-                </div>
-                <div style={{ fontSize: "11px", color: "#888", marginBottom: "8px" }}>
-                  No-EV scenario (stationary battery only). Panel 1: solar vs load kW. Panel 2: battery SOC + generator output kW. Red tint = worst-window period. Hover for values →
-                </div>
-                <div style={{ display: "flex", gap: "12px", alignItems: "flex-start" }}>
-                  <div ref={genChartContainerRef} style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ position: "relative", height: "260px" }}><canvas ref={genP1Ref} /></div>
-                    <div style={{ position: "relative", height: "280px" }}><canvas ref={genP2Ref} /></div>
-                  </div>
-                  <div style={{ width: "170px", flexShrink: 0, fontSize: "11px", fontFamily: "monospace", paddingTop: "4px" }}>
-                    {(() => {
-                      const displayRow = pinnedGenRow || genHoverRow;
-                      const isPinned = !!pinnedGenRow;
-                      if (!displayRow) return (
-                        <div style={{ color: "#bbb", paddingTop: "80px", textAlign: "center" }}>
-                          ← hover<br/>right-click to pin
-                        </div>
-                      );
-                      const S2 = { row: { display:"flex", justifyContent:"space-between", marginBottom:"2px" }, lbl: { color:"#666" }, val: { textAlign:"right" } };
-                      return (
-                        <div style={{ background: isPinned ? "#fff8e1" : "#f8f9fa", border: `1px solid ${isPinned ? "#f0c040" : "#dee2e6"}`, borderRadius: "6px", padding: "10px" }}>
-                          {isPinned && <div style={{ color: "#996600", fontWeight: 700, marginBottom: "4px", fontSize: "10px" }}>📌 PINNED — right-click to move pin</div>}
-                          <div style={{ fontWeight: 700, marginBottom: "6px", fontSize: "12px" }}>
-                            {displayRow.month}/{displayRow.day} {String(displayRow.hourOfDay).padStart(2,"0")}:00
-                          </div>
-                          <div style={S2.row}><span style={S2.lbl}>Solar</span><span style={{ ...S2.val, color:"#d48000" }}>{(displayRow.solarKw||0).toFixed(2)} kW</span></div>
-                          <div style={S2.row}><span style={S2.lbl}>Load</span><span style={{ ...S2.val, color:"#204090" }}>{(displayRow.loadKw||0).toFixed(2)} kW</span></div>
-                          <div style={S2.row}><span style={S2.lbl}>Net</span><span style={{ ...S2.val, color:(displayRow.solarKw||0)>=(displayRow.loadKw||0)?"#107040":"#c0392b" }}>{((displayRow.solarKw||0)-(displayRow.loadKw||0)).toFixed(2)} kW</span></div>
-                          <div style={S2.row}><span style={S2.lbl}>Curtailed</span><span style={{ ...S2.val, color:"#996600" }}>{(displayRow.curtailed||0).toFixed(2)} kW</span></div>
-                          <div style={{ borderTop: "1px solid #dee2e6", marginTop: "4px", paddingTop: "4px" }}>
-                            <div style={S2.row}><span style={S2.lbl}>Bat</span><span style={{ ...S2.val, color:"#107040" }}>{(displayRow.batKwhEnd||0).toFixed(2)} kWh</span></div>
-                            <div style={S2.row}><span style={S2.lbl}>Gen out</span><span style={{ ...S2.val, color:"#802000" }}>{(displayRow.genKwOut||0).toFixed(2)} kW</span></div>
-                            <div style={S2.row}><span style={S2.lbl}>Gen run</span><span style={{ ...S2.val, color:"#802000" }}>{displayRow.genRunning?"Yes":"No"}</span></div>
-                          </div>
-                          <div style={{ borderTop: "1px solid #dee2e6", marginTop: "4px", paddingTop: "4px" }}>
-                            <div style={S2.row}><span style={S2.lbl}>Period</span><span style={{ ...S2.val, color: displayRow.isWorstWindow?"#c0392b": displayRow.isPostWindow?"#555":"#555" }}>{displayRow.isWorstWindow?"Worst window": displayRow.isPostWindow?"Post-window":"Spinup"}</span></div>
-                          </div>
-                          {isPinned && (
-                            <button style={{ marginTop: "8px", fontSize: "10px", padding: "3px 8px", background: "#ffe0a0", border: "1px solid #d0a000", borderRadius: "4px", cursor: "pointer", width: "100%" }}
-                              onClick={() => {
-                                setPinnedGenRow(null);
-                                genCrosshairIdx.current = -1;
-                                [genP1Inst, genP2Inst].forEach(r => { if (r.current) r.current.update("none"); });
-                              }}>× Unpin</button>
-                          )}
-                        </div>
-                      );
-                    })()}
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Phase 2 EV impact charts: solar/load + battery SOC + per-EV SOC */}
-            {evImpact?.evOptResult?._traceData && (
-              <div style={{ ...S.card, marginTop: "16px", border: "1px solid #b8cce0", background: "#f0f4ff" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "6px" }}>
-                  <div style={{ ...S.cardTitle, color: "#1a4a7a" }}>
-                    EV Impact Dispatch — {evImpact.evOpt ? `${evImpact.evOpt.pvKw} kW PV · ${evImpact.evOpt.batteryLabel}` : "optimum"} · {evImpact.pathLabel} baseline
-                  </div>
-                  <button style={{ ...S.btnSmall, fontSize: "11px", padding: "3px 12px" }}
-                    onClick={() => downloadMultiPanel([evImpP1Ref, evImpBatRef, ...evImpSocRefs.slice(0, Math.min((evImpact.fleetSummary?.length||0), 4))], `ev_impact_${siteName.replace(/\s+/g,"_")}.png`)}>
-                    Save PNG
-                  </button>
-                </div>
-                <div style={{ fontSize: "11px", color: "#888", marginBottom: "8px" }}>
-                  Worst-window tint (red). Grey shading = EV away. Red dashed = DCFC event. All battery/EV charts share same kWh scale. Hover for values →
-                </div>
-                <div style={{ display: "flex", gap: "12px", alignItems: "flex-start" }}>
-                  <div ref={evImpChartContainerRef} style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ position: "relative", height: "200px" }}><canvas ref={evImpP1Ref} /></div>
-                    <div style={{ position: "relative", height: "200px" }}><canvas ref={evImpBatRef} /></div>
-                    {evList.slice(0, 4).map((_, i) => (
-                      <div key={i} style={{ position: "relative", height: "180px" }}><canvas ref={evImpSocRefs[i]} /></div>
-                    ))}
-                  </div>
-                  {/* Live display: hover info */}
-                  <div style={{ width: "180px", flexShrink: 0, fontSize: "11px", fontFamily: "monospace", paddingTop: "4px" }}>
-                    {(() => {
-                      const displayRow = pinnedEvImpRow || evImpHoverRow;
-                      const isPinned = !!pinnedEvImpRow;
-                      if (!displayRow) return (
-                        <div style={{ color: "#bbb", paddingTop: "60px", textAlign: "center" }}>← hover<br/>right-click to pin</div>
-                      );
-                      const S2 = { row: { display:"flex", justifyContent:"space-between", marginBottom:"3px" }, lbl: { color:"#666", fontSize:"10px" }, val: { textAlign:"right", fontSize:"10px" } };
-                      const solar  = displayRow.solarKw || 0;
-                      const load   = displayRow.loadKw  || 0;
-                      const batKwh = displayRow.batKwhEnd || 0;
-                      const curt   = displayRow.curtailed || 0;
-                      const unsrv  = displayRow.unserved  || 0;
-                      // Within-hour deltas using dispatch snapshots
-                      const dBat     = displayRow.batKwhStart !== undefined ? batKwh - displayRow.batKwhStart : null;
-                      const fmtFlow  = (v, kw) => `${v >= 0 ? "+" : ""}${v.toFixed(2)} kWh${kw ? ` (${Math.abs(v).toFixed(2)} kW)` : ""}`;
-                      const EV_COLORS = ["#7b2d8b","#1a6696","#b05a00","#1a7a40"];
-                      return (
-                        <div style={{ background: isPinned ? "#fff8e1" : "#f0f4ff", border: `1px solid ${isPinned ? "#f0c040" : "#b8cce0"}`, borderRadius: "6px", padding: "10px" }}>
-                          {isPinned && <div style={{ color:"#996600", fontWeight:700, marginBottom:"4px", fontSize:"10px" }}>📌 PINNED</div>}
-                          <div style={{ fontWeight:700, marginBottom:"6px", fontSize:"12px" }}>
-                            {displayRow.month}/{displayRow.day} {String(displayRow.hourOfDay).padStart(2,"0")}:00
-                            {displayRow.isWorstWindow && <span style={{color:"#c0392b",marginLeft:"5px",fontSize:"10px"}}>WW</span>}
-                            {displayRow.isPostWindow  && <span style={{color:"#888",marginLeft:"5px",fontSize:"10px"}}>PW</span>}
-                          </div>
-                          <div style={S2.row}><span style={S2.lbl}>PV →</span><span style={{ ...S2.val, color:"#d48000" }}>{solar.toFixed(2)} kW</span></div>
-                          <div style={S2.row}><span style={S2.lbl}>← Load</span><span style={{ ...S2.val, color:"#204090" }}>{load.toFixed(2)} kW</span></div>
-                          {curt > 0.01 && <div style={S2.row}><span style={S2.lbl}>Curtailed</span><span style={{ ...S2.val, color:"#996600" }}>{curt.toFixed(2)} kWh</span></div>}
-                          {unsrv > 0.01 && <div style={S2.row}><span style={S2.lbl}>⚠ Unserved</span><span style={{ ...S2.val, color:"#c0392b" }}>{unsrv.toFixed(2)} kWh</span></div>}
-                          <div style={{ borderTop:"1px solid #dee2e6", marginTop:"4px", paddingTop:"4px" }}>
-                            <div style={S2.row}>
-                              <span style={S2.lbl}>Battery</span>
-                              <span style={{ ...S2.val, color:"#107040" }}>{batKwh.toFixed(1)} kWh</span>
-                            </div>
-                            {dBat !== null && Math.abs(dBat) > 0.01 && (
-                              <div style={S2.row}>
-                                <span style={S2.lbl}>&nbsp;&nbsp;{dBat > 0.05 ? "↑chrg" : dBat < -0.05 ? "↓dsch" : "~idle"}</span>
-                                <span style={{ ...S2.val, color:"#888" }}>{dBat >= 0 ? "+" : ""}{dBat.toFixed(2)} kWh</span>
-                              </div>
-                            )}
-                          </div>
-                          {displayRow.evKwhEnd && displayRow.evKwhEnd.length > 0 && (
-                            <div style={{ borderTop:"1px solid #dee2e6", marginTop:"4px", paddingTop:"4px" }}>
-                              {displayRow.evKwhEnd.map((soc, i) => {
-                                const ev      = evList[i];
-                                const isAway  = displayRow.evAway?.[i];
-                                const isBidi  = ev ? ev.canV2G === true : false;
-                                const color   = EV_COLORS[i % 4];
-                                const label   = ev?.label || `EV ${i+1}`;
-                                // Electrical delta only (excludes driving deduction)
-                                const preDisp  = displayRow.evKwhPreDispatch?.[i];
-                                const dEvElec  = preDisp !== undefined ? soc - preDisp : null;
-                                // Driving delta (energy consumed away from home this hour)
-                                const startSoc = displayRow.evKwhStart?.[i];
-                                const dEvDrive = (startSoc !== undefined && preDisp !== undefined) ? preDisp - startSoc : null;
-                                // Direction label based on electrical delta only
-                                const dirEv = isAway ? "~away"
-                                  : dEvElec === null          ? "~idle"
-                                  : dEvElec >  0.05           ? (isBidi ? "⇄↑chrg" : "↑chrg")
-                                  : dEvElec < -0.05           ? (isBidi ? "⇄↓V2H"  : "↓dsch")
-                                  : "~idle";
-                                const hasFlow = dEvElec !== null && Math.abs(dEvElec) > 0.05;
-                                const hasDrive = dEvDrive !== null && dEvDrive < -0.05;
-                                return (
-                                  <div key={i} style={{ marginBottom:"4px" }}>
-                                    <div style={S2.row}>
-                                      <span style={S2.lbl}>EV{i+1} {label}</span>
-                                      <span style={{ ...S2.val, color }}>
-                                        {isAway ? <span style={{color:"#888"}}>Away</span> : `${soc.toFixed(1)} kWh`}
-                                      </span>
-                                    </div>
-                                    {!isAway && hasDrive && (
-                                      <div style={S2.row}>
-                                        <span style={S2.lbl}>&nbsp;&nbsp;🚗 drive</span>
-                                        <span style={{ ...S2.val, color:"#888" }}>{dEvDrive.toFixed(2)} kWh</span>
-                                      </div>
-                                    )}
-                                    {!isAway && hasFlow && (
-                                      <div style={S2.row}>
-                                        <span style={S2.lbl}>&nbsp;&nbsp;{dirEv}</span>
-                                        <span style={{ ...S2.val, color:"#888" }}>{dEvElec >= 0 ? "+" : ""}{dEvElec.toFixed(2)} kWh</span>
-                                      </div>
-                                    )}
-                                    {!isAway && !hasFlow && !hasDrive && (
-                                      <div style={S2.row}>
-                                        <span style={S2.lbl}>&nbsp;&nbsp;~idle</span>
-                                        <span style={{ ...S2.val, color:"#aaa" }}>—</span>
-                                      </div>
-                                    )}
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          )}
-                          {/* Energy balance check */}
-                          {(() => {
-                            if (displayRow.batKwhStart === undefined) return null;
-                            const dBatFull    = batKwh - displayRow.batKwhStart;
-                            const dEvElecSum  = (displayRow.evKwhEnd && displayRow.evKwhPreDispatch)
-                              ? displayRow.evKwhEnd.reduce((s, v, i) => s + v - (displayRow.evKwhPreDispatch[i] ?? v), 0)
-                              : 0;
-                            // losses = PV - (Load - Unserved) - Curtailed - ΔBat - ΔEV_elec
-                            // Should be ≥ 0 (heat from charging losses) and small
-                            const losses = solar - (load - unsrv) - curt - dBatFull - dEvElecSum;
-                            const ok = losses >= -0.15 && losses < 5.0;
-                            return (
-                              <div style={{ borderTop:"1px solid #dee2e6", marginTop:"6px", paddingTop:"4px", fontSize:"10px" }}>
-                                <div style={{ color: ok ? "#107040" : "#c0392b", fontWeight:700, marginBottom:"2px" }}>
-                                  {ok ? "✓" : "✗"} Balance: {losses.toFixed(2)} kWh {ok ? "(losses ok)" : "(ERROR)"}
-                                </div>
-                                <div style={{ color:"#888", lineHeight:"1.5" }}>
-                                  PV {solar.toFixed(2)} − load {(load - unsrv).toFixed(2)} − curt {curt.toFixed(2)}<br/>
-                                  − ΔBat {dBatFull.toFixed(2)} − ΔEV {dEvElecSum.toFixed(2)} = {losses.toFixed(2)}
-                                </div>
-                              </div>
-                            );
-                          })()}
-                          {displayRow.dcfcEvent && <div style={{ marginTop:"4px", fontSize:"10px", color:"#c0392b" }}>⚡ DCFC event this hour</div>}
-                          {isPinned && (
-                            <button style={{ marginTop:"8px", fontSize:"10px", padding:"3px 8px", background:"#ffe0a0", border:"1px solid #d0a000", borderRadius:"4px", cursor:"pointer", width:"100%" }}
-                              onClick={() => { setPinnedEvImpRow(null); evImpCrosshairIdx.current = -1; [evImpP1Inst, evImpBatInst, ...evImpSocInsts].forEach(r => { if (r.current) r.current.update("none"); }); }}>× Unpin</button>
-                          )}
-                        </div>
-                      );
-                    })()}
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* EV Impact Detail view — ±24h from right-click on EV Impact chart */}
-            {pinnedEvImpRow && evImpact?.evOptResult?._traceData && (() => {
-              const nEvs = Math.min((evImpact.fleetSummary?.length || 0), 4);
-              const EV_COLORS = ["#7b2d8b","#1a6696","#b05a00","#1a7a40"];
-              const _td  = evImpact.evOptResult._traceData;
-              const _h   = pinnedEvImpRow.h;
-              const tableRows = _td.slice(Math.max(0, _h - 24), Math.min(_td.length - 1, _h + 24) + 1);
-              const evColLabels = evImpact.fleetSummary.slice(0, nEvs).map((fs, i) => fs.label || `EV${i+1}`);
-              return (
-                <div style={{ ...S.card, marginTop: "16px", border: "2px solid #d0a000", background: "#fffef8" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "6px" }}>
-                    <div style={{ ...S.cardTitle, color: "#996600" }}>
-                      EV Impact Detail: {pinnedEvImpRow.month}/{pinnedEvImpRow.day} {String(pinnedEvImpRow.hourOfDay).padStart(2,"0")}:00 ±24 h
-                    </div>
-                    <div style={{ display: "flex", gap: "6px" }}>
-                      <button style={{ ...S.btnSmall, fontSize: "11px", padding: "3px 12px" }}
-                        onClick={() => downloadMultiPanel([evImpDiagP1Ref, evImpDiagBatRef, ...evImpDiagSocRefs.slice(0, nEvs)], `ev_impact_detail_${pinnedEvImpRow.month}_${pinnedEvImpRow.day}_h${pinnedEvImpRow.hourOfDay}_${siteName.replace(/\s+/g,"_")}.png`)}>
-                        Save PNG
-                      </button>
-                      <button style={{ ...S.btnSmall, fontSize: "11px", padding: "3px 12px" }} onClick={() => {
-                        const hdrs = ["Date","Hr","Solar_kW","Load_kW","Net_kW","Curtailed_kW","Unserved_kW","Bat_kWh","DCFC","WW","PW",
-                          ...evColLabels.flatMap(l => [`${l}_kWh`, `${l}_away`])];
-                        const csvRows = tableRows.map(r => {
-                          const base = [`${r.month}/${r.day}`, r.hourOfDay, (r.solarKw||0).toFixed(2), (r.loadKw||0).toFixed(2),
-                            ((r.solarKw||0)-(r.loadKw||0)).toFixed(2), (r.curtailed||0).toFixed(2), (r.unserved||0).toFixed(2),
-                            (r.batKwhEnd||0).toFixed(2), r.dcfcEvent?"Y":"N", r.isWorstWindow?"Y":"N", r.isPostWindow?"Y":"N"];
-                          const evCells = evColLabels.flatMap((_, i) => [
-                            r.evAway?.[i] ? "" : (r.evKwhEnd?.[i] != null ? r.evKwhEnd[i].toFixed(2) : ""),
-                            r.evAway?.[i] ? "Y" : "N",
-                          ]);
-                          return [...base, ...evCells].join(",");
-                        });
-                        const blob = new Blob([[hdrs.join(","), ...csvRows].join("\n")], { type: "text/csv" });
-                        const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
-                        a.download = `ev_impact_detail_${pinnedEvImpRow.month}_${pinnedEvImpRow.day}_h${pinnedEvImpRow.hourOfDay}.csv`;
-                        a.click();
-                      }}>↓ CSV</button>
-                      <button style={{ ...S.btnSmall, fontSize: "11px", padding: "3px 12px" }}
-                        onClick={() => { setPinnedEvImpRow(null); }}>
-                        × Clear
-                      </button>
-                    </div>
-                  </div>
-                  <div style={{ fontSize: "11px", color: "#555", marginBottom: "8px" }}>
-                    Gold dashed line = pinned hour. Red dashed = DCFC event. Right-click EV Impact chart to update.
-                  </div>
-                  <div style={{ display: "flex", gap: "12px", alignItems: "flex-start" }}>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ position: "relative", height: "200px" }}><canvas ref={evImpDiagP1Ref} /></div>
-                      <div style={{ position: "relative", height: "200px" }}><canvas ref={evImpDiagBatRef} /></div>
-                      {evList.slice(0, nEvs).map((_, i) => (
-                        <div key={i} style={{ position: "relative", height: "180px" }}><canvas ref={evImpDiagSocRefs[i]} /></div>
-                      ))}
-                    </div>
-                    <div style={{ width: "170px", flexShrink: 0, fontSize: "11px", fontFamily: "monospace", paddingTop: "4px" }}>
-                      {(() => {
-                        const dr = evImpDiagHoverRow;
-                        if (!dr) return <div style={{ color: "#bbb", paddingTop: "60px", textAlign: "center" }}>← hover</div>;
-                        const S2 = { row: { display:"flex", justifyContent:"space-between", marginBottom:"3px" }, lbl: { color:"#666", fontSize:"10px" }, val: { textAlign:"right", fontSize:"10px" } };
-                        return (
-                          <div style={{ background: "#f0f4ff", border: "1px solid #b8cce0", borderRadius: "6px", padding: "10px" }}>
-                            <div style={{ fontWeight:700, marginBottom:"6px", fontSize:"12px" }}>
-                              {dr.month}/{dr.day} {String(dr.hourOfDay).padStart(2,"0")}:00
-                              {dr.isWorstWindow && <span style={{ color:"#c0392b", marginLeft:"5px", fontSize:"10px" }}>WW</span>}
-                              {dr.isPostWindow  && <span style={{ color:"#888", marginLeft:"5px", fontSize:"10px" }}>PW</span>}
-                            </div>
-                            <div style={S2.row}><span style={S2.lbl}>PV →</span><span style={{ ...S2.val, color:"#d48000" }}>{(dr.solarKw||0).toFixed(2)} kW</span></div>
-                            <div style={S2.row}><span style={S2.lbl}>← Load</span><span style={{ ...S2.val, color:"#204090" }}>{(dr.loadKw||0).toFixed(2)} kW</span></div>
-                            {(dr.curtailed||0)>0.01 && <div style={S2.row}><span style={S2.lbl}>Curtailed</span><span style={{ ...S2.val, color:"#996600" }}>{(dr.curtailed||0).toFixed(2)} kWh</span></div>}
-                            {(dr.unserved||0)>0.01 && <div style={S2.row}><span style={S2.lbl}>⚠ Unserved</span><span style={{ ...S2.val, color:"#c0392b" }}>{(dr.unserved||0).toFixed(2)} kWh</span></div>}
-                            <div style={{ borderTop:"1px solid #dee2e6", marginTop:"4px", paddingTop:"4px" }}>
-                              <div style={S2.row}><span style={S2.lbl}>Battery</span><span style={{ ...S2.val, color:"#107040" }}>{(dr.batKwhEnd||0).toFixed(1)} kWh</span></div>
-                            </div>
-                            {dr.evKwhEnd?.length > 0 && (
-                              <div style={{ borderTop:"1px solid #dee2e6", marginTop:"4px", paddingTop:"4px" }}>
-                                {dr.evKwhEnd.slice(0, nEvs).map((soc, i) => {
-                                  const isAway  = dr.evAway?.[i];
-                                  const color   = EV_COLORS[i % 4];
-                                  const label   = evImpact.fleetSummary[i]?.label || `EV ${i+1}`;
-                                  const dElec   = dr.evKwhPreDispatch?.[i] !== undefined ? soc - dr.evKwhPreDispatch[i] : null;
-                                  const dDrive  = (dr.evKwhStart?.[i] !== undefined && dr.evKwhPreDispatch?.[i] !== undefined) ? dr.evKwhPreDispatch[i] - dr.evKwhStart[i] : null;
-                                  const dir     = dElec === null ? "~idle" : dElec > 0.05 ? "↑chrg" : dElec < -0.05 ? "↓dsch" : "~idle";
-                                  return (
-                                    <div key={i} style={{ marginBottom:"5px" }}>
-                                      <div style={S2.row}>
-                                        <span style={{ ...S2.lbl, color }}>{label}{isAway?" 🚗":""}</span>
-                                        <span style={{ ...S2.val, color }}>{isAway?"away":`${soc.toFixed(1)} kWh`}</span>
-                                      </div>
-                                      {!isAway && dDrive!==null && Math.abs(dDrive)>0.01 && (
-                                        <div style={S2.row}><span style={S2.lbl}>&nbsp;&nbsp;drive</span><span style={{ ...S2.val, color:"#888" }}>{(-dDrive).toFixed(2)} kWh</span></div>
-                                      )}
-                                      {!isAway && dElec!==null && Math.abs(dElec)>0.01 && (
-                                        <div style={S2.row}><span style={S2.lbl}>&nbsp;&nbsp;{dir}</span><span style={{ ...S2.val, color:"#888" }}>{dElec>=0?"+":""}{dElec.toFixed(2)} kWh</span></div>
-                                      )}
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })()}
-                    </div>
-                  </div>
-                  {/* Data table — all rows in the ±24h window */}
-                  {tableRows.length > 0 && (() => {
-                    const TD = (extra) => ({ padding: "2px 5px", border: "1px solid #dee2e6", textAlign: "right", fontSize: "10px", fontFamily: "monospace", whiteSpace: "nowrap", ...extra });
-                    const TH = (extra) => ({ padding: "3px 5px", border: "1px solid #b8cce0", background: "#dce8f4", fontSize: "10px", textAlign: "right", whiteSpace: "nowrap", ...extra });
-                    return (
-                      <div style={{ marginTop: "12px", overflowX: "auto" }}>
-                        <table style={{ borderCollapse: "collapse", width: "100%", fontSize: "10px" }}>
-                          <thead>
-                            <tr>
-                              <th style={TH({ textAlign: "left" })}>Date</th>
-                              <th style={TH()}>Hr</th>
-                              <th style={TH()}>Solar kW</th>
-                              <th style={TH()}>Load kW</th>
-                              <th style={TH()}>Net kW</th>
-                              <th style={TH()}>Curt kWh</th>
-                              <th style={TH()}>Unsrv kWh</th>
-                              <th style={TH()}>Bat kWh</th>
-                              <th style={TH()}>DCFC</th>
-                              <th style={TH()}>WW</th>
-                              <th style={TH()}>PW</th>
-                              {evColLabels.flatMap((l, i) => [
-                                <th key={`${i}s`} style={TH({ color: EV_COLORS[i%4] })}>{l} kWh</th>,
-                                <th key={`${i}a`} style={TH({ color: EV_COLORS[i%4] })}>{l} away</th>,
-                              ])}
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {tableRows.map((r, idx) => {
-                              const isPin = r.h === pinnedEvImpRow.h;
-                              const bg    = isPin ? "#fff8d0" : idx % 2 === 0 ? "#f8f9ff" : "#fff";
-                              const net   = (r.solarKw||0) - (r.loadKw||0);
-                              return (
-                                <tr key={idx} style={{ background: bg }}>
-                                  <td style={TD({ textAlign: "left", fontWeight: isPin ? 700 : "normal" })}>{r.month}/{r.day}</td>
-                                  <td style={TD({ fontWeight: isPin ? 700 : "normal" })}>{String(r.hourOfDay).padStart(2,"0")}:00</td>
-                                  <td style={TD({ color: "#d48000" })}>{(r.solarKw||0).toFixed(2)}</td>
-                                  <td style={TD({ color: "#204090" })}>{(r.loadKw||0).toFixed(2)}</td>
-                                  <td style={TD({ color: net >= 0 ? "#107040" : "#c0392b" })}>{net.toFixed(2)}</td>
-                                  <td style={TD({ color: (r.curtailed||0)>0.01?"#996600":"#aaa" })}>{(r.curtailed||0).toFixed(2)}</td>
-                                  <td style={TD({ color: (r.unserved||0)>0.01?"#c0392b":"#aaa" })}>{(r.unserved||0).toFixed(2)}</td>
-                                  <td style={TD({ color: "#107040" })}>{(r.batKwhEnd||0).toFixed(2)}</td>
-                                  <td style={TD({ color: r.dcfcEvent?"#c0392b":"#aaa" })}>{r.dcfcEvent?"⚡":""}</td>
-                                  <td style={TD({ color: r.isWorstWindow?"#c0392b":"#aaa" })}>{r.isWorstWindow?"●":""}</td>
-                                  <td style={TD({ color: r.isPostWindow?"#aaa":"#aaa" })}>{r.isPostWindow?"●":""}</td>
-                                  {evColLabels.flatMap((_, i) => {
-                                    const away = r.evAway?.[i];
-                                    const soc  = r.evKwhEnd?.[i];
-                                    return [
-                                      <td key={`${idx}_${i}s`} style={TD({ color: EV_COLORS[i%4] })}>{away ? "—" : soc != null ? soc.toFixed(2) : ""}</td>,
-                                      <td key={`${idx}_${i}a`} style={TD({ color: away?"#802000":"#aaa" })}>{away?"🚗":""}</td>,
-                                    ];
-                                  })}
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      </div>
-                    );
-                  })()}
-                </div>
-              );
-            })()}
-
-            {/* Detail view — ±24h from right-click on Battery-Only or Generator chart */}
-            {(() => {
-              const activePinned = pinnedEvRow || pinnedGenRow;
-              if (!activePinned) return null;
-              const traceType    = pinnedGenRow ? "gen" : "ev";
-              const activeTrace  = pinnedGenRow    ? (result._genTrace1 || result._traceData)
-                                 : result._traceData;
-
-              const h = activePinned.h;
-              const start = Math.max(0, h - 24);
-              const end   = Math.min(activeTrace.length - 1, h + 24);
-              const diagRows = activeTrace.slice(start, end + 1);
-              const dec = diagRows;
-
-              const sourceLabel = traceType === "gen" ? "Generator Dispatch" : "EV Dispatch";
-              const diagTitle = `Detail: ${activePinned.month}/${activePinned.day} ${String(activePinned.hourOfDay).padStart(2,"0")}:00 ±24 h — ${sourceLabel}`;
-
-              if (dec.length === 0) return (
-                <div style={{ ...S.card, marginTop: "16px" }}>
-                  <div style={S.cardTitle}>{diagTitle}</div>
-                  <p style={{ fontSize: "12px", color: "#888" }}>No trace data for this window.</p>
-                </div>
-              );
-
-              const isEvTrace = traceType === "ev";
-              const rows = dec.map((r, idx) => {
-                const prev    = idx === 0 ? null : dec[idx - 1];
-                const dBat    = prev !== null ? r.batKwhEnd - prev.batKwhEnd : null;
-                const dEv     = (isEvTrace && prev !== null && r.evKwhEnd && r.evKwhEnd.length > 0)
-                                ? r.evKwhEnd[0] - prev.evKwhEnd[0] : null;
-                const surplus = r.solarKw - r.loadKw;
-                const anomaly = dBat !== null && surplus > 0.1 && dBat < -0.05;
-                const isPin   = !!(r.h === activePinned.h);
-                return { r, dBat, dEv, surplus, anomaly, isPin };
-              });
-
-              const TD = (align, extra) => ({ padding: "2px 6px", border: "1px solid #dee2e6", textAlign: align || "right", ...extra });
-              const TH = (align) => ({ padding: "3px 6px", textAlign: align || "right", border: "1px solid #dee2e6" });
-
-              return (
-                <div style={{ ...S.card, marginTop: "16px", borderColor: "#d0a000", borderWidth: "2px" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "6px" }}>
-                    <div style={{ ...S.cardTitle, color: "#996600" }}>{diagTitle}</div>
-                    <div style={{ display: "flex", gap: "8px" }}>
-                      <button style={{ ...S.btnSmall, fontSize: "11px", padding: "3px 12px" }}
-                        onClick={() => downloadMultiPanel([diagP1Ref, diagP2Ref], `detail_${activePinned ? `${activePinned.month}_${activePinned.day}_h${activePinned.hourOfDay}` : "dec1718"}_${siteName.replace(/\s+/g,"_") || "site"}.png`)}>
-                        Save PNG
-                      </button>
-                      <button style={{ ...S.btnSmall, fontSize: "11px", padding: "3px 12px" }} onClick={() => {
-                        const hdrs = isEvTrace
-                          ? ["Date","Hr","Solar_kW","Load_kW","Surplus_kW","Bat_kWh","dBat","EV_kWh","dEV","Away","SchedDCFC","DCFC","Curtailed_kW","Unserved_kW"]
-                          : ["Date","Hr","Solar_kW","Load_kW","Surplus_kW","Bat_kWh","dBat","Gen_kW","GenRunning","Curtailed_kW"];
-                        const csvRows = rows.map(({ r, dBat, dEv, surplus }) => {
-                          const base = [`${r.month}/${r.day}`, r.hourOfDay, r.solarKw.toFixed(2), r.loadKw.toFixed(2), surplus.toFixed(2), r.batKwhEnd.toFixed(2), dBat !== null ? dBat.toFixed(2) : ""];
-                          if (isEvTrace) return [...base,
-                            r.evKwhEnd && r.evKwhEnd.length > 0 ? r.evKwhEnd[0].toFixed(2) : "",
-                            dEv !== null ? dEv.toFixed(2) : "",
-                            r.evAway && r.evAway.length > 0 ? (r.evAway[0] ? "Y" : "N") : "",
-                            r.triggerFired && r.triggerFired[0] ? "fired" : r.triggerSet && r.triggerSet[0] ? "active" : "N",
-                            r.dcfcEvent ? "Y" : "N",
-                            (r.curtailed||0).toFixed(2), (r.unserved||0).toFixed(2)].join(",");
-                          return [...base, (r.genKwOut||0).toFixed(2), r.genRunning ? "Y" : "N", (r.curtailed||0).toFixed(2)].join(",");
-                        });
-                        const blob = new Blob([[hdrs.join(","), ...csvRows].join("\n")], { type: "text/csv" });
-                        const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
-                        a.download = `detail_${activePinned ? `${activePinned.month}_${activePinned.day}_h${activePinned.hourOfDay}_${traceType}` : "dec1718"}_${siteName.replace(/\s+/g,"_") || "site"}.csv`;
-                        a.click();
-                      }}>↓ CSV</button>
-                    </div>
-                  </div>
-                  <div style={{ fontSize: "11px", color: "#555", marginBottom: "8px" }}>
-                    {`Right-click chart to update. Showing data from ${sourceLabel} trace. Red rows: solar surplus but battery decreased.`}
-                  </div>
-                  <div style={{ display: "flex", gap: "12px", alignItems: "flex-start" }}>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ position: "relative", height: "220px" }}><canvas ref={diagP1Ref} /></div>
-                      <div style={{ position: "relative", height: "240px" }}><canvas ref={diagP2Ref} /></div>
-                    </div>
-                    <div style={{ width: "160px", flexShrink: 0, fontSize: "11px", fontFamily: "monospace", paddingTop: "4px" }}>
-                      {(() => {
-                        const dr = diagHoverRow;
-                        if (!dr) return <div style={{ color: "#bbb", paddingTop: "80px", textAlign: "center" }}>← hover</div>;
-                        const S2 = { row: { display:"flex", justifyContent:"space-between", marginBottom:"2px" }, lbl: { color:"#666" }, val: { textAlign:"right" } };
-                        return (
-                          <div style={{ background: "#f8f9fa", border: "1px solid #dee2e6", borderRadius: "6px", padding: "10px" }}>
-                            <div style={{ fontWeight: 700, marginBottom: "6px", fontSize: "12px" }}>
-                              {dr.month}/{dr.day} {String(dr.hourOfDay).padStart(2,"00")}:00
-                            </div>
-                            <div style={S2.row}><span style={S2.lbl}>Solar</span><span style={{ ...S2.val, color:"#d48000" }}>{(dr.solarKw||0).toFixed(2)} kW</span></div>
-                            <div style={S2.row}><span style={S2.lbl}>Load</span><span style={{ ...S2.val, color:"#204090" }}>{(dr.loadKw||0).toFixed(2)} kW</span></div>
-                            <div style={S2.row}><span style={S2.lbl}>Net</span><span style={{ ...S2.val, color:(dr.solarKw||0)>=(dr.loadKw||0)?"#107040":"#c0392b" }}>{((dr.solarKw||0)-(dr.loadKw||0)).toFixed(2)} kW</span></div>
-                            <div style={S2.row}><span style={S2.lbl}>Curtailed</span><span style={{ ...S2.val, color:(dr.curtailed||0)>0.01?"#996600":"#555" }}>{(dr.curtailed||0).toFixed(2)} kW</span></div>
-                            <div style={S2.row}><span style={S2.lbl}>Unserved</span><span style={{ ...S2.val, color:(dr.unserved||0)>0.01?"#c0392b":"#555" }}>{(dr.unserved||0).toFixed(2)} kW</span></div>
-                            <div style={{ borderTop: "1px solid #dee2e6", marginTop: "4px", paddingTop: "4px" }}>
-                              <div style={S2.row}><span style={S2.lbl}>Bat</span><span style={{ ...S2.val, color:"#107040" }}>{(dr.batKwhEnd||0).toFixed(2)} kWh</span></div>
-                              {isEvTrace && dr.evKwhEnd && dr.evKwhEnd.length > 0 && (
-                                <div style={S2.row}><span style={S2.lbl}>EV</span><span style={{ ...S2.val, color:"#7b2d8b" }}>{dr.evKwhEnd[0].toFixed(2)} kWh</span></div>
-                              )}
-                              {!isEvTrace && (
-                                <>
-                                  <div style={S2.row}><span style={S2.lbl}>Gen out</span><span style={{ ...S2.val, color:"#802000" }}>{(dr.genKwOut||0).toFixed(2)} kW</span></div>
-                                  <div style={S2.row}><span style={S2.lbl}>Gen run</span><span style={{ ...S2.val, color:"#802000" }}>{dr.genRunning?"Yes":"No"}</span></div>
-                                </>
-                              )}
-                            </div>
-                            <div style={{ borderTop: "1px solid #dee2e6", marginTop: "4px", paddingTop: "4px" }}>
-                              <div style={S2.row}><span style={S2.lbl}>Period</span><span style={{ ...S2.val, color: dr.isWorstWindow?"#c0392b": dr.isPostWindow?"#555":"#555" }}>{dr.isWorstWindow?"Worst window": dr.isPostWindow?"Post-window":"Spinup"}</span></div>
-                            </div>
-                          </div>
-                        );
-                      })()}
-                    </div>
-                  </div>
-                  <div style={{ overflowX: "auto", marginTop: "12px" }}>
-                    <table style={{ fontSize: "11px", borderCollapse: "collapse", width: "100%", fontFamily: "monospace" }}>
-                      <thead>
-                        <tr style={{ background: "#e9ecef" }}>
-                          <th style={TH("left")}>Date/Hr</th>
-                          <th style={TH()}>Solar kW</th>
-                          <th style={TH()}>Load kW</th>
-                          <th style={TH()}>Surplus kW</th>
-                          <th style={TH()}>Bat kWh</th>
-                          <th style={TH()}>ΔBat</th>
-                          {isEvTrace ? <>
-                            <th style={TH()}>EV kWh</th>
-                            <th style={TH()}>ΔEV</th>
-                            <th style={TH("left")}>Away?</th>
-                            <th style={TH("left")} title="DCFC schedule trigger">Sched?</th>
-                            <th style={TH("left")}>DCFC?</th>
-                            <th style={TH()}>Curtailed kW</th>
-                            <th style={TH()}>Unserved kW</th>
-                          </> : <>
-                            <th style={TH()}>Gen kW</th>
-                            <th style={TH("left")}>Gen run?</th>
-                            <th style={TH()}>Curtailed kW</th>
-                          </>}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {rows.map(({ r, dBat, dEv, surplus, anomaly, isPin }, i) => (
-                          <tr key={i} style={{ background: isPin ? "#fff176" : anomaly ? "#ffe0e0" : i % 2 === 0 ? "#fff" : "#f8f9fa" }}>
-                            <td style={{ ...TD("left"), fontWeight: isPin ? 700 : 400 }}>{r.month}/{r.day} {String(r.hourOfDay).padStart(2,"0")}:00</td>
-                            <td style={TD()}>{r.solarKw.toFixed(2)}</td>
-                            <td style={TD()}>{r.loadKw.toFixed(2)}</td>
-                            <td style={{ ...TD(), color: surplus > 0.05 ? "#107040" : surplus < -0.05 ? "#c0392b" : "#555" }}>{surplus.toFixed(2)}</td>
-                            <td style={TD()}>{r.batKwhEnd.toFixed(2)}</td>
-                            <td style={{ ...TD(), color: anomaly ? "#c0392b" : dBat !== null && dBat < -0.01 ? "#c0392b" : "#555" }}>{dBat !== null ? dBat.toFixed(2) : "—"}</td>
-                            {isEvTrace ? <>
-                              <td style={TD()}>{r.evKwhEnd && r.evKwhEnd.length > 0 ? r.evKwhEnd[0].toFixed(2) : "—"}</td>
-                              <td style={{ ...TD(), color: dEv !== null && dEv < -0.01 ? "#c0392b" : "#555" }}>{dEv !== null ? dEv.toFixed(2) : "—"}</td>
-                              <td style={TD("left")}>{r.evAway && r.evAway.length > 0 ? (r.evAway[0] ? "Y" : "N") : "—"}</td>
-                              <td style={TD("left")}>{r.triggerFired && r.triggerFired.length > 0 ? (r.triggerFired[0] ? "Y→" : (r.triggerSet && r.triggerSet[0] ? "…" : "N")) : "—"}</td>
-                              <td style={TD("left")}>{r.dcfcEvent ? "Y" : "N"}</td>
-                              <td style={{ ...TD(), color: (r.curtailed||0) > 0.05 ? "#996600" : "#555" }}>{(r.curtailed||0).toFixed(2)}</td>
-                              <td style={{ ...TD(), color: (r.unserved||0) > 0.05 ? "#c0392b" : "#555" }}>{(r.unserved||0).toFixed(2)}</td>
-                            </> : <>
-                              <td style={{ ...TD(), color: "#802000" }}>{(r.genKwOut||0).toFixed(2)}</td>
-                              <td style={{ ...TD("left"), color: r.genRunning ? "#802000" : "#555" }}>{r.genRunning ? "Y" : "N"}</td>
-                              <td style={{ ...TD(), color: (r.curtailed||0) > 0.05 ? "#996600" : "#555" }}>{(r.curtailed||0).toFixed(2)}</td>
-                            </>}
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              );
-            })()}
-          </div>
-        )}
       </div>
     </div>
   );
