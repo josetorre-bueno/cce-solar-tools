@@ -1,6 +1,6 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.129
-// Updated: 2026-04-18 04:00 PT
+// Version: v0.4.130
+// Updated: 2026-04-18 05:00 PT
 // Part of: Wipomo / CCE Solar Tools
 
 "use strict";
@@ -3584,9 +3584,11 @@ function App() {
       },
     };
     // Panel 1: Power kW — solar, load, generator overlay
+    const ANN_Y_W = 54; // fixed left-axis width — ensures P1 and P2 chart areas align exactly
     const opt1 = commonOpt(false);
     opt1.scales.y = { title: { display: true, text: "kW", font: { size: 10 } },
-      beginAtZero: true, min: 0, ticks: { font: { size: 9 } }, grid: { color: "#f0f0f0" } };
+      beginAtZero: true, min: 0, ticks: { font: { size: 9 } }, grid: { color: "#f0f0f0" },
+      afterFit(s) { s.width = ANN_Y_W; } };
     if (hasCurt || hasDcfc) {
       opt1.plugins.legend.labels = { font: { size: 10 }, boxWidth: 10, generateLabels(chart) {
         const items = Chart.defaults.plugins.legend.labels.generateLabels(chart).filter(item => !chart.data.datasets[item.datasetIndex]?._curtBot);
@@ -3664,7 +3666,8 @@ function App() {
     const yMax2 = nEvStack > 0 ? totalKwhStack * 1.05 : batKwh * 1.05;
     opt2.scales.y = { title: { display: true, text: "kWh stored", font: { size: 10 } },
       stacked: nEvStack > 0,
-      beginAtZero: true, min: 0, max: yMax2, ticks: { font: { size: 9 } }, grid: { color: "#f0f0f0" } };
+      beginAtZero: true, min: 0, max: yMax2, ticks: { font: { size: 9 } }, grid: { color: "#f0f0f0" },
+      afterFit(s) { s.width = ANN_Y_W; } };
     const p2Datasets = [];
     for (let ei = 0; ei < nEvStack; ei++) {
       p2Datasets.push({
@@ -3906,9 +3909,11 @@ function App() {
         ctx.restore();
       },
     };
+    const ANN_Y_W = 54; // fixed left-axis width — ensures P1 and P2 chart areas align exactly
     const opt1 = commonOpt(false);
     opt1.scales.y = { title: { display: true, text: "kW", font: { size: 10 } },
-      beginAtZero: true, min: 0, ticks: { font: { size: 9 } }, grid: { color: "#f0f0f0" } };
+      beginAtZero: true, min: 0, ticks: { font: { size: 9 } }, grid: { color: "#f0f0f0" },
+      afterFit(s) { s.width = ANN_Y_W; } };
     if (hasCurt || hasDcfc) {
       opt1.plugins.legend.labels = { font: { size: 10 }, boxWidth: 10, generateLabels(chart) {
         const items = Chart.defaults.plugins.legend.labels.generateLabels(chart).filter(item => !chart.data.datasets[item.datasetIndex]?._curtBot);
@@ -3969,7 +3974,8 @@ function App() {
     const yMax2 = nEvStack > 0 ? totalKwhStack * 1.05 : batKwh * 1.05;
     opt2.scales.y = { title: { display: true, text: "kWh stored", font: { size: 10 } },
       stacked: nEvStack > 0,
-      beginAtZero: true, min: 0, max: yMax2, ticks: { font: { size: 9 } }, grid: { color: "#f0f0f0" } };
+      beginAtZero: true, min: 0, max: yMax2, ticks: { font: { size: 9 } }, grid: { color: "#f0f0f0" },
+      afterFit(s) { s.width = ANN_Y_W; } };
     // Build stacked datasets: EV layers first (bottom→top = least-used→most-used), battery on top
     const p2Datasets = [];
     for (let ei = 0; ei < nEvStack; ei++) {
@@ -4888,7 +4894,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.129</span>
+        <span style={S.version}>v0.4.130</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto"}}>
           <a href="https://tools.cc-energy.org/index.html"
@@ -5809,9 +5815,9 @@ function App() {
                                     return (
                                       <div key={ei} style={{ color: EV_COLORS[ei % 4] }}>
                                         <span style={{ color: "#888" }}>{label}:</span>{" "}
-                                        {isAway
-                                          ? <span style={{ color: "#999" }}>Away</span>
-                                          : <><strong>{evKwh.toFixed(1)} kWh</strong><span style={{ color: "#888", marginLeft: "4px" }}>({Math.round(evKwh / evCap * 100)}%)</span></>}
+                                        <strong>{evKwh.toFixed(1)} kWh</strong>
+                                        <span style={{ color: "#888", marginLeft: "4px" }}>({Math.round(evKwh / evCap * 100)}%)</span>
+                                        {isAway && <span style={{ color: "#999", fontStyle: "italic", marginLeft: "4px" }}>· away</span>}
                                       </div>
                                     );
                                   })}
@@ -5855,9 +5861,9 @@ function App() {
                                     return (
                                       <div key={ei} style={{ color: EV_COLORS[ei % 4] }}>
                                         <span style={{ color: "#888" }}>{label}:</span>{" "}
-                                        {isAway
-                                          ? <span style={{ color: "#999" }}>Away</span>
-                                          : <><strong>{evKwh.toFixed(1)} kWh</strong><span style={{ color: "#888", marginLeft: "4px" }}>({Math.round(evKwh / evCap * 100)}%)</span></>}
+                                        <strong>{evKwh.toFixed(1)} kWh</strong>
+                                        <span style={{ color: "#888", marginLeft: "4px" }}>({Math.round(evKwh / evCap * 100)}%)</span>
+                                        {isAway && <span style={{ color: "#999", fontStyle: "italic", marginLeft: "4px" }}>· away</span>}
                                       </div>
                                     );
                                   })}
