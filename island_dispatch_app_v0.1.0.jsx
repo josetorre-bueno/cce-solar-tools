@@ -1,6 +1,6 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.122
-// Updated: 2026-04-17 23:30 PT
+// Version: v0.4.124
+// Updated: 2026-04-18 00:15 PT
 // Part of: Wipomo / CCE Solar Tools
 
 "use strict";
@@ -437,12 +437,33 @@ function simulatePeriod(solarH, loadH, batKwh, batKw, genKw, evScenario, weather
 
     // ── Generator stop / start ───────────────────────────────────────────────
     if (hasGen) {
-      if (genRunning && batE >= batMax * 0.95)           { genRunning = false; genByPlanning = false; }
-      if (genRunning && sol >= ld)                       { genRunning = false; genByPlanning = false; }
-      if (genRunning && !genByPlanning && canStop(h))      genRunning = false;
-      if (!genRunning && batE <= batMax * 0.20)          { genRunning = true;  genByPlanning = false; }
+      // Available V2G energy above each EV's safe floor (home, canV2G only).
+      // Generator is suppressed while V2G EVs have usable energy — matches the
+      // dispatch priority rule: generator fires only when battery AND V2G are
+      // both insufficient.  When no EVs are in the scenario this is always 0
+      // and generator triggers behave exactly as before.
+      let v2gAvailKwh = 0;
+      if (nEv > 0) {
+        const sd_ = seqDayH[h];
+        for (let vi = 0; vi < nEv; vi++) {
+          const ev_ = evs[vi];
+          if (!ev_.canV2G || evAway[vi] || evOnTrip[vi]) continue;
+          const halfR_    = ev_.tripMiles > 0 ? ev_.tripMiles / (2 * ev_.efficiency) : 0;
+          const v2gFloor_ = evMn[vi] + halfR_;
+          const tmw_      = isTripDay(ev_.tripsPerWeek, sd_ + 1);
+          const fl_       = (ev_.tripsPerWeek > 0 && tmw_) ? Math.max(v2gFloor_, ev_.roundTripKwh) : v2gFloor_;
+          v2gAvailKwh    += Math.max(0, evE[vi] - fl_) * V2G_RTE;
+        }
+      }
+      // v2gCovering: V2G has meaningful energy still available — hold off on generator
+      const v2gCovering = v2gAvailKwh > 1.0;
+
+      if (genRunning && batE >= batMax * 0.95)                             { genRunning = false; genByPlanning = false; }
+      if (genRunning && sol >= ld)                                          { genRunning = false; genByPlanning = false; }
+      if (genRunning && !genByPlanning && canStop(h))                         genRunning = false;
+      if (!genRunning && !v2gCovering && batE <= batMax * 0.20)            { genRunning = true;  genByPlanning = false; }
       const aft = (hr >= 12 && sol < ld) || hr === 18;
-      if (aft && !genRunning && batE < batMax * 0.50 && shortageExpected(h)) {
+      if (aft && !genRunning && !v2gCovering && batE < batMax * 0.50 && shortageExpected(h)) {
         genRunning = true; genByPlanning = true;
       }
     }
@@ -1266,13 +1287,15 @@ function countAnnualGenHours(solarH, loadH, batKwh, batKw, genKw, fuelCostPerKwH
     erMinKwh,
   });
   return {
-    annualGenHours:  r.annGenHoursOrdinance,
-    annualGenCost:   r.simGenCost,
-    unservedKwh:     r.unservedKwh,
-    unservedHours:   r.unservedHours,
-    traceBat:        r.traceBat,
-    traceGen:        r.traceGen,
-    traceUnserved:   r.traceUnserved,
+    annualGenHours:    r.annGenHoursOrdinance,
+    annualGenCost:     r.simGenCost,
+    unservedKwh:       r.unservedKwh,
+    unservedHours:     r.unservedHours,
+    enrouteDcfcTrips:  r.simEnrouteDcfcTrips  || 0,
+    emergencyDcfcTrips: r.simEmergencyDcfcTrips || 0,
+    traceBat:          r.traceBat,
+    traceGen:          r.traceGen,
+    traceUnserved:     r.traceUnserved,
   };
 }
 
@@ -1414,6 +1437,8 @@ function findOptimumGenerator({ mountOptions, pvSizesKw, batteryOptions, genSize
               batteryLabel: bat.label, batteryKwh: bat.kwh, batteryKw: bat.kw,
               genKw, wwGenHours: r.wwGenHours,
               annualGenHours: ann.annualGenHours, annualFuelCost: ann.annualGenCost,
+              annualEnrouteDcfc:   ann.enrouteDcfcTrips  || 0,
+              annualEmergencyDcfc: ann.emergencyDcfcTrips || 0,
               criterion1GenHours: Math.round(c1hrs * 10) / 10,
               criterion1Pass: c1hrs <= emergencyGenHrLimit,
               pvCost, batCost, genCap, fuelNpv, totalCost,
@@ -4517,7 +4542,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.122</span>
+        <span style={S.version}>v0.4.124</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto"}}>
           <a href="https://tools.cc-energy.org/index.html"
@@ -5106,19 +5131,33 @@ function App() {
                             <div style={{ fontSize: "11px", color: "#555", lineHeight: 1.8 }}>
                               <div>PV: <strong>{fmtCurrency(opt.pvCost)}</strong></div>
                               <div>Battery: <strong>{fmtCurrency(opt.batteryCost)}</strong></div>
+                              {sweepEvList.length > 0 && (() => {
+                                const enr = opt.annualEnrouteDcfc ?? opt.annualEnrouteDcfcTrips ?? null;
+                                const emr = opt.annualEmergencyDcfc ?? opt.annualEmergencyDcfcTrips ?? null;
+                                const enrCost = opt.annualEnrouteDcfcCost || 0;
+                                const emrCost = opt.annualEmergencyDcfcCost || 0;
+                                const hasData = enr != null || emr != null;
+                                if (!hasData) return null;
+                                return (
+                                  <div style={{ marginTop: "5px", paddingTop: "4px", borderTop: "1px solid #ddd" }}>
+                                    <div style={{ fontSize: "10px", color: "#777", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: "2px" }}>Annual operating costs</div>
+                                    {enr != null && (
+                                      <div>En-route DCFC: <strong>{enr}</strong> trips/yr{enrCost > 0 && <span style={{ color: "#555" }}> · {fmtCurrency(enrCost)}/yr</span>}</div>
+                                    )}
+                                    {emr != null && (
+                                      <div style={{ color: emr > 0 ? "#c0392b" : "#555" }}>
+                                        Emergency DCFC: <strong>{emr}</strong> trips/yr
+                                        {emr > 0 && <span> ⚠</span>}
+                                        {emrCost > 0 && <span style={{ color: "#c0392b" }}> · {fmtCurrency(emrCost)}/yr</span>}
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })()}
                               <div style={{ borderTop: "1px solid #aaa", marginTop: "4px", paddingTop: "4px", fontSize: "13px", color: isAnnualValid ? "#155724" : "#856404", fontWeight: 700 }}>
                                 Total NPV: {fmtCurrency(opt.totalCost)}
                                 {!isAnnualValid && <span style={{ fontSize: "10px", fontWeight: 400, marginLeft: "4px" }}>(WW only)</span>}
                               </div>
-                              {sweepEvList.length > 0 && (opt.annualEnrouteDcfc != null || opt.annualEmergencyDcfc != null) && (
-                                <div style={{ marginTop: "4px", borderTop: "1px solid #c8e6c9", paddingTop: "4px" }}>
-                                  <div>En-route DCFC: <strong>{opt.annualEnrouteDcfc ?? "—"}</strong> trips/yr</div>
-                                  <div style={{ color: (opt.annualEmergencyDcfc ?? 0) > 0 ? "#c0392b" : "#555" }}>
-                                    Emergency DCFC: <strong>{opt.annualEmergencyDcfc ?? "—"}</strong> trips/yr
-                                    {(opt.annualEmergencyDcfc ?? 0) > 0 && <span style={{ color: "#c0392b" }}> ⚠</span>}
-                                  </div>
-                                </div>
-                              )}
                             </div>
                             <div style={{ fontSize: "10px", color: "#333", marginTop: "6px", lineHeight: 1.9, background: isAnnualValid ? "#e8f7ed" : "#fffbe6", borderRadius: "4px", padding: "5px 8px" }}>
                               <div>
@@ -5208,7 +5247,27 @@ function App() {
                               <div>PV: <strong>{fmtCurrency(g.pvCost)}</strong></div>
                               <div>Battery: <strong>{fmtCurrency(g.batCost)}</strong></div>
                               <div>Generator: <strong>{fmtCurrency(g.genCap)}</strong></div>
-                              <div>Fuel NPV ({npvYears} yr): <strong>{fmtCurrency(g.fuelNpv)}</strong></div>
+                              <div style={{ marginTop: "5px", paddingTop: "4px", borderTop: "1px solid #ddd" }}>
+                                <div style={{ fontSize: "10px", color: "#777", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: "2px" }}>Annual operating costs</div>
+                                <div>Generator: <strong>{g.annualGenHours}</strong> hr/yr · <strong>{fmtCurrency(g.annualFuelCost)}/yr</strong> fuel</div>
+                                {sweepEvList.length > 0 && (() => {
+                                  const enr = g.annualEnrouteDcfc ?? null;
+                                  const emr = g.annualEmergencyDcfc ?? null;
+                                  if (enr == null && emr == null) return null;
+                                  return (
+                                    <>
+                                      {enr != null && <div>En-route DCFC: <strong>{enr}</strong> trips/yr</div>}
+                                      {emr != null && (
+                                        <div style={{ color: emr > 0 ? "#c0392b" : "#555" }}>
+                                          Emergency DCFC: <strong>{emr}</strong> trips/yr
+                                          {emr > 0 && <span> ⚠</span>}
+                                        </div>
+                                      )}
+                                    </>
+                                  );
+                                })()}
+                                <div style={{ marginTop: "2px" }}>Fuel NPV ({npvYears} yr): <strong>{fmtCurrency(g.fuelNpv)}</strong></div>
+                              </div>
                               <div style={{ borderTop: "1px solid #aaa", marginTop: "4px", paddingTop: "4px", fontSize: "13px", color: "#6b4a10", fontWeight: 700 }}>
                                 Total NPV: {fmtCurrency(g.totalCost)}
                               </div>
@@ -5231,9 +5290,6 @@ function App() {
                                 <strong>Criterion 3</strong> (worst 10-day window):&nbsp;
                                 gen runs <strong>{g.wwGenHours ?? "—"} hr</strong>
                                 &nbsp;of {result._emergencyGenHrLimit} hr limit
-                              </div>
-                              <div style={{ marginTop: "3px", borderTop: "1px solid #ddb", paddingTop: "3px" }}>
-                                Fuel: {fmtCurrency(g.annualFuelCost)}/yr
                               </div>
                             </div>
                             <button
