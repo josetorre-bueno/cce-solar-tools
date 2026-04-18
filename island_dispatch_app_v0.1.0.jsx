@@ -1,6 +1,6 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.135
-// Updated: 2026-04-18 11:00 PT
+// Version: v0.4.136
+// Updated: 2026-04-18 12:00 PT
 // Part of: Wipomo / CCE Solar Tools
 
 "use strict";
@@ -4955,7 +4955,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.135</span>
+        <span style={S.version}>v0.4.136</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto", display:"flex", alignItems:"center", gap:"10px"}}>
           <button
@@ -6592,13 +6592,12 @@ function App() {
 
               {/* --- Criteria --- */}
               <h2 style={Hd2}>Pass/fail criteria</h2>
-              <p>Every (PV kW × battery × generator kW) combination is tested against three criteria:</p>
+              <p>Every (PV kW × battery × generator kW) combination is tested against two criteria:</p>
               <ol style={{paddingLeft:20, marginTop:4}}>
-                <li><strong>Criterion 1 — 3-day no-solar test:</strong> stationary battery alone must power critical loads for 72 h with zero PV. Checks Title 24 §150.1-C code compliance.</li>
-                <li><strong>Criterion 2 — Worst-window pass:</strong> the full system (PV + battery + EVs if co-designed) must cover 100% of load during the worst 10-day window without running the generator above the emergency limit (200 hr for the window).</li>
-                <li><strong>Criterion 3 — Full-year coverage:</strong> a complete 8,760-hour simulation from Jan 1 must show zero unserved load hours. Systems that survive the worst window may still shed load on other multi-day cloudy stretches; this test catches those.</li>
+                <li><strong>Criterion 1 — 3-day no-solar test:</strong> stationary battery alone (no PV, no EVs) must power critical loads for 72 continuous hours. This is the Title 24 §150.1-C code compliance test. Enter your climate zone, conditioned floor area, and critical-load kWh/day in the Building Code section — the tool calculates the minimum battery size automatically.</li>
+                <li><strong>Criterion 2 — Full-year annual simulation:</strong> a complete 8,760-hour simulation from Jan 1 must show zero unserved load hours. The simulation includes the worst 10-day weather window internally, so surviving the year guarantees the worst window is covered. Systems that pass the worst window in isolation may still shed load on extended low-solar stretches elsewhere in the year — this test catches those cases.</li>
               </ol>
-              <p style={{marginTop:6}}>If no battery-only configuration passes all three criteria, the tool shows the closest miss with a ⚠ warning and promotes the battery+generator path.</p>
+              <p style={{marginTop:6}}>If no battery-only configuration passes both criteria, the tool shows the closest miss with a ⚠ warning and promotes the battery+generator path as the recommended design.</p>
 
               {/* --- Annual chart --- */}
               <h2 style={Hd2}>Annual Dispatch Charts</h2>
@@ -6666,7 +6665,7 @@ function App() {
                   <Tr l="Scroll wheel (hover P1 or P2)" v="Zooms in (fewer hours visible) or out (more hours visible). Range: 2 days to full year." />
                   <Tr l="← → buttons" v="Pan left or right by half the current window width." />
                   <Tr l="Range slider" v="Drag to move the window to any position in the year." />
-                  <Tr l="Arrow keys ← →" v="Step ±1 hour. Requires keyboard focus — click anywhere on the chart card first, then use arrow keys for frame-by-frame inspection." />
+                  <Tr l="Arrow keys ← →" v="Step ±1 hour for frame-by-frame inspection. The arrow keys only work when keyboard focus is inside the chart control area — click the range slider (or anywhere between the ← → buttons) first, then use the arrow keys. If nothing happens, click the slider and try again." />
                   <Tr l="Battery-only and Generator charts" v="Both charts are always synchronized — zooming or panning one moves the other. The center-of-window values panel updates both columns simultaneously." />
                 </tbody>
               </table>
@@ -6693,19 +6692,58 @@ function App() {
               <h2 style={Hd2}>Phase 1 results — comparison cards</h2>
               <p>Two design columns appear after the sweep:</p>
               <ul style={{paddingLeft:20}}>
-                <li><strong>Battery-only:</strong> lowest-cost PV + battery that passes all three criteria (or the WW-only best if no annual-passing design exists).</li>
+                <li><strong>Battery-only:</strong> lowest-cost PV + battery that passes both criteria (or the best available if no fully-passing design exists, shown with a ⚠ banner).</li>
                 <li><strong>Battery + Generator:</strong> lowest-cost configuration including a standby generator. Always shown — it is the recommended path when no battery-only design passes full-year coverage.</li>
               </ul>
               <p style={{marginTop:6}}>The cards show criteria pass/fail (✓ / ⚠), NPV cost breakdown, and annual operating costs (en-route and emergency DCFC trip counts, generator fuel).</p>
 
-              {/* --- EV topologies --- */}
+              {/* --- EV configuration --- */}
+              <h2 style={Hd2}>EV configuration fields</h2>
+              <table style={TBL}>
+                <tbody>
+                  <Tr l="Battery kWh" v="Usable capacity of the vehicle battery pack (e.g. 88 kWh for a Ford F-150 Lightning, 75 kWh for a Tesla Model 3 Long Range)." />
+                  <Tr l="Trips/wk" v="How often the EV leaves home for a round trip. Decimals are allowed: 0 = always home (WFH); 0.5 = biweekly; 5 = weekday commute (Mon–Fri); 5.5 = weekday plus every other weekend; 7 = daily. The EV departs at 7 am and returns at 6 pm on each trip day." />
+                  <Tr l="Trip mi (one-way)" v="Single-direction distance in miles. The round trip consumes 2 × this value. Used to calculate how much energy is consumed by driving and how much battery is needed before departure." />
+                  <Tr l="Efficiency mi/kWh" v="Vehicle energy consumption in miles per kWh (default 3.5 mi/kWh ≈ 286 Wh/mi). Used to convert trip miles to energy. Typical values: Tesla Model 3 ≈ 4.0, F-150 Lightning ≈ 2.3, RAV4 Prime ≈ 3.0." />
+                  <Tr l="V2H bidirectional" v="Check this box if the vehicle supports bidirectional charging (V2G/V2H). A bidirectional EV can discharge into the house when the stationary battery is low, acting as a large backup battery. Examples: Ford F-150 Lightning, Chevy Silverado EV. The dispatch model always charges the EV first and only asks it to export when the stationary battery is insufficient." />
+                </tbody>
+              </table>
+
+              <h3 style={Hd3}>Destination charging options</h3>
+              <p>Determines what charging (if any) the EV receives while away from home:</p>
+              <table style={TBL}>
+                <tbody>
+                  <Tr l="None (home only)" v="No charging at the destination. The EV parks and returns on whatever battery it has left after the outbound trip. Typical for short errands or situations where no charger is available. The car may need a DCFC stop en route on long days." />
+                  <Tr l="Free L2 at destination" v="An employer, hotel, or other host provides free Level 2 AC charging (≈ 7 kW). The EV charges to the destination L2 target (default 95 %) during the stay. No cost to the owner. Represents Topology C — the host grid funds the charge, reducing off-grid storage requirements." />
+                  <Tr l="Paid L2 at destination" v="Same as free L2 but the owner pays for the electricity. Enter the $/kWh rate; the annual cost accumulates and appears in the operating-cost summary. Typical for paid workplace charging programs or hotel charging fees." />
+                </tbody>
+              </table>
+
+              <h3 style={Hd3}>DCFC stop counts</h3>
+              <p>Two types of fast-charging stops are tracked separately:</p>
+              <table style={TBL}>
+                <tbody>
+                  <Tr l="Planned DCFC/yr (per EV)" v="En-route fast-charge stops the driver voluntarily makes — for example, on long drives or road trips where a top-up is planned. These are scheduled in the model (teal dashed lines on the P1 chart). Set to 0 if the driver charges exclusively at home and at the destination." />
+                  <Tr l="En-route DCFC fleet max" v="A design is rejected if the entire fleet requires more en-route stops per year than this limit. It represents the maximum planned inconvenience the household will accept (cost concern). Default 26 ≈ biweekly for the fleet." />
+                  <Tr l="Emergency DCFC fleet max" v="Unplanned stops made solely to avoid stranding — the EV returned home below the transport-minimum threshold and must top up before the next trip. These are failures of the system design (red lines on P1). A design is rejected if the fleet exceeds this limit. Default 5 per year." />
+                </tbody>
+              </table>
+
+              <h3 style={Hd3}>Charge targets</h3>
+              <table style={TBL}>
+                <tbody>
+                  <Tr l="DCFC target %" v="State of charge the model charges to at a DC fast charger (default 80 %). Industry practice stops at 80 % to protect the battery and reduce session time." />
+                  <Tr l="Dest L2 target %" v="State of charge the model assumes the destination charger reaches (default 95 %). An overnight L2 session at a hotel or employer has enough time to fully top up." />
+                </tbody>
+              </table>
+
               <h2 style={Hd2}>EV topologies</h2>
               <table style={TBL}>
                 <tbody>
-                  <Tr l="Topology A — WFH" v="EV is home during solar hours. Acts as primary storage — the EV battery is charged from solar surplus and can export back to the house (V2H). Best off-grid economics." />
-                  <Tr l="Topology B — Commuter, no workplace charging" v="EV absent during solar hours and returns with depleted battery. Creates chronic curtailment in summer and may require emergency DCFC. Usually impractical." />
-                  <Tr l="Topology C — Commuter, free workplace L2" v="Employer grid charges the EV to 95% daily. EV returns home with a full tank — effectively a large battery that costs the employer to fill. Reduces on-site storage needed." />
-                  <Tr l="V2G / V2H" v="A bidirectional EV (e.g. Ford F-150 Lightning) can export back to the house when the stationary battery is depleted. Enable by setting topology to V2G. The EV is always charged before being asked to export." />
+                  <Tr l="Topology A — WFH" v="Trips/wk = 0. EV is home all day during solar hours, acting as a large second battery. Solar surplus charges the EV; if V2H is enabled it can power the house overnight. Best off-grid economics." />
+                  <Tr l="Topology B — Commuter, no workplace charging" v="Trips/wk = 5, Dest charging = None. EV is absent during solar hours and returns with a depleted battery. The system cannot charge the EV from solar during the day, creating chronic curtailment in summer and chronic DCFC events in winter. Usually impractical for off-grid." />
+                  <Tr l="Topology C — Commuter, free workplace L2" v="Trips/wk = 5, Dest charging = Free L2. The employer grid charges the EV to 95 % daily at no cost to the owner. The EV returns home nearly full — effectively a large battery that the employer pays to charge. This significantly reduces on-site storage requirements." />
+                  <Tr l="V2G / V2H" v="Any topology + V2H checkbox checked. A bidirectional EV exports to the house when the stationary battery falls short. The optimizer can choose a smaller stationary battery when V2H is available." />
                 </tbody>
               </table>
 
