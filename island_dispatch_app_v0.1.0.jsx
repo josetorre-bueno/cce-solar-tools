@@ -1,6 +1,6 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.120
-// Updated: 2026-04-17 23:00 PT
+// Version: v0.4.121
+// Updated: 2026-04-17 23:20 PT
 // Part of: Wipomo / CCE Solar Tools
 
 "use strict";
@@ -424,6 +424,8 @@ function simulatePeriod(solarH, loadH, batKwh, batKw, genKw, evScenario, weather
   const traceBat      = returnTrace ? new Float32Array(N) : null;
   const traceGen      = returnTrace ? new Uint8Array(N)   : null;
   const traceUnserved = returnTrace ? new Float32Array(N) : null;
+  // Per-EV energy trace (one Float32Array per EV, only when EVs present + returnTrace)
+  const traceEvE      = (returnTrace && nEv > 0) ? evs.map(() => new Float32Array(N)) : null;
 
   // ── MAIN SIMULATION LOOP ───────────────────────────────────────────────────
   for (let h = 0; h < N; h++) {
@@ -829,6 +831,7 @@ function simulatePeriod(solarH, loadH, batKwh, batKw, genKw, evScenario, weather
       traceBat[h]      = batE;
       traceGen[h]      = (hasGen && genRunning) ? 1 : 0;
       traceUnserved[h] = uns;
+      if (traceEvE) for (let i = 0; i < nEv; i++) traceEvE[i][h] = evE[i];
     }
   }  // end main loop
 
@@ -873,6 +876,7 @@ function simulatePeriod(solarH, loadH, batKwh, batKw, genKw, evScenario, weather
     result.traceBat = traceBat;
     result.traceGen = traceGen;
     result.traceUnserved = traceUnserved;
+    result.traceEvE = traceEvE;   // Float32Array[] — one per EV, null when no EVs
   }
   return result;
 }
@@ -2839,6 +2843,12 @@ function App() {
               annSolar8760, loadHourly, optBat.kwh, optBat.kw, 0, sweepFleetScen, annWeather8760,
               { initialSoc: 1.0, returnTrace: true }
             );
+            // Sort EV fleet ascending by tripsPerWeek so the stack order is:
+            // least-used EV at bottom → ... → stationary battery on top.
+            const evOrder = sweepFleetScen
+              .map((ev, i) => ({ i, trips: ev.tripsPerWeek || 0, kwh: ev.kwh,
+                                 label: sweepEvList[i]?.label || `EV ${i + 1}` }))
+              .sort((a, b) => a.trips - b.trips);
             res._annualTrace = {
               bat:              batAnnTr.traceBat,
               unserved:         batAnnTr.traceUnserved,
@@ -2847,6 +2857,11 @@ function App() {
               batKwh:           optBat.kwh,
               annUnservedKwh:   batAnnTr.unservedKwh,
               annUnservedHours: batAnnTr.unservedHours,
+              // Ordered EV traces for stacked SOC chart (bottom = least-used)
+              evTraces:  evOrder.map(e => batAnnTr.traceEvE?.[e.i] || null),
+              evKwh:     evOrder.map(e => e.kwh),
+              evLabels:  evOrder.map(e => e.label),
+              evTrips:   evOrder.map(e => e.trips),
             };
           }
         }
@@ -3448,30 +3463,52 @@ function App() {
     canvas.width  = W;
     canvas.height = 72;
     const H = 72, N = 8760;
-    const { bat, unserved, batKwh } = trace;
-    const dailyBatAvg    = new Float32Array(365);
-    const dailyUnsvHours = new Float32Array(365);
+    const { bat, unserved, batKwh, evTraces, evKwh } = trace;
+    const nEvStack = (evTraces || []).filter(Boolean).length;
+    const totalKwh = batKwh + (evKwh ? evKwh.reduce((s, v) => s + v, 0) : 0);
+    // EV colors (bottom=amber, middle=teal, next=green) and battery blue on top
+    const EV_FILL  = ["rgba(200,130,20,0.80)","rgba(20,155,80,0.80)","rgba(20,130,170,0.80)"];
+    const BAT_FILL = "rgba(30,100,200,0.80)";
+
+    const dailyBatAvg  = new Float32Array(365);
+    const dailyEvAvg   = evTraces ? evTraces.map(() => new Float32Array(365)) : [];
+    const dailyUnsvHrs = new Float32Array(365);
     for (let day = 0; day < 365; day++) {
       let bs = 0, us = 0;
+      const evSums = new Array(nEvStack).fill(0);
       for (let hr = 0; hr < 24; hr++) {
-        bs += bat[day * 24 + hr];
-        if (unserved && unserved[day * 24 + hr] > 0.001) us++;
+        const h = day * 24 + hr;
+        bs += bat[h];
+        for (let ei = 0; ei < nEvStack; ei++) if (evTraces[ei]) evSums[ei] += evTraces[ei][h];
+        if (unserved && unserved[h] > 0.001) us++;
       }
-      dailyBatAvg[day]    = bs / 24 / batKwh;
-      dailyUnsvHours[day] = us;
+      dailyBatAvg[day]  = bs / 24;
+      for (let ei = 0; ei < nEvStack; ei++) dailyEvAvg[ei][day] = evSums[ei] / 24;
+      dailyUnsvHrs[day] = us;
     }
     const ctx = canvas.getContext("2d");
     ctx.fillStyle = "#fff";
     ctx.fillRect(0, 0, W, H);
     const dw = W / 365;
+    const barH = H * 0.82;   // max bar height
     for (let day = 0; day < 365; day++) {
       const x = day * dw, w = Math.max(1, dw);
-      const soc = dailyBatAvg[day];
-      const bh = soc * H * 0.75;
-      ctx.fillStyle = `rgba(30,100,200,${0.12 + soc * 0.5})`;
-      ctx.fillRect(x, H - bh, w, bh);
-      if (dailyUnsvHours[day] > 0) {
-        const uh = (dailyUnsvHours[day] / 24) * H * 0.85;
+      let yBase = H;  // draw from bottom upward
+      // EV layers (bottom → top: least-used first)
+      for (let ei = 0; ei < nEvStack; ei++) {
+        const kwhAvg = dailyEvAvg[ei][day];
+        const bh = (kwhAvg / totalKwh) * barH;
+        ctx.fillStyle = EV_FILL[ei % EV_FILL.length];
+        ctx.fillRect(x, yBase - bh, w, bh);
+        yBase -= bh;
+      }
+      // Battery layer on top
+      const bbh = (dailyBatAvg[day] / totalKwh) * barH;
+      ctx.fillStyle = BAT_FILL;
+      ctx.fillRect(x, yBase - bbh, w, bbh);
+      // Unserved hours (red bar from top)
+      if (dailyUnsvHrs[day] > 0) {
+        const uh = (dailyUnsvHrs[day] / 24) * H * 0.85;
         ctx.fillStyle = "rgba(192,20,20,0.85)";
         ctx.fillRect(x, 0, w, uh);
       }
@@ -3519,18 +3556,23 @@ function App() {
     if (!trace || !annBatP1Ref.current || !annBatP2Ref.current) return;
     if (annBatP1Inst.current) { annBatP1Inst.current.destroy(); annBatP1Inst.current = null; }
     if (annBatP2Inst.current) { annBatP2Inst.current.destroy(); annBatP2Inst.current = null; }
-    const { bat, unserved, sol, ld, batKwh } = trace;
+    const { bat, unserved, sol, ld, batKwh, evTraces, evKwh, evLabels } = trace;
+    const nEvStack = (evTraces || []).filter(Boolean).length;
+    const totalKwhStack = batKwh + (evKwh ? evKwh.reduce((s, v) => s + v, 0) : 0);
     const startH = Math.max(0, annZoomH);
     const endH   = Math.min(8760, annZoomH + annZoomW);
     const nHours = endH - startH;
     const step   = Math.max(1, Math.floor(nHours / 720));
     const labels = [], solDs = [], ldDs = [], batDs = [], unsvDs = [];
+    const evDs   = Array.from({ length: nEvStack }, () => []);
     for (let h = startH; h < endH; h += step) {
       labels.push(hourToLabel(h));
       solDs.push(+sol[h].toFixed(2));
       ldDs.push(+ld[h].toFixed(2));
       batDs.push(+bat[h].toFixed(2));
       unsvDs.push(unserved ? +(unserved[h].toFixed(2)) : 0);
+      for (let ei = 0; ei < nEvStack; ei++)
+        evDs[ei].push(evTraces[ei] ? +evTraces[ei][h].toFixed(2) : 0);
     }
     const hasUnsv = unsvDs.some(v => v > 0.01);
     const batMinLine = new Array(labels.length).fill(+(batKwh * BATTERY_MIN_SOC).toFixed(2));
@@ -3575,15 +3617,41 @@ function App() {
       options: opt1,
       plugins: [WHITE_BG, annCenterLine],
     });
+    const EV_BORDERS = ["#b07010","#107050","#186090"];
+    const EV_BGS     = ["rgba(200,130,20,0.55)","rgba(20,155,80,0.55)","rgba(20,130,170,0.55)"];
     const opt2 = commonOpt(true);
-    opt2.scales.y = { title: { display: true, text: "kWh", font: { size: 10 } },
-      beginAtZero: true, min: 0, max: batKwh * 1.05, ticks: { font: { size: 9 } }, grid: { color: "#f0f0f0" } };
+    const yMax2 = nEvStack > 0 ? totalKwhStack * 1.05 : batKwh * 1.05;
+    opt2.scales.y = { title: { display: true, text: "kWh stored", font: { size: 10 } },
+      stacked: nEvStack > 0,
+      beginAtZero: true, min: 0, max: yMax2, ticks: { font: { size: 9 } }, grid: { color: "#f0f0f0" } };
+    // Build stacked datasets: EV layers first (bottom→top = least-used→most-used), battery on top
+    const p2Datasets = [];
+    for (let ei = 0; ei < nEvStack; ei++) {
+      p2Datasets.push({
+        label: evLabels?.[ei] || `EV ${ei + 1}`,
+        data: evDs[ei],
+        borderColor: EV_BORDERS[ei % EV_BORDERS.length],
+        backgroundColor: EV_BGS[ei % EV_BGS.length],
+        fill: true, tension: 0, pointRadius: 0, borderWidth: 1,
+        order: nEvStack - ei,   // lower order = drawn on top; EVs under battery
+      });
+    }
+    p2Datasets.push({
+      label: `Battery (${batKwh} kWh)`,
+      data: batDs,
+      borderColor: "#1a3a90",
+      backgroundColor: nEvStack > 0 ? "rgba(30,80,200,0.60)" : "rgba(32,160,96,0.25)",
+      fill: true, tension: 0, pointRadius: 0, borderWidth: 1.5,
+      order: 0,
+    });
+    if (nEvStack === 0) {
+      p2Datasets.push({ label: `Min SOC (${(batKwh * BATTERY_MIN_SOC).toFixed(1)} kWh)`,
+        data: batMinLine, borderColor: "#107040", borderDash: [4,3],
+        backgroundColor: "transparent", fill: false, pointRadius: 0, borderWidth: 1 });
+    }
     annBatP2Inst.current = new Chart(annBatP2Ref.current, {
       type: "line",
-      data: { labels, datasets: [
-        { label: `Battery (${batKwh} kWh)`, data: batDs, borderColor: "#107040", backgroundColor: "rgba(32,160,96,0.25)", fill: true,  tension: 0, pointRadius: 0, borderWidth: 1.5 },
-        { label: `Min SOC (${(batKwh * BATTERY_MIN_SOC).toFixed(1)} kWh)`, data: batMinLine, borderColor: "#107040", borderDash: [4,3], backgroundColor: "transparent", fill: false, pointRadius: 0, borderWidth: 1 },
-      ]},
+      data: { labels, datasets: p2Datasets },
       options: opt2,
       plugins: [WHITE_BG, { ...annCenterLine, id: 'annBatCenterLine2' }],
     });
@@ -4437,7 +4505,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.120</span>
+        <span style={S.version}>v0.4.121</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto"}}>
           <a href="https://tools.cc-energy.org/index.html"
@@ -5363,9 +5431,23 @@ function App() {
                             </div>
                           )}
                           <div style={{ fontSize: "10px", color: "#666", marginBottom: "3px" }}>
-                            <span style={{ color: "#1a60c0" }}>■</span> battery SOC
-                            {batHasUnsv && <> &nbsp;<span style={{ color: "rgba(192,20,20,0.9)" }}>■</span> unserved hrs/day</>}
-                            . Click to navigate.
+                            {(() => {
+                              const ev = batTr?.evTraces?.filter(Boolean) || [];
+                              const EV_COLORS_LEG = ["#b07010","#107050","#186090"];
+                              return (
+                                <>
+                                  {ev.map((_, ei) => (
+                                    <span key={ei}>
+                                      <span style={{ color: EV_COLORS_LEG[ei % EV_COLORS_LEG.length] }}>■</span>
+                                      {" "}{batTr?.evLabels?.[ei] || `EV ${ei+1}`} &nbsp;
+                                    </span>
+                                  ))}
+                                  <span style={{ color: "#1a3a90" }}>■</span> battery
+                                  {batHasUnsv && <> &nbsp;<span style={{ color: "rgba(192,20,20,0.9)" }}>■</span> unserved hrs/day</>}
+                                  {" "}· stacked kWh · click to navigate.
+                                </>
+                              );
+                            })()}
                           </div>
                           <canvas ref={annBatOverviewRef}
                             style={{ width: "100%", height: "72px", display: "block", cursor: "pointer", border: "1px solid #ddd", borderRadius: "3px" }}
