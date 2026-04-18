@@ -1,6 +1,6 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.131
-// Updated: 2026-04-18 06:00 PT
+// Version: v0.4.132
+// Updated: 2026-04-18 08:00 PT
 // Part of: Wipomo / CCE Solar Tools
 
 "use strict";
@@ -4903,7 +4903,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.131</span>
+        <span style={S.version}>v0.4.132</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto"}}>
           <a href="https://tools.cc-energy.org/index.html"
@@ -5793,10 +5793,17 @@ function App() {
                               const sol    = batTr.sol?.[centerH] || 0;
                               const ld     = batTr.ld?.[centerH]  || 0;
                               const bat    = batTr.bat?.[centerH] || 0;
+                              const batPrev= centerH > 0 ? (batTr.bat?.[centerH-1] || 0) : bat;
                               const curt   = batTr.curtailed?.[centerH] || 0;
                               const unsrv  = batTr.unserved?.[centerH]  || 0;
                               const nEv    = (batTr.evTraces || []).filter(Boolean).length;
                               const EV_COLORS = ["#b07010","#107050","#186090","#8b2020"];
+                              const dBat   = bat - batPrev;
+                              // Label for battery Δ: distinguish charging source from discharging destination
+                              const batDeltaLabel = Math.abs(dBat) < 0.1 ? null
+                                : dBat > 0
+                                  ? (sol > 0.5 ? "↑ solar" : "↑ gen/—")
+                                  : (nEv > 0   ? "↓ load/EV" : "↓ load");
                               return (
                                 <div style={{ flex: 1, fontSize: "10px", lineHeight: 1.9, minWidth: 0 }}>
                                   <div style={{ fontWeight: 700, color: "#155724", marginBottom: "2px", borderBottom: "1px solid #b8d6c0", paddingBottom: "2px" }}>
@@ -5815,18 +5822,39 @@ function App() {
                                     <span style={{ color: "#888" }}>Battery SOC:</span>{" "}
                                     <strong>{fmtKwh(bat)} kWh</strong>
                                     <span style={{ color: "#888", marginLeft: "4px" }}>({batTr.batKwh > 0 ? Math.round(bat / batTr.batKwh * 100) : 0}%)</span>
+                                    {batDeltaLabel && (
+                                      <span style={{ color: dBat > 0 ? "#107040" : "#c05010", fontStyle: "italic", marginLeft: "5px" }}>
+                                        {dBat > 0 ? "+" : ""}{dBat.toFixed(1)} kWh {batDeltaLabel}
+                                      </span>
+                                    )}
                                   </div>
                                   {Array.from({ length: nEv }, (_, ei) => {
                                     const evKwh  = batTr.evTraces[ei]?.[centerH] || 0;
+                                    const evPrev = centerH > 0 ? (batTr.evTraces[ei]?.[centerH-1] || 0) : evKwh;
                                     const evCap  = batTr.evKwh?.[ei]  || 1;
-                                    const isAway = batTr.evAwayTraces?.[ei]?.[centerH];
+                                    const isAway     = !!(batTr.evAwayTraces?.[ei]?.[centerH]);
+                                    const wasAway    = centerH > 0 && !!(batTr.evAwayTraces?.[ei]?.[centerH-1]);
+                                    const justReturn = wasAway && !isAway;
+                                    const justDepart = !wasAway && isAway;
+                                    const dEv    = evKwh - evPrev;
                                     const label  = batTr.evLabels?.[ei] || `EV ${ei+1}`;
+                                    // Label explaining direction of charge change
+                                    const evDeltaLabel = Math.abs(dEv) < 0.1 ? null
+                                      : justDepart     ? "↓ departed"
+                                      : justReturn     ? (dEv < 0 ? "↓ return trip" : dEv > 0.5 ? "↓ trip + ↑ bat→EV" : "↓ return trip")
+                                      : dEv > 0.1      ? (sol > 0.5 ? "↑ solar" : "↑ bat→EV")
+                                      : "↓ V2H/drive";
                                     return (
                                       <div key={ei} style={{ color: EV_COLORS[ei % 4] }}>
                                         <span style={{ color: "#888" }}>{label}:</span>{" "}
                                         <strong>{evKwh.toFixed(1)} kWh</strong>
                                         <span style={{ color: "#888", marginLeft: "4px" }}>({Math.round(evKwh / evCap * 100)}%)</span>
                                         {isAway && <span style={{ color: "#999", fontStyle: "italic", marginLeft: "4px" }}>· away</span>}
+                                        {evDeltaLabel && (
+                                          <span style={{ color: dEv > 0 ? "#107040" : "#c05010", fontStyle: "italic", marginLeft: "5px" }}>
+                                            {dEv > 0 ? "+" : ""}{dEv.toFixed(1)} {evDeltaLabel}
+                                          </span>
+                                        )}
                                       </div>
                                     );
                                   })}
@@ -5838,11 +5866,18 @@ function App() {
                               const sol    = genTr.sol?.[centerH]       || 0;
                               const ld     = genTr.ld?.[centerH]        || 0;
                               const bat    = genTr.bat?.[centerH]       || 0;
+                              const batPrev= centerH > 0 ? (genTr.bat?.[centerH-1] || 0) : bat;
                               const curt   = genTr.curtailed?.[centerH] || 0;
                               const unsrv  = genTr.unserved?.[centerH]  || 0;
                               const genOn  = genTr.gen?.[centerH]       || 0;
                               const nEv    = (genTr.evTraces || []).filter(Boolean).length;
                               const EV_COLORS = ["#b07010","#107050","#186090","#8b2020"];
+                              const dBat   = bat - batPrev;
+                              // Label for battery Δ: distinguish charging source from discharging destination
+                              const batDeltaLabel = Math.abs(dBat) < 0.1 ? null
+                                : dBat > 0
+                                  ? (sol > 0.5 ? "↑ solar" : genOn ? "↑ gen" : "↑ gen/—")
+                                  : (nEv > 0   ? "↓ load/EV" : "↓ load");
                               return (
                                 <div style={{ flex: 1, fontSize: "10px", lineHeight: 1.9, minWidth: 0 }}>
                                   <div style={{ fontWeight: 700, color: "#6b4a10", marginBottom: "2px", borderBottom: "1px solid #e0c870", paddingBottom: "2px" }}>
@@ -5861,18 +5896,39 @@ function App() {
                                     <span style={{ color: "#888" }}>Battery SOC:</span>{" "}
                                     <strong>{fmtKwh(bat)} kWh</strong>
                                     <span style={{ color: "#888", marginLeft: "4px" }}>({genTr.batKwh > 0 ? Math.round(bat / genTr.batKwh * 100) : 0}%)</span>
+                                    {batDeltaLabel && (
+                                      <span style={{ color: dBat > 0 ? "#107040" : "#c05010", fontStyle: "italic", marginLeft: "5px" }}>
+                                        {dBat > 0 ? "+" : ""}{dBat.toFixed(1)} kWh {batDeltaLabel}
+                                      </span>
+                                    )}
                                   </div>
                                   {Array.from({ length: nEv }, (_, ei) => {
                                     const evKwh  = genTr.evTraces[ei]?.[centerH] || 0;
+                                    const evPrev = centerH > 0 ? (genTr.evTraces[ei]?.[centerH-1] || 0) : evKwh;
                                     const evCap  = genTr.evKwh?.[ei]  || 1;
-                                    const isAway = genTr.evAwayTraces?.[ei]?.[centerH];
+                                    const isAway     = !!(genTr.evAwayTraces?.[ei]?.[centerH]);
+                                    const wasAway    = centerH > 0 && !!(genTr.evAwayTraces?.[ei]?.[centerH-1]);
+                                    const justReturn = wasAway && !isAway;
+                                    const justDepart = !wasAway && isAway;
+                                    const dEv    = evKwh - evPrev;
                                     const label  = genTr.evLabels?.[ei] || `EV ${ei+1}`;
+                                    // Label explaining direction of charge change
+                                    const evDeltaLabel = Math.abs(dEv) < 0.1 ? null
+                                      : justDepart     ? "↓ departed"
+                                      : justReturn     ? (dEv < 0 ? "↓ return trip" : dEv > 0.5 ? "↓ trip + ↑ bat→EV" : "↓ return trip")
+                                      : dEv > 0.1      ? (sol > 0.5 ? "↑ solar" : genOn ? "↑ gen→EV" : "↑ bat→EV")
+                                      : "↓ V2H/drive";
                                     return (
                                       <div key={ei} style={{ color: EV_COLORS[ei % 4] }}>
                                         <span style={{ color: "#888" }}>{label}:</span>{" "}
                                         <strong>{evKwh.toFixed(1)} kWh</strong>
                                         <span style={{ color: "#888", marginLeft: "4px" }}>({Math.round(evKwh / evCap * 100)}%)</span>
                                         {isAway && <span style={{ color: "#999", fontStyle: "italic", marginLeft: "4px" }}>· away</span>}
+                                        {evDeltaLabel && (
+                                          <span style={{ color: dEv > 0 ? "#107040" : "#c05010", fontStyle: "italic", marginLeft: "5px" }}>
+                                            {dEv > 0 ? "+" : ""}{dEv.toFixed(1)} {evDeltaLabel}
+                                          </span>
+                                        )}
                                       </div>
                                     );
                                   })}
