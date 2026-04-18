@@ -1,6 +1,6 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.127
-// Updated: 2026-04-18 02:15 PT
+// Version: v0.4.128
+// Updated: 2026-04-18 03:00 PT
 // Part of: Wipomo / CCE Solar Tools
 
 "use strict";
@@ -427,6 +427,7 @@ function simulatePeriod(solarH, loadH, batKwh, batKw, genKw, evScenario, weather
   const traceCurtailed = returnTrace ? new Float32Array(N) : null;
   // Per-EV energy trace (one Float32Array per EV, only when EVs present + returnTrace)
   const traceEvE      = (returnTrace && nEv > 0) ? evs.map(() => new Float32Array(N)) : null;
+  const traceEvAway   = (returnTrace && nEv > 0) ? evs.map(() => new Uint8Array(N))    : null;
 
   // ── MAIN SIMULATION LOOP ───────────────────────────────────────────────────
   for (let h = 0; h < N; h++) {
@@ -860,6 +861,7 @@ function simulatePeriod(solarH, loadH, batKwh, batKw, genKw, evScenario, weather
       traceUnserved[h] = uns;
       if (traceEvE) for (let i = 0; i < nEv; i++) traceEvE[i][h] = evE[i];
       if (traceCurtailed) traceCurtailed[h] = Math.max(0, excess);
+      if (traceEvAway)   for (let i = 0; i < nEv; i++) traceEvAway[i][h] = evAway[i] ? 1 : 0;
     }
   }  // end main loop
 
@@ -906,6 +908,7 @@ function simulatePeriod(solarH, loadH, batKwh, batKw, genKw, evScenario, weather
     result.traceUnserved = traceUnserved;
     result.traceEvE = traceEvE;   // Float32Array[] — one per EV, null when no EVs
     result.traceCurtailed = traceCurtailed; // Float32Array — curtailed solar kW per hour
+    result.traceEvAway    = traceEvAway;   // Uint8Array[] per EV — 1 when EV is away from home
   }
   return result;
 }
@@ -1301,6 +1304,7 @@ function countAnnualGenHours(solarH, loadH, batKwh, batKw, genKw, fuelCostPerKwH
     traceUnserved:     r.traceUnserved,
     traceEvE:          r.traceEvE,   // Float32Array[] per EV, null when no EVs
     traceCurtailed:    r.traceCurtailed,
+  traceEvAway:       r.traceEvAway,
   };
 }
 
@@ -2898,10 +2902,11 @@ function App() {
               annUnservedKwh:   batAnnTr.unservedKwh,
               annUnservedHours: batAnnTr.unservedHours,
               // Ordered EV traces for stacked SOC chart (bottom = least-used)
-              evTraces:  evOrder.map(e => batAnnTr.traceEvE?.[e.i] || null),
-              evKwh:     evOrder.map(e => e.kwh),
-              evLabels:  evOrder.map(e => e.label),
-              evTrips:   evOrder.map(e => e.trips),
+              evTraces:     evOrder.map(e => batAnnTr.traceEvE?.[e.i]   || null),
+              evAwayTraces: evOrder.map(e => batAnnTr.traceEvAway?.[e.i] || null),
+              evKwh:        evOrder.map(e => e.kwh),
+              evLabels:     evOrder.map(e => e.label),
+              evTrips:      evOrder.map(e => e.trips),
             };
           }
         }
@@ -2997,10 +3002,11 @@ function App() {
                 ld:        new Float32Array(loadHourly),
                 batKwh:    winOpt.batteryKwh,
                 genKw:     winOpt.genKw,
-                evTraces:  genEvOrder.map(e => annTr.traceEvE?.[e.i] || null),
-                evKwh:     genEvOrder.map(e => e.kwh),
-                evLabels:  genEvOrder.map(e => e.label),
-                evTrips:   genEvOrder.map(e => e.trips),
+                evTraces:     genEvOrder.map(e => annTr.traceEvE?.[e.i]   || null),
+                evAwayTraces: genEvOrder.map(e => annTr.traceEvAway?.[e.i] || null),
+                evKwh:        genEvOrder.map(e => e.kwh),
+                evLabels:     genEvOrder.map(e => e.label),
+                evTrips:      genEvOrder.map(e => e.trips),
               };
             }
           }
@@ -3357,29 +3363,39 @@ function App() {
     canvas.width  = W;
     canvas.height = 72;
     const H = 72, N = 8760;
-    const { bat, gen, batKwh, evTraces, evKwh, curtailed } = trace;
+    const { bat, gen, batKwh, evTraces, evAwayTraces, evKwh, curtailed } = trace;
     const nEvStack  = (evTraces || []).filter(Boolean).length;
     const totalKwh  = batKwh + (evKwh ? evKwh.reduce((s, v) => s + v, 0) : 0);
-    const EV_FILL   = ["rgba(200,130,20,0.80)","rgba(20,155,80,0.80)","rgba(20,130,170,0.80)"];
+    const EV_FILL      = ["rgba(200,130,20,0.80)","rgba(20,155,80,0.80)","rgba(20,130,170,0.80)"];
+    const EV_FILL_AWAY = ["rgba(200,130,20,0.25)","rgba(20,155,80,0.25)","rgba(20,130,170,0.25)"];
     const BAT_FILL  = "rgba(30,100,200,0.80)";
     // Daily aggregates
-    const dailyGenHrs  = new Float32Array(365);
-    const dailyBatAvg  = new Float32Array(365);
-    const dailyEvAvg   = evTraces ? evTraces.map(() => new Float32Array(365)) : [];
-    const dailyCurtKwh = new Float32Array(365);
+    const dailyGenHrs    = new Float32Array(365);
+    const dailyBatAvg    = new Float32Array(365);
+    const dailyEvAvg     = evTraces ? evTraces.map(() => new Float32Array(365)) : [];
+    const dailyCurtKwh   = new Float32Array(365);
+    // Per-EV: fraction of solar hours (6–18) when EV is away
+    const dailyEvAwayFrac = evTraces ? evTraces.map(() => new Float32Array(365)) : [];
     for (let day = 0; day < 365; day++) {
       let gs = 0, bs = 0, cs = 0;
-      const evSums = new Array(nEvStack).fill(0);
+      const evSums      = new Array(nEvStack).fill(0);
+      const evAwaySolar = new Array(nEvStack).fill(0);
       for (let hr = 0; hr < 24; hr++) {
         const h = day * 24 + hr;
         gs += gen[h]; bs += bat[h];
         if (curtailed) cs += curtailed[h];
-        for (let ei = 0; ei < nEvStack; ei++) if (evTraces[ei]) evSums[ei] += evTraces[ei][h];
+        for (let ei = 0; ei < nEvStack; ei++) {
+          if (evTraces[ei]) evSums[ei] += evTraces[ei][h];
+          if (hr >= 6 && hr < 18 && evAwayTraces?.[ei]?.[h]) evAwaySolar[ei]++;
+        }
       }
       dailyGenHrs[day]  = gs;
       dailyBatAvg[day]  = bs / 24;
       dailyCurtKwh[day] = cs;
-      for (let ei = 0; ei < nEvStack; ei++) dailyEvAvg[ei][day] = evSums[ei] / 24;
+      for (let ei = 0; ei < nEvStack; ei++) {
+        dailyEvAvg[ei][day]      = evSums[ei] / 24;
+        dailyEvAwayFrac[ei][day] = evAwaySolar[ei] / 12; // fraction of 12 solar hours away
+      }
     }
     const maxCurtKwh = curtailed ? Math.max(...dailyCurtKwh, 0.1) : 0;
     const ctx = canvas.getContext("2d");
@@ -3391,9 +3407,11 @@ function App() {
       const x = day * dw, w = Math.max(1, dw);
       let yBase = H;
       // EV layers (bottom → top: least-used first)
+      // Away fraction > 0.5 → faded color (EV absent most of solar day, not available to building)
       for (let ei = 0; ei < nEvStack; ei++) {
         const bh = (dailyEvAvg[ei][day] / totalKwh) * barH;
-        ctx.fillStyle = EV_FILL[ei % EV_FILL.length];
+        const awayFrac = dailyEvAwayFrac[ei][day];
+        ctx.fillStyle = awayFrac > 0.5 ? EV_FILL_AWAY[ei % EV_FILL_AWAY.length] : EV_FILL[ei % EV_FILL.length];
         ctx.fillRect(x, yBase - bh, w, bh);
         yBase -= bh;
       }
@@ -3457,7 +3475,7 @@ function App() {
     if (!trace || !annP1Ref.current || !annP2Ref.current) return;
     if (annP1Inst.current) { annP1Inst.current.destroy(); annP1Inst.current = null; }
     if (annP2Inst.current) { annP2Inst.current.destroy(); annP2Inst.current = null; }
-    const { bat, gen, unserved, sol, ld, batKwh, genKw, evTraces, evKwh, evLabels } = trace;
+    const { bat, gen, unserved, sol, ld, batKwh, genKw, evTraces, evAwayTraces, evKwh, evLabels } = trace;
     const nEvStack = (evTraces || []).filter(Boolean).length;
     const totalKwhStack = batKwh + (evKwh ? evKwh.reduce((s, v) => s + v, 0) : 0);
     const startH = Math.max(0, annZoomH);
@@ -3466,6 +3484,7 @@ function App() {
     const step   = Math.max(1, Math.floor(nHours / 720));
     const labels = [], solDs = [], ldDs = [], genDs = [], batDs = [], unsvDs = [], curtDs = [];
     const evDs   = Array.from({ length: nEvStack }, () => []);
+    const awayDs = []; // combined: true if any EV is away at this sample point
     for (let h = startH; h < endH; h += step) {
       labels.push(hourToLabel(h));
       solDs.push(+sol[h].toFixed(2));
@@ -3474,8 +3493,12 @@ function App() {
       batDs.push(+bat[h].toFixed(2));
       unsvDs.push(unserved ? +(unserved[h].toFixed(2)) : 0);
       curtDs.push(trace.curtailed ? +trace.curtailed[h].toFixed(2) : 0);
-      for (let ei = 0; ei < nEvStack; ei++)
+      let anyAway = false;
+      for (let ei = 0; ei < nEvStack; ei++) {
         evDs[ei].push(evTraces[ei] ? +evTraces[ei][h].toFixed(2) : 0);
+        if (evAwayTraces?.[ei]?.[h]) anyAway = true;
+      }
+      awayDs.push(anyAway);
     }
     const hasUnsv = unsvDs.some(v => v > 0.01);
     const hasCurt = curtDs.some(v => v > 0.01);
@@ -3545,6 +3568,23 @@ function App() {
       options: opt1,
       plugins: [WHITE_BG, annGenCenterLine, annGenCurtPlugin],
     });
+    // EV-away background shading plugin for P2
+    const annGenEvAwayPlugin = {
+      id: "annGenEvAway",
+      beforeDraw(chart) {
+        if (!awayDs.some(Boolean)) return;
+        const { ctx, chartArea, scales } = chart;
+        if (!chartArea || !scales.x) return;
+        ctx.save(); ctx.fillStyle = "rgba(100,100,100,0.13)";
+        for (let i = 0; i < awayDs.length - 1; i++) {
+          if (!awayDs[i]) continue;
+          const x0 = scales.x.getPixelForValue(i);
+          const x1 = scales.x.getPixelForValue(i + 1);
+          ctx.fillRect(x0, chartArea.top, x1 - x0, chartArea.bottom - chartArea.top);
+        }
+        ctx.restore();
+      },
+    };
     // Panel 2: Battery + EV stacked kWh (identical logic to battery-only annual chart)
     const EV_BORDERS = ["#b07010","#107050","#186090"];
     const EV_BGS     = ["rgba(200,130,20,0.55)","rgba(20,155,80,0.55)","rgba(20,130,170,0.55)"];
@@ -3581,7 +3621,7 @@ function App() {
       type: "line",
       data: { labels, datasets: p2Datasets },
       options: opt2,
-      plugins: [WHITE_BG, { ...annGenCenterLine, id: 'annGenCenterLine2' }],
+      plugins: [WHITE_BG, { ...annGenCenterLine, id: 'annGenCenterLine2' }, annGenEvAwayPlugin],
     });
     return () => {
       if (annP1Inst.current) { annP1Inst.current.destroy(); annP1Inst.current = null; }
@@ -3601,29 +3641,38 @@ function App() {
     canvas.width  = W;
     canvas.height = 72;
     const H = 72, N = 8760;
-    const { bat, unserved, batKwh, evTraces, evKwh, curtailed } = trace;
+    const { bat, unserved, batKwh, evTraces, evAwayTraces, evKwh, curtailed } = trace;
     const nEvStack = (evTraces || []).filter(Boolean).length;
     const totalKwh = batKwh + (evKwh ? evKwh.reduce((s, v) => s + v, 0) : 0);
     // EV colors (bottom=amber, middle=teal, next=green) and battery blue on top
-    const EV_FILL  = ["rgba(200,130,20,0.80)","rgba(20,155,80,0.80)","rgba(20,130,170,0.80)"];
+    const EV_FILL      = ["rgba(200,130,20,0.80)","rgba(20,155,80,0.80)","rgba(20,130,170,0.80)"];
+    const EV_FILL_AWAY = ["rgba(200,130,20,0.25)","rgba(20,155,80,0.25)","rgba(20,130,170,0.25)"];
     const BAT_FILL = "rgba(30,100,200,0.80)";
 
-    const dailyBatAvg  = new Float32Array(365);
-    const dailyEvAvg   = evTraces ? evTraces.map(() => new Float32Array(365)) : [];
-    const dailyUnsvHrs = new Float32Array(365);
-    const dailyCurtKwh = new Float32Array(365);
+    const dailyBatAvg     = new Float32Array(365);
+    const dailyEvAvg      = evTraces ? evTraces.map(() => new Float32Array(365)) : [];
+    const dailyUnsvHrs    = new Float32Array(365);
+    const dailyCurtKwh    = new Float32Array(365);
+    const dailyEvAwayFrac = evTraces ? evTraces.map(() => new Float32Array(365)) : [];
     for (let day = 0; day < 365; day++) {
       let bs = 0, us = 0, cs = 0;
-      const evSums = new Array(nEvStack).fill(0);
+      const evSums      = new Array(nEvStack).fill(0);
+      const evAwaySolar = new Array(nEvStack).fill(0);
       for (let hr = 0; hr < 24; hr++) {
         const h = day * 24 + hr;
         bs += bat[h];
         if (curtailed) cs += curtailed[h];
-        for (let ei = 0; ei < nEvStack; ei++) if (evTraces[ei]) evSums[ei] += evTraces[ei][h];
+        for (let ei = 0; ei < nEvStack; ei++) {
+          if (evTraces[ei]) evSums[ei] += evTraces[ei][h];
+          if (hr >= 6 && hr < 18 && evAwayTraces?.[ei]?.[h]) evAwaySolar[ei]++;
+        }
         if (unserved && unserved[h] > 0.001) us++;
       }
       dailyBatAvg[day]  = bs / 24;
-      for (let ei = 0; ei < nEvStack; ei++) dailyEvAvg[ei][day] = evSums[ei] / 24;
+      for (let ei = 0; ei < nEvStack; ei++) {
+        dailyEvAvg[ei][day]      = evSums[ei] / 24;
+        dailyEvAwayFrac[ei][day] = evAwaySolar[ei] / 12;
+      }
       dailyUnsvHrs[day] = us;
       dailyCurtKwh[day] = cs;
     }
@@ -3637,10 +3686,11 @@ function App() {
       const x = day * dw, w = Math.max(1, dw);
       let yBase = H;  // draw from bottom upward
       // EV layers (bottom → top: least-used first)
+      // Away fraction > 0.5 → faded color (EV absent most of solar day, not available to building)
       for (let ei = 0; ei < nEvStack; ei++) {
-        const kwhAvg = dailyEvAvg[ei][day];
-        const bh = (kwhAvg / totalKwh) * barH;
-        ctx.fillStyle = EV_FILL[ei % EV_FILL.length];
+        const bh = (dailyEvAvg[ei][day] / totalKwh) * barH;
+        const awayFrac = dailyEvAwayFrac[ei][day];
+        ctx.fillStyle = awayFrac > 0.5 ? EV_FILL_AWAY[ei % EV_FILL_AWAY.length] : EV_FILL[ei % EV_FILL.length];
         ctx.fillRect(x, yBase - bh, w, bh);
         yBase -= bh;
       }
@@ -3704,7 +3754,7 @@ function App() {
     if (!trace || !annBatP1Ref.current || !annBatP2Ref.current) return;
     if (annBatP1Inst.current) { annBatP1Inst.current.destroy(); annBatP1Inst.current = null; }
     if (annBatP2Inst.current) { annBatP2Inst.current.destroy(); annBatP2Inst.current = null; }
-    const { bat, unserved, sol, ld, batKwh, evTraces, evKwh, evLabels } = trace;
+    const { bat, unserved, sol, ld, batKwh, evTraces, evAwayTraces, evKwh, evLabels } = trace;
     const nEvStack = (evTraces || []).filter(Boolean).length;
     const totalKwhStack = batKwh + (evKwh ? evKwh.reduce((s, v) => s + v, 0) : 0);
     const startH = Math.max(0, annZoomH);
@@ -3713,6 +3763,7 @@ function App() {
     const step   = Math.max(1, Math.floor(nHours / 720));
     const labels = [], solDs = [], ldDs = [], batDs = [], unsvDs = [], curtDs = [];
     const evDs   = Array.from({ length: nEvStack }, () => []);
+    const awayDs = []; // combined: true if any EV is away at this sample point
     for (let h = startH; h < endH; h += step) {
       labels.push(hourToLabel(h));
       solDs.push(+sol[h].toFixed(2));
@@ -3720,8 +3771,12 @@ function App() {
       batDs.push(+bat[h].toFixed(2));
       unsvDs.push(unserved ? +(unserved[h].toFixed(2)) : 0);
       curtDs.push(trace.curtailed ? +trace.curtailed[h].toFixed(2) : 0);
-      for (let ei = 0; ei < nEvStack; ei++)
+      let anyAway = false;
+      for (let ei = 0; ei < nEvStack; ei++) {
         evDs[ei].push(evTraces[ei] ? +evTraces[ei][h].toFixed(2) : 0);
+        if (evAwayTraces?.[ei]?.[h]) anyAway = true;
+      }
+      awayDs.push(anyAway);
     }
     const hasUnsv = unsvDs.some(v => v > 0.01);
     const hasCurt = curtDs.some(v => v > 0.01);
@@ -3823,11 +3878,28 @@ function App() {
         data: batMinLine, borderColor: "#107040", borderDash: [4,3],
         backgroundColor: "transparent", fill: false, pointRadius: 0, borderWidth: 1 });
     }
+    // EV-away background shading plugin for P2
+    const annBatEvAwayPlugin = {
+      id: "annBatEvAway",
+      beforeDraw(chart) {
+        if (!awayDs.some(Boolean)) return;
+        const { ctx, chartArea, scales } = chart;
+        if (!chartArea || !scales.x) return;
+        ctx.save(); ctx.fillStyle = "rgba(100,100,100,0.13)";
+        for (let i = 0; i < awayDs.length - 1; i++) {
+          if (!awayDs[i]) continue;
+          const x0 = scales.x.getPixelForValue(i);
+          const x1 = scales.x.getPixelForValue(i + 1);
+          ctx.fillRect(x0, chartArea.top, x1 - x0, chartArea.bottom - chartArea.top);
+        }
+        ctx.restore();
+      },
+    };
     annBatP2Inst.current = new Chart(annBatP2Ref.current, {
       type: "line",
       data: { labels, datasets: p2Datasets },
       options: opt2,
-      plugins: [WHITE_BG, { ...annCenterLine, id: 'annBatCenterLine2' }],
+      plugins: [WHITE_BG, { ...annCenterLine, id: 'annBatCenterLine2' }, annBatEvAwayPlugin],
     });
     return () => {
       if (annBatP1Inst.current) { annBatP1Inst.current.destroy(); annBatP1Inst.current = null; }
@@ -4699,7 +4771,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.127</span>
+        <span style={S.version}>v0.4.128</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto"}}>
           <a href="https://tools.cc-energy.org/index.html"
