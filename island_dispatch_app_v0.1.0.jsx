@@ -1,6 +1,6 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.132
-// Updated: 2026-04-18 08:00 PT
+// Version: v0.4.133
+// Updated: 2026-04-18 09:00 PT
 // Part of: Wipomo / CCE Solar Tools
 
 "use strict";
@@ -438,6 +438,9 @@ function simulatePeriod(solarH, loadH, batKwh, batKw, genKw, evScenario, weather
   const traceEvAway        = (returnTrace && nEv > 0) ? evs.map(() => new Uint8Array(N))    : null;
   const traceEnrouteDcfc   = (returnTrace && nEv > 0) ? new Uint8Array(N) : null;
   const traceEmergencyDcfc = (returnTrace && nEv > 0) ? new Uint8Array(N) : null;
+  // Per-EV trace patch for road trip departure: shows post-DCFC state at departure hour
+  // so the teal DCFC marker aligns with the visible SOC jump. Cleared after each trace write.
+  const dcfcTracePatch = (returnTrace && nEv > 0) ? new Array(nEv).fill(null) : null;
 
   // ── MAIN SIMULATION LOOP ───────────────────────────────────────────────────
   for (let h = 0; h < N; h++) {
@@ -585,6 +588,10 @@ function simulatePeriod(solarH, loadH, batKwh, batKw, genKw, evScenario, weather
               evE[i] = dcfcTo;
             }
           }
+          // Before deducting outbound trip: patch trace so departure-hour shows post-DCFC
+          // (pre-trip) state at home. The trip deduction becomes visible at hr=8 when EV
+          // is first recorded as "away", aligning the teal DCFC marker with the SOC jump.
+          if (dcfcTracePatch) dcfcTracePatch[i] = { val: evE[i], away: 0 };
           evE[i] -= rtOneWayKwh;
           evOnTrip[i] = true;
           evAway[i]   = true;
@@ -883,9 +890,17 @@ function simulatePeriod(solarH, loadH, batKwh, batKw, genKw, evScenario, weather
       traceBat[h]      = batE;
       traceGen[h]      = (hasGen && genRunning) ? 1 : 0;
       traceUnserved[h] = uns;
-      if (traceEvE) for (let i = 0; i < nEv; i++) traceEvE[i][h] = evE[i];
+      if (traceEvE) for (let i = 0; i < nEv; i++) {
+        const p = dcfcTracePatch?.[i];
+        traceEvE[i][h] = (p != null) ? p.val : evE[i];
+      }
       if (traceCurtailed) traceCurtailed[h] = Math.max(0, excess);
-      if (traceEvAway)   for (let i = 0; i < nEv; i++) traceEvAway[i][h] = evAway[i] ? 1 : 0;
+      if (traceEvAway) for (let i = 0; i < nEv; i++) {
+        const p = dcfcTracePatch?.[i];
+        traceEvAway[i][h] = (p != null) ? p.away : (evAway[i] ? 1 : 0);
+      }
+      // Clear departure-hour trace patches (set at road trip hr=7 departure)
+      if (dcfcTracePatch) for (let i = 0; i < nEv; i++) dcfcTracePatch[i] = null;
       if (traceEnrouteDcfc)   traceEnrouteDcfc[h]   = enrouteDcfcThisHour   ? 1 : 0;
       if (traceEmergencyDcfc) traceEmergencyDcfc[h] = emergencyDcfcThisHour ? 1 : 0;
     }
@@ -3519,8 +3534,8 @@ function App() {
     const nHours = endH - startH;
     const step   = Math.max(1, Math.floor(nHours / 720));
     const labels = [], solDs = [], ldDs = [], genDs = [], batDs = [], unsvDs = [], curtDs = [];
-    const evDs   = Array.from({ length: nEvStack }, () => []);
-    const awayDs = []; // combined: true if any EV is away at this sample point
+    const evDs        = Array.from({ length: nEvStack }, () => []);
+    const perEvAwayDs = Array.from({ length: nEvStack }, () => []); // per-EV away state arrays
     for (let h = startH; h < endH; h += step) {
       labels.push(hourToLabel(h));
       solDs.push(+sol[h].toFixed(2));
@@ -3529,13 +3544,14 @@ function App() {
       batDs.push(+bat[h].toFixed(2));
       unsvDs.push(unserved ? +(unserved[h].toFixed(2)) : 0);
       curtDs.push(trace.curtailed ? +trace.curtailed[h].toFixed(2) : 0);
-      let anyAway = false;
       for (let ei = 0; ei < nEvStack; ei++) {
         evDs[ei].push(evTraces[ei] ? +evTraces[ei][h].toFixed(2) : 0);
-        if (evAwayTraces?.[ei]?.[h]) anyAway = true;
+        perEvAwayDs[ei].push(!!(evAwayTraces?.[ei]?.[h]));
       }
-      awayDs.push(anyAway);
     }
+    const awayDs = nEvStack > 0   // combined: any-EV-away (kept for early-exit checks)
+      ? perEvAwayDs[0].map((_, i) => perEvAwayDs.some(a => a[i]))
+      : [];
     const hasUnsv = unsvDs.some(v => v > 0.01);
     const hasCurt = curtDs.some(v => v > 0.01);
     const solarBotDs = solDs.map((s, i) => Math.max(0, s - curtDs[i]));
@@ -3651,21 +3667,32 @@ function App() {
       options: opt1,
       plugins: [WHITE_BG, annGenCenterLine, annGenCurtPlugin, annDcfcPlugin],
     });
-    // EV-away background shading plugin for P2
+    // EV-away background shading plugin for P2 — per-EV colors so you can tell which EV is away
+    const EV_AWAY_COLORS = [
+      "rgba(176,112,16,0.13)",  // amber  — matches EV 0 chart color
+      "rgba(16,112,80,0.13)",   // green  — matches EV 1 chart color
+      "rgba(24,96,144,0.13)",   // teal   — matches EV 2 chart color
+      "rgba(139,32,32,0.13)",   // red    — matches EV 3 chart color
+    ];
     const annGenEvAwayPlugin = {
       id: "annGenEvAway",
       beforeDraw(chart) {
         if (!awayDs.some(Boolean)) return;
         const { ctx, chartArea, scales } = chart;
         if (!chartArea || !scales.x) return;
-        ctx.save(); ctx.fillStyle = "rgba(100,100,100,0.13)";
-        for (let i = 0; i < awayDs.length - 1; i++) {
-          if (!awayDs[i]) continue;
-          const x0 = scales.x.getPixelForValue(i);
-          const x1 = scales.x.getPixelForValue(i + 1);
-          ctx.fillRect(x0, chartArea.top, x1 - x0, chartArea.bottom - chartArea.top);
+        for (let ei = 0; ei < perEvAwayDs.length; ei++) {
+          const arr = perEvAwayDs[ei];
+          if (!arr || !arr.some(Boolean)) continue;
+          ctx.save();
+          ctx.fillStyle = EV_AWAY_COLORS[ei % EV_AWAY_COLORS.length];
+          for (let i = 0; i < arr.length - 1; i++) {
+            if (!arr[i]) continue;
+            const x0 = scales.x.getPixelForValue(i);
+            const x1 = scales.x.getPixelForValue(i + 1);
+            ctx.fillRect(x0, chartArea.top, x1 - x0, chartArea.bottom - chartArea.top);
+          }
+          ctx.restore();
         }
-        ctx.restore();
       },
     };
     // Panel 2: Battery + EV stacked kWh (identical logic to battery-only annual chart)
@@ -3846,8 +3873,8 @@ function App() {
     const nHours = endH - startH;
     const step   = Math.max(1, Math.floor(nHours / 720));
     const labels = [], solDs = [], ldDs = [], batDs = [], unsvDs = [], curtDs = [];
-    const evDs   = Array.from({ length: nEvStack }, () => []);
-    const awayDs = []; // combined: true if any EV is away at this sample point
+    const evDs        = Array.from({ length: nEvStack }, () => []);
+    const perEvAwayDs = Array.from({ length: nEvStack }, () => []); // per-EV away state arrays
     for (let h = startH; h < endH; h += step) {
       labels.push(hourToLabel(h));
       solDs.push(+sol[h].toFixed(2));
@@ -3855,13 +3882,14 @@ function App() {
       batDs.push(+bat[h].toFixed(2));
       unsvDs.push(unserved ? +(unserved[h].toFixed(2)) : 0);
       curtDs.push(trace.curtailed ? +trace.curtailed[h].toFixed(2) : 0);
-      let anyAway = false;
       for (let ei = 0; ei < nEvStack; ei++) {
         evDs[ei].push(evTraces[ei] ? +evTraces[ei][h].toFixed(2) : 0);
-        if (evAwayTraces?.[ei]?.[h]) anyAway = true;
+        perEvAwayDs[ei].push(!!(evAwayTraces?.[ei]?.[h]));
       }
-      awayDs.push(anyAway);
     }
+    const awayDs = nEvStack > 0   // combined: any-EV-away (kept for early-exit checks)
+      ? perEvAwayDs[0].map((_, i) => perEvAwayDs.some(a => a[i]))
+      : [];
     const hasUnsv = unsvDs.some(v => v > 0.01);
     const hasCurt = curtDs.some(v => v > 0.01);
     const solarBotDs = solDs.map((s, i) => Math.max(0, s - curtDs[i]));
@@ -4010,21 +4038,32 @@ function App() {
         data: batMinLine, borderColor: "#107040", borderDash: [4,3],
         backgroundColor: "transparent", fill: false, pointRadius: 0, borderWidth: 1 });
     }
-    // EV-away background shading plugin for P2
+    // EV-away background shading plugin for P2 — per-EV colors so you can tell which EV is away
+    const EV_AWAY_COLORS = [
+      "rgba(176,112,16,0.13)",  // amber  — matches EV 0 chart color
+      "rgba(16,112,80,0.13)",   // green  — matches EV 1 chart color
+      "rgba(24,96,144,0.13)",   // teal   — matches EV 2 chart color
+      "rgba(139,32,32,0.13)",   // red    — matches EV 3 chart color
+    ];
     const annBatEvAwayPlugin = {
       id: "annBatEvAway",
       beforeDraw(chart) {
         if (!awayDs.some(Boolean)) return;
         const { ctx, chartArea, scales } = chart;
         if (!chartArea || !scales.x) return;
-        ctx.save(); ctx.fillStyle = "rgba(100,100,100,0.13)";
-        for (let i = 0; i < awayDs.length - 1; i++) {
-          if (!awayDs[i]) continue;
-          const x0 = scales.x.getPixelForValue(i);
-          const x1 = scales.x.getPixelForValue(i + 1);
-          ctx.fillRect(x0, chartArea.top, x1 - x0, chartArea.bottom - chartArea.top);
+        for (let ei = 0; ei < perEvAwayDs.length; ei++) {
+          const arr = perEvAwayDs[ei];
+          if (!arr || !arr.some(Boolean)) continue;
+          ctx.save();
+          ctx.fillStyle = EV_AWAY_COLORS[ei % EV_AWAY_COLORS.length];
+          for (let i = 0; i < arr.length - 1; i++) {
+            if (!arr[i]) continue;
+            const x0 = scales.x.getPixelForValue(i);
+            const x1 = scales.x.getPixelForValue(i + 1);
+            ctx.fillRect(x0, chartArea.top, x1 - x0, chartArea.bottom - chartArea.top);
+          }
+          ctx.restore();
         }
-        ctx.restore();
       },
     };
     annBatP2Inst.current = new Chart(annBatP2Ref.current, {
@@ -4903,7 +4942,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.132</span>
+        <span style={S.version}>v0.4.133</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto"}}>
           <a href="https://tools.cc-energy.org/index.html"
