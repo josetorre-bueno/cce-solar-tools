@@ -1,6 +1,6 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.126
-// Updated: 2026-04-18 01:30 PT
+// Version: v0.4.127
+// Updated: 2026-04-18 02:15 PT
 // Part of: Wipomo / CCE Solar Tools
 
 "use strict";
@@ -424,6 +424,7 @@ function simulatePeriod(solarH, loadH, batKwh, batKw, genKw, evScenario, weather
   const traceBat      = returnTrace ? new Float32Array(N) : null;
   const traceGen      = returnTrace ? new Uint8Array(N)   : null;
   const traceUnserved = returnTrace ? new Float32Array(N) : null;
+  const traceCurtailed = returnTrace ? new Float32Array(N) : null;
   // Per-EV energy trace (one Float32Array per EV, only when EVs present + returnTrace)
   const traceEvE      = (returnTrace && nEv > 0) ? evs.map(() => new Float32Array(N)) : null;
 
@@ -858,6 +859,7 @@ function simulatePeriod(solarH, loadH, batKwh, batKw, genKw, evScenario, weather
       traceGen[h]      = (hasGen && genRunning) ? 1 : 0;
       traceUnserved[h] = uns;
       if (traceEvE) for (let i = 0; i < nEv; i++) traceEvE[i][h] = evE[i];
+      if (traceCurtailed) traceCurtailed[h] = Math.max(0, excess);
     }
   }  // end main loop
 
@@ -903,6 +905,7 @@ function simulatePeriod(solarH, loadH, batKwh, batKw, genKw, evScenario, weather
     result.traceGen = traceGen;
     result.traceUnserved = traceUnserved;
     result.traceEvE = traceEvE;   // Float32Array[] — one per EV, null when no EVs
+    result.traceCurtailed = traceCurtailed; // Float32Array — curtailed solar kW per hour
   }
   return result;
 }
@@ -1297,6 +1300,7 @@ function countAnnualGenHours(solarH, loadH, batKwh, batKw, genKw, fuelCostPerKwH
     traceGen:          r.traceGen,
     traceUnserved:     r.traceUnserved,
     traceEvE:          r.traceEvE,   // Float32Array[] per EV, null when no EVs
+    traceCurtailed:    r.traceCurtailed,
   };
 }
 
@@ -2887,6 +2891,7 @@ function App() {
             res._annualTrace = {
               bat:              batAnnTr.traceBat,
               unserved:         batAnnTr.traceUnserved,
+              curtailed:        batAnnTr.traceCurtailed,
               sol:              new Float32Array(annSolar8760),
               ld:               new Float32Array(loadHourly),
               batKwh:           optBat.kwh,
@@ -2987,6 +2992,7 @@ function App() {
                 bat:       annTr.traceBat,
                 gen:       annTr.traceGen,
                 unserved:  annTr.traceUnserved,
+                curtailed: annTr.traceCurtailed,
                 sol:       new Float32Array(winSolar),
                 ld:        new Float32Array(loadHourly),
                 batKwh:    winOpt.batteryKwh,
@@ -3351,27 +3357,31 @@ function App() {
     canvas.width  = W;
     canvas.height = 72;
     const H = 72, N = 8760;
-    const { bat, gen, batKwh, evTraces, evKwh } = trace;
+    const { bat, gen, batKwh, evTraces, evKwh, curtailed } = trace;
     const nEvStack  = (evTraces || []).filter(Boolean).length;
     const totalKwh  = batKwh + (evKwh ? evKwh.reduce((s, v) => s + v, 0) : 0);
     const EV_FILL   = ["rgba(200,130,20,0.80)","rgba(20,155,80,0.80)","rgba(20,130,170,0.80)"];
     const BAT_FILL  = "rgba(30,100,200,0.80)";
     // Daily aggregates
-    const dailyGenHrs = new Float32Array(365);
-    const dailyBatAvg = new Float32Array(365);
-    const dailyEvAvg  = evTraces ? evTraces.map(() => new Float32Array(365)) : [];
+    const dailyGenHrs  = new Float32Array(365);
+    const dailyBatAvg  = new Float32Array(365);
+    const dailyEvAvg   = evTraces ? evTraces.map(() => new Float32Array(365)) : [];
+    const dailyCurtKwh = new Float32Array(365);
     for (let day = 0; day < 365; day++) {
-      let gs = 0, bs = 0;
+      let gs = 0, bs = 0, cs = 0;
       const evSums = new Array(nEvStack).fill(0);
       for (let hr = 0; hr < 24; hr++) {
         const h = day * 24 + hr;
         gs += gen[h]; bs += bat[h];
+        if (curtailed) cs += curtailed[h];
         for (let ei = 0; ei < nEvStack; ei++) if (evTraces[ei]) evSums[ei] += evTraces[ei][h];
       }
-      dailyGenHrs[day] = gs;
-      dailyBatAvg[day] = bs / 24;
+      dailyGenHrs[day]  = gs;
+      dailyBatAvg[day]  = bs / 24;
+      dailyCurtKwh[day] = cs;
       for (let ei = 0; ei < nEvStack; ei++) dailyEvAvg[ei][day] = evSums[ei] / 24;
     }
+    const maxCurtKwh = curtailed ? Math.max(...dailyCurtKwh, 0.1) : 0;
     const ctx = canvas.getContext("2d");
     ctx.fillStyle = "#fff";
     ctx.fillRect(0, 0, W, H);
@@ -3396,6 +3406,12 @@ function App() {
         const gh = (dailyGenHrs[day] / 24) * H * 0.40;
         ctx.fillStyle = "rgba(210,80,10,0.75)";
         ctx.fillRect(x, H - gh, w, gh);
+      }
+      // Curtailed solar — yellow bars from top
+      if (maxCurtKwh > 0 && dailyCurtKwh[day] > 0.1) {
+        const ch = (dailyCurtKwh[day] / maxCurtKwh) * H * 0.18;
+        ctx.fillStyle = "rgba(180,160,0,0.70)";
+        ctx.fillRect(x, 0, w, ch);
       }
     }
     // Month dividers
@@ -3448,7 +3464,7 @@ function App() {
     const endH   = Math.min(8760, annZoomH + annZoomW);
     const nHours = endH - startH;
     const step   = Math.max(1, Math.floor(nHours / 720));
-    const labels = [], solDs = [], ldDs = [], genDs = [], batDs = [], unsvDs = [];
+    const labels = [], solDs = [], ldDs = [], genDs = [], batDs = [], unsvDs = [], curtDs = [];
     const evDs   = Array.from({ length: nEvStack }, () => []);
     for (let h = startH; h < endH; h += step) {
       labels.push(hourToLabel(h));
@@ -3457,10 +3473,13 @@ function App() {
       genDs.push(gen[h] ? genKw : 0);
       batDs.push(+bat[h].toFixed(2));
       unsvDs.push(unserved ? +(unserved[h].toFixed(2)) : 0);
+      curtDs.push(trace.curtailed ? +trace.curtailed[h].toFixed(2) : 0);
       for (let ei = 0; ei < nEvStack; ei++)
         evDs[ei].push(evTraces[ei] ? +evTraces[ei][h].toFixed(2) : 0);
     }
     const hasUnsv = unsvDs.some(v => v > 0.01);
+    const hasCurt = curtDs.some(v => v > 0.01);
+    const solarBotDs = solDs.map((s, i) => Math.max(0, s - curtDs[i]));
     const batMinLine = new Array(labels.length).fill(+(batKwh * BATTERY_MIN_SOC).toFixed(2));
     const centerIdx  = Math.floor(labels.length / 2);
     const annGenCenterLine = {
@@ -3486,21 +3505,45 @@ function App() {
       plugins: { legend: { labels: { font: { size: 10 }, boxWidth: 10 } }, tooltip: { enabled: false } },
       layout: { padding: { right: 8 } },
     });
+    // Curtailment overlay plugin — fills tips of solar peaks where storage was full
+    const annGenCurtPlugin = {
+      id: "annGenCurtFill",
+      afterDatasetsDraw(chart) {
+        if (!hasCurt) return;
+        const { ctx, scales } = chart;
+        if (!scales.x || !scales.y) return;
+        const topMeta = chart.getDatasetMeta(0);
+        const botIdx  = chart.data.datasets.findIndex(d => d._curtBot);
+        if (botIdx < 0) return;
+        const botMeta = chart.getDatasetMeta(botIdx);
+        if (!topMeta?.data.length || !botMeta?.data.length) return;
+        ctx.save();
+        ctx.fillStyle = "rgba(140,140,0,0.60)";
+        drawCurtainBezier(ctx, topMeta, botMeta, curtDs);
+        ctx.restore();
+      },
+    };
     // Panel 1: Power kW — solar, load, generator overlay
     const opt1 = commonOpt(false);
     opt1.scales.y = { title: { display: true, text: "kW", font: { size: 10 } },
       beginAtZero: true, min: 0, ticks: { font: { size: 9 } }, grid: { color: "#f0f0f0" } };
+    if (hasCurt) opt1.plugins.legend.labels = { font: { size: 10 }, boxWidth: 10, generateLabels(chart) {
+      const items = Chart.defaults.plugins.legend.labels.generateLabels(chart).filter(item => !chart.data.datasets[item.datasetIndex]?._curtBot);
+      items.push({ text: "Curtailed solar", fillStyle: "rgba(140,140,0,0.45)", strokeStyle: "rgba(0,0,0,0)", lineWidth: 0, hidden: false, datasetIndex: null, pointStyle: "rect" });
+      return items;
+    }};
     const p1Datasets = [
       { label: "Solar kW",  data: solDs, borderColor: "#d48000", backgroundColor: "rgba(244,160,32,0.25)", fill: true,  tension: 0, pointRadius: 0, borderWidth: 1.5 },
       { label: "Load kW",   data: ldDs,  borderColor: "#204090", backgroundColor: "rgba(48,96,192,0.12)",  fill: true,  tension: 0, pointRadius: 0, borderWidth: 1.5 },
       { label: `Generator ${genKw} kW`, data: genDs, borderColor: "#c05010", backgroundColor: "rgba(200,80,20,0.30)", fill: true, tension: 0, pointRadius: 0, borderWidth: 1.5 },
     ];
     if (hasUnsv) p1Datasets.push({ label: "⚠ Unserved kW", data: unsvDs, borderColor: "#c01414", backgroundColor: "rgba(192,20,20,0.40)", fill: true, tension: 0, pointRadius: 0, borderWidth: 1.5 });
+    if (hasCurt) p1Datasets.push({ label: "", data: solarBotDs, borderColor: "transparent", backgroundColor: "transparent", fill: false, tension: 0, pointRadius: 0, borderWidth: 0, _curtBot: true });
     annP1Inst.current = new Chart(annP1Ref.current, {
       type: "line",
       data: { labels, datasets: p1Datasets },
       options: opt1,
-      plugins: [WHITE_BG, annGenCenterLine],
+      plugins: [WHITE_BG, annGenCenterLine, annGenCurtPlugin],
     });
     // Panel 2: Battery + EV stacked kWh (identical logic to battery-only annual chart)
     const EV_BORDERS = ["#b07010","#107050","#186090"];
@@ -3558,7 +3601,7 @@ function App() {
     canvas.width  = W;
     canvas.height = 72;
     const H = 72, N = 8760;
-    const { bat, unserved, batKwh, evTraces, evKwh } = trace;
+    const { bat, unserved, batKwh, evTraces, evKwh, curtailed } = trace;
     const nEvStack = (evTraces || []).filter(Boolean).length;
     const totalKwh = batKwh + (evKwh ? evKwh.reduce((s, v) => s + v, 0) : 0);
     // EV colors (bottom=amber, middle=teal, next=green) and battery blue on top
@@ -3568,19 +3611,23 @@ function App() {
     const dailyBatAvg  = new Float32Array(365);
     const dailyEvAvg   = evTraces ? evTraces.map(() => new Float32Array(365)) : [];
     const dailyUnsvHrs = new Float32Array(365);
+    const dailyCurtKwh = new Float32Array(365);
     for (let day = 0; day < 365; day++) {
-      let bs = 0, us = 0;
+      let bs = 0, us = 0, cs = 0;
       const evSums = new Array(nEvStack).fill(0);
       for (let hr = 0; hr < 24; hr++) {
         const h = day * 24 + hr;
         bs += bat[h];
+        if (curtailed) cs += curtailed[h];
         for (let ei = 0; ei < nEvStack; ei++) if (evTraces[ei]) evSums[ei] += evTraces[ei][h];
         if (unserved && unserved[h] > 0.001) us++;
       }
       dailyBatAvg[day]  = bs / 24;
       for (let ei = 0; ei < nEvStack; ei++) dailyEvAvg[ei][day] = evSums[ei] / 24;
       dailyUnsvHrs[day] = us;
+      dailyCurtKwh[day] = cs;
     }
+    const maxCurtKwh = curtailed ? Math.max(...dailyCurtKwh, 0.1) : 0;
     const ctx = canvas.getContext("2d");
     ctx.fillStyle = "#fff";
     ctx.fillRect(0, 0, W, H);
@@ -3606,6 +3653,12 @@ function App() {
         const uh = (dailyUnsvHrs[day] / 24) * H * 0.85;
         ctx.fillStyle = "rgba(192,20,20,0.85)";
         ctx.fillRect(x, 0, w, uh);
+      }
+      // Curtailed solar (yellow bar from top)
+      if (maxCurtKwh > 0 && dailyCurtKwh[day] > 0.1) {
+        const ch = (dailyCurtKwh[day] / maxCurtKwh) * H * 0.18;
+        ctx.fillStyle = "rgba(180,160,0,0.70)";
+        ctx.fillRect(x, 0, w, ch);
       }
     }
     // Month dividers (no text labels — rendered as HTML below the canvas)
@@ -3658,7 +3711,7 @@ function App() {
     const endH   = Math.min(8760, annZoomH + annZoomW);
     const nHours = endH - startH;
     const step   = Math.max(1, Math.floor(nHours / 720));
-    const labels = [], solDs = [], ldDs = [], batDs = [], unsvDs = [];
+    const labels = [], solDs = [], ldDs = [], batDs = [], unsvDs = [], curtDs = [];
     const evDs   = Array.from({ length: nEvStack }, () => []);
     for (let h = startH; h < endH; h += step) {
       labels.push(hourToLabel(h));
@@ -3666,10 +3719,13 @@ function App() {
       ldDs.push(+ld[h].toFixed(2));
       batDs.push(+bat[h].toFixed(2));
       unsvDs.push(unserved ? +(unserved[h].toFixed(2)) : 0);
+      curtDs.push(trace.curtailed ? +trace.curtailed[h].toFixed(2) : 0);
       for (let ei = 0; ei < nEvStack; ei++)
         evDs[ei].push(evTraces[ei] ? +evTraces[ei][h].toFixed(2) : 0);
     }
     const hasUnsv = unsvDs.some(v => v > 0.01);
+    const hasCurt = curtDs.some(v => v > 0.01);
+    const solarBotDs = solDs.map((s, i) => Math.max(0, s - curtDs[i]));
     const batMinLine = new Array(labels.length).fill(+(batKwh * BATTERY_MIN_SOC).toFixed(2));
     const centerIdx = Math.floor(labels.length / 2);
     const annCenterLine = {
@@ -3696,9 +3752,31 @@ function App() {
       plugins: { legend: { labels: { font: { size: 10 }, boxWidth: 10 } }, tooltip: { enabled: false } },
       layout: { padding: { right: 8 } },
     });
+    const annBatCurtPlugin = {
+      id: "annBatCurtFill",
+      afterDatasetsDraw(chart) {
+        if (!hasCurt) return;
+        const { ctx, scales } = chart;
+        if (!scales.x || !scales.y) return;
+        const topMeta = chart.getDatasetMeta(0);
+        const botIdx  = chart.data.datasets.findIndex(d => d._curtBot);
+        if (botIdx < 0) return;
+        const botMeta = chart.getDatasetMeta(botIdx);
+        if (!topMeta?.data.length || !botMeta?.data.length) return;
+        ctx.save();
+        ctx.fillStyle = "rgba(140,140,0,0.60)";
+        drawCurtainBezier(ctx, topMeta, botMeta, curtDs);
+        ctx.restore();
+      },
+    };
     const opt1 = commonOpt(false);
     opt1.scales.y = { title: { display: true, text: "kW", font: { size: 10 } },
       beginAtZero: true, min: 0, ticks: { font: { size: 9 } }, grid: { color: "#f0f0f0" } };
+    if (hasCurt) opt1.plugins.legend.labels = { font: { size: 10 }, boxWidth: 10, generateLabels(chart) {
+      const items = Chart.defaults.plugins.legend.labels.generateLabels(chart).filter(item => !chart.data.datasets[item.datasetIndex]?._curtBot);
+      items.push({ text: "Curtailed solar", fillStyle: "rgba(140,140,0,0.45)", strokeStyle: "rgba(0,0,0,0)", lineWidth: 0, hidden: false, datasetIndex: null, pointStyle: "rect" });
+      return items;
+    }};
     const p1Datasets = [
       { label: "Solar kW", data: solDs, borderColor: "#d48000", backgroundColor: "rgba(244,160,32,0.25)", fill: true,  tension: 0, pointRadius: 0, borderWidth: 1.5 },
       { label: "Load kW",  data: ldDs,  borderColor: "#204090", backgroundColor: "rgba(48,96,192,0.12)",  fill: true,  tension: 0, pointRadius: 0, borderWidth: 1.5 },
@@ -3706,11 +3784,12 @@ function App() {
     if (hasUnsv) {
       p1Datasets.push({ label: "⚠ Unserved kW", data: unsvDs, borderColor: "#c01414", backgroundColor: "rgba(192,20,20,0.40)", fill: true, tension: 0, pointRadius: 0, borderWidth: 1.5 });
     }
+    if (hasCurt) p1Datasets.push({ label: "", data: solarBotDs, borderColor: "transparent", backgroundColor: "transparent", fill: false, tension: 0, pointRadius: 0, borderWidth: 0, _curtBot: true });
     annBatP1Inst.current = new Chart(annBatP1Ref.current, {
       type: "line",
       data: { labels, datasets: p1Datasets },
       options: opt1,
-      plugins: [WHITE_BG, annCenterLine],
+      plugins: [WHITE_BG, annCenterLine, annBatCurtPlugin],
     });
     const EV_BORDERS = ["#b07010","#107050","#186090"];
     const EV_BGS     = ["rgba(200,130,20,0.55)","rgba(20,155,80,0.55)","rgba(20,130,170,0.55)"];
@@ -4620,7 +4699,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.126</span>
+        <span style={S.version}>v0.4.127</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto"}}>
           <a href="https://tools.cc-energy.org/index.html"
