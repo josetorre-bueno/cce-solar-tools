@@ -1,6 +1,6 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.121
-// Updated: 2026-04-17 23:20 PT
+// Version: v0.4.122
+// Updated: 2026-04-17 23:30 PT
 // Part of: Wipomo / CCE Solar Tools
 
 "use strict";
@@ -461,6 +461,7 @@ function simulatePeriod(solarH, loadH, batKwh, batKw, genKw, evScenario, weather
     // ── Per-EV events ─────────────────────────────────────────────────────────
     const triggerFired = nEv > 0 ? new Array(nEv).fill(false) : [];
     let dcfcThisHour = false;
+    let emergencyDcfcThisHour = false;
     const evKwhStart = nEv > 0 ? [...evE] : [];
     const batKwhStart = batE;
 
@@ -575,6 +576,7 @@ function simulatePeriod(solarH, loadH, batKwh, batKw, genKw, evScenario, weather
               dcfcThisHour = true;
               if (inWw) { wwDcfcKwh += added / CHARGE_RTE; wwDcfcCount++; }
               emergencyDcfcKwh += added / CHARGE_RTE; emergencyDcfcCount++;
+              emergencyDcfcThisHour = true;
               emergencyRoadTripInfeasible++;
               if (inWw) wwEmergencyDcfcCount++;
             }
@@ -623,6 +625,7 @@ function simulatePeriod(solarH, loadH, batKwh, batKw, genKw, evScenario, weather
                   dcfcThisHour = true;
                   if (inWw) { wwDcfcKwh += added / CHARGE_RTE; wwDcfcCount++; }
                   emergencyDcfcKwh += added / CHARGE_RTE; emergencyDcfcCount++;
+                  emergencyDcfcThisHour = true;
                   emergencyCommuteReturn++;
                   if (inWw) wwEmergencyDcfcCount++;
                   evE[i] = ev.kwh * ev.dcfcTargetPct;
@@ -641,6 +644,7 @@ function simulatePeriod(solarH, loadH, batKwh, batKw, genKw, evScenario, weather
             dcfcThisHour = true;
             if (inWw) { wwDcfcKwh += added / CHARGE_RTE; wwDcfcCount++; }
             emergencyDcfcKwh += added / CHARGE_RTE; emergencyDcfcCount++;
+            emergencyDcfcThisHour = true;
             emergencyHomeBased++;
             if (inWw) wwEmergencyDcfcCount++;
             evE[i] = ev.kwh * ev.dcfcTargetPct;
@@ -820,7 +824,8 @@ function simulatePeriod(solarH, loadH, batKwh, batKw, genKw, evScenario, weather
         evAway:          nEv > 0 ? [...evAway] : [],
         triggerSet:      nEv > 0 ? [...chargeToday] : [],
         triggerFired,
-        dcfcEvent:       dcfcThisHour,
+        dcfcEvent:          dcfcThisHour,
+        emergencyDcfcEvent: emergencyDcfcThisHour,
         genRunning:      hasGen && genRunning,
         genKwOut:        genOut,
         curtailed:       parseFloat(Math.max(0, excess).toFixed(3)),
@@ -1226,9 +1231,9 @@ function applyLoadShift(loadH, pct) {
 }
 
 // ── DISPATCH GENERATOR (wrapper around simulatePeriod) ───────────────────────
-function dispatchGenerator(solarH, loadH, batKwh, batKw, genKw, weather, lookaheadDays = 4, fuelCostPerKwHr = 0.50) {
-  const r = simulatePeriod(solarH, loadH, batKwh, batKw, genKw, [], weather, {
-    fuelCostPerKwHr, lookaheadDays, returnTrace: true,
+function dispatchGenerator(solarH, loadH, batKwh, batKw, genKw, weather, lookaheadDays = 4, fuelCostPerKwHr = 0.50, evScenario = [], erMinKwh = 10.71) {
+  const r = simulatePeriod(solarH, loadH, batKwh, batKw, genKw, evScenario, weather, {
+    fuelCostPerKwHr, lookaheadDays, returnTrace: true, erMinKwh,
   });
   return {
     wwPass:         r.wwPass,
@@ -1249,14 +1254,16 @@ function dispatchGenerator(solarH, loadH, batKwh, batKw, genKw, weather, lookahe
 // supply the required weather array (no real weather object needed for annual sim).
 // Starting SOC = 100 % — system finishes summer fully charged.
 function countAnnualGenHours(solarH, loadH, batKwh, batKw, genKw, fuelCostPerKwHr,
-                             wwStartH = -1, wwLenH = 0, lookaheadDays = 4, returnTrace = false) {
+                             wwStartH = -1, wwLenH = 0, lookaheadDays = 4, returnTrace = false,
+                             evScenario = [], erMinKwh = 10.71) {
   const annWeather = buildAnnualWeather(solarH.length);
-  const r = simulatePeriod(solarH, loadH, batKwh, batKw, genKw, [], annWeather, {
+  const r = simulatePeriod(solarH, loadH, batKwh, batKw, genKw, evScenario, annWeather, {
     fuelCostPerKwHr, lookaheadDays,
     initialSoc:       1.0,
     returnTrace,
     wwExcludeStartH:  wwStartH,
     wwExcludeLen:     wwLenH,
+    erMinKwh,
   });
   return {
     annualGenHours:  r.annGenHoursOrdinance,
@@ -1275,12 +1282,13 @@ function countAnnualGenHours(solarH, loadH, batKwh, batKw, genKw, fuelCostPerKwH
 // wwStartH, wwLenH: passed through to countAnnualGenHours so worst-window hours are
 // excluded from the 52 hr/yr ordinance count.  Default -1/0 = no mask (count all).
 function sweepGenerators(solarH, loadH, batKwh, batKw, weather, genSizesKw, fuelCostPerKwHr, lookaheadDays,
-                         annualSolarH, annualLoadH, wwStartH = -1, wwLenH = 0) {
+                         annualSolarH, annualLoadH, wwStartH = -1, wwLenH = 0,
+                         evScenario = [], erMinKwh = 10.71) {
   const results = genSizesKw.map(genKw => {
-    const r = dispatchGenerator(solarH, loadH, batKwh, batKw, genKw, weather, lookaheadDays, fuelCostPerKwHr);
+    const r = dispatchGenerator(solarH, loadH, batKwh, batKw, genKw, weather, lookaheadDays, fuelCostPerKwHr, evScenario, erMinKwh);
     if (annualSolarH && annualLoadH) {
       const ann = countAnnualGenHours(annualSolarH, annualLoadH, batKwh, batKw, genKw, fuelCostPerKwHr,
-                                      wwStartH, wwLenH, lookaheadDays);
+                                      wwStartH, wwLenH, lookaheadDays, false, evScenario, erMinKwh);
       r.annualGenHours = ann.annualGenHours;
       r.annualGenCost  = ann.annualGenCost;
     }
@@ -1312,7 +1320,8 @@ function findOptimumGenerator({ mountOptions, pvSizesKw, batteryOptions, genSize
                                  fuelCostPerKwHr, lookaheadDays, npvYears, discountRate,
                                  codePvKw = 0, codeMinBatKwh = 0,
                                  genHrLimit = 52, emergencyGenHrLimit = 200,
-                                 criticalLoadKwhPerDay = 15 }) {
+                                 criticalLoadKwhPerDay = 15,
+                                 evScenario = [], erMinKwh = 10.71 }) {
   const npvFactor = discountRate > 0
     ? (1.0 - Math.pow(1.0 + discountRate, -npvYears)) / discountRate
     : npvYears;
@@ -1336,7 +1345,7 @@ function findOptimumGenerator({ mountOptions, pvSizesKw, batteryOptions, genSize
       for (const bat of batteryOptions) {
         if (bat.kwh < codeMinBatKwh) continue; // below 3× winter-avg minimum
         // Pre-check: does this pvKw + battery already survive the stress window WITHOUT a generator?
-        const batOnlyCheck = dispatchGenerator(solarH, loadSw, bat.kwh, bat.kw, 0, weather, lookaheadDays, 0);
+        const batOnlyCheck = dispatchGenerator(solarH, loadSw, bat.kwh, bat.kw, 0, weather, lookaheadDays, 0, evScenario, erMinKwh);
         const batAlreadyPasses = batOnlyCheck.wwPass;
         // Init per-battery summary diag entry
         if (!batteryDiag[bat.label]) {
@@ -1346,7 +1355,7 @@ function findOptimumGenerator({ mountOptions, pvSizesKw, batteryOptions, genSize
         }
         const diag = batteryDiag[bat.label];
         for (const genKw of [...genSizesKw].sort((a, b) => a - b)) {
-          const r = dispatchGenerator(solarH, loadSw, bat.kwh, bat.kw, genKw, weather, lookaheadDays, fuelCostPerKwHr);
+          const r = dispatchGenerator(solarH, loadSw, bat.kwh, bat.kw, genKw, weather, lookaheadDays, fuelCostPerKwHr, evScenario, erMinKwh);
           // Record a diagnostic row for every combination regardless of pass/fail
           const row = {
             mount: mount.label, pvKw, batLabel: bat.label, batKwh: bat.kwh,
@@ -1369,7 +1378,7 @@ function findOptimumGenerator({ mountOptions, pvSizesKw, batteryOptions, genSize
           // generator is unused in a typical year (e.g. August low-solar nights can trigger it).
           const ann = (annualSolarH && loadAnnual)
             ? countAnnualGenHours(annualSolarH, loadAnnual, bat.kwh, bat.kw, genKw, fuelCostPerKwHr,
-                                  wwStartH8760, wwLenH8760, lookaheadDays)
+                                  wwStartH8760, wwLenH8760, lookaheadDays, false, evScenario, erMinKwh)
             : { annualGenHours: r.simGenHours, annualGenCost: r.annualGenCost };
           row.annGenHours = ann.annualGenHours;
           row.annFuelCostPerYr = ann.annualGenCost;
@@ -2885,13 +2894,13 @@ function App() {
           const annualSolar2a = opt2aMount.solarNormalized.map(x => x * opt2a.pvKw);
           const _wwStartH1 = ((res.spinupStartDoy - 1) + (res._cell.spinup_days || 0)) * 24 % 8760;
           const _wwLenH1   = (res._cell.window_days || 10) * 24;
-          const genSweep1 = sweepGenerators(solar2aH, noEvLoad, opt2aBat.kwh, opt2aBat.kw, res._weather, genSizes, fuelCostPerHour, genLookaheadDays, annualSolar2a, loadHourly, _wwStartH1, _wwLenH1);
+          const genSweep1 = sweepGenerators(solar2aH, noEvLoad, opt2aBat.kwh, opt2aBat.kw, res._weather, genSizes, fuelCostPerHour, genLookaheadDays, annualSolar2a, loadHourly, _wwStartH1, _wwLenH1, sweepFleetScen, erMinKwhSweep);
           res._genSweep1 = genSweep1;
 
           // Trace for optimum battery — use min-passing gen; if none pass, use smallest so chart renders
           const traceEntry1 = genSweep1.minGen || (genSweep1.results.length > 0 ? genSweep1.results[0] : null);
           if (traceEntry1) {
-            const gtrace1 = dispatchGenerator(solar2aH, noEvLoad, opt2aBat.kwh, opt2aBat.kw, traceEntry1.genKw, res._weather, genLookaheadDays, fuelCostPerHour);
+            const gtrace1 = dispatchGenerator(solar2aH, noEvLoad, opt2aBat.kwh, opt2aBat.kw, traceEntry1.genKw, res._weather, genLookaheadDays, fuelCostPerHour, sweepFleetScen, erMinKwhSweep);
             res._genTrace1 = gtrace1.trace;
             res._genTrace1Kw = traceEntry1.genKw;
           }
@@ -2923,6 +2932,8 @@ function App() {
             genHrLimit,
             emergencyGenHrLimit,
             criticalLoadKwhPerDay,
+            evScenario:     sweepFleetScen,
+            erMinKwh:       erMinKwhSweep,
           });
           res._genOptResult = genOptResult;
 
@@ -2939,7 +2950,7 @@ function App() {
               const _wwLA = (res._cell.window_days || 10) * 24;
               const annTr = countAnnualGenHours(
                 winSolar, loadHourly, winOpt.batteryKwh, winOpt.batteryKw, winOpt.genKw,
-                fuelCostPerHour, _wwSA, _wwLA, genLookaheadDays, true
+                fuelCostPerHour, _wwSA, _wwLA, genLookaheadDays, true, sweepFleetScen, erMinKwhSweep
               );
               genOptResult.annualTrace = {
                 bat: annTr.traceBat,
@@ -3226,6 +3237,7 @@ function App() {
           { label: "Solar kW",  data: solarDs,    borderColor: "#d48000", backgroundColor: "rgba(244,160,32,0.35)", fill: true,  tension: 0.15, pointRadius: 0, borderWidth: 1.5 },
           { label: "Load kW",   data: loadDs,     borderColor: "#204090", backgroundColor: "rgba(48,96,192,0.15)",  fill: true,  tension: 0.15, pointRadius: 0, borderWidth: 1.5 },
           { label: "", data: solarBotDs, borderColor: "transparent", backgroundColor: "transparent", fill: false, tension: 0.15, pointRadius: 0, borderWidth: 0, _curtBot: true },
+          { label: "Emergency DCFC", data: slice.map(r => r.emergencyDcfcEvent ? r.loadKw * 0.5 : null), borderColor: "#c0392b", backgroundColor: "#c0392b", showLine: false, pointRadius: slice.map(r => r.emergencyDcfcEvent ? 7 : 0), pointStyle: "triangle", pointHoverRadius: 9, borderWidth: 0, order: 0 },
         ]},
         options: opts,
         plugins: [WHITE_BG, makeWwPlugin("ww1"), dcfcPlugin, curtailPlugin, makeEvCrosshair("ch_ev1")],
@@ -4505,7 +4517,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.121</span>
+        <span style={S.version}>v0.4.122</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto"}}>
           <a href="https://tools.cc-energy.org/index.html"
@@ -5098,6 +5110,15 @@ function App() {
                                 Total NPV: {fmtCurrency(opt.totalCost)}
                                 {!isAnnualValid && <span style={{ fontSize: "10px", fontWeight: 400, marginLeft: "4px" }}>(WW only)</span>}
                               </div>
+                              {sweepEvList.length > 0 && (opt.annualEnrouteDcfc != null || opt.annualEmergencyDcfc != null) && (
+                                <div style={{ marginTop: "4px", borderTop: "1px solid #c8e6c9", paddingTop: "4px" }}>
+                                  <div>En-route DCFC: <strong>{opt.annualEnrouteDcfc ?? "—"}</strong> trips/yr</div>
+                                  <div style={{ color: (opt.annualEmergencyDcfc ?? 0) > 0 ? "#c0392b" : "#555" }}>
+                                    Emergency DCFC: <strong>{opt.annualEmergencyDcfc ?? "—"}</strong> trips/yr
+                                    {(opt.annualEmergencyDcfc ?? 0) > 0 && <span style={{ color: "#c0392b" }}> ⚠</span>}
+                                  </div>
+                                </div>
+                              )}
                             </div>
                             <div style={{ fontSize: "10px", color: "#333", marginTop: "6px", lineHeight: 1.9, background: isAnnualValid ? "#e8f7ed" : "#fffbe6", borderRadius: "4px", padding: "5px 8px" }}>
                               <div>
