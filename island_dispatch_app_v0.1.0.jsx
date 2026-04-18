@@ -1,6 +1,6 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.134
-// Updated: 2026-04-18 10:00 PT
+// Version: v0.4.135
+// Updated: 2026-04-18 11:00 PT
 // Part of: Wipomo / CCE Solar Tools
 
 "use strict";
@@ -4955,7 +4955,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.134</span>
+        <span style={S.version}>v0.4.135</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto", display:"flex", alignItems:"center", gap:"10px"}}>
           <button
@@ -6581,7 +6581,7 @@ function App() {
                   <Tr l="Site name / Address" v="Free-text label and geocode lookup. Enter a street address and press ⌖ Geocode — lat/lon are filled automatically. Or enter lat/lon directly." />
                   <Tr l="Annual load (kWh/yr)" v="Household electricity consumption. 16,000 kWh/yr is a typical all-electric single-family home. Alternatively upload a Green Button hourly CSV for a real load profile." />
                   <Tr l="Daytime shift %" v="Shifts a fraction of evening load to midday (e.g. pre-cooling, pool pump). Zero for no shift." />
-                  <Tr l="PV sizes (kW)" v="Comma-separated list of AC capacities to sweep. The optimizer tests every combination with every battery." />
+                  <Tr l="PV sizes (kW)" v="Comma-separated list of DC array capacities to sweep. The optimizer tests every combination with every battery." />
                   <Tr l="Mount types" v="One or more mounting configurations. Each has a cost ($/kW AC), DC:AC ratio, tilt, azimuth, and loss %. PVWatts is called once per mount type per size." />
                   <Tr l="Battery options" v="Select which battery products to include. Each has an editable installed cost ($/system). The optimizer picks the cheapest option that passes all criteria." />
                   <Tr l="EV fleet" v="Up to 3 vehicles. EVs can act as additional storage (V2G/V2H) or as a large load. Each EV has its own trip schedule, charge topology, and efficiency." />
