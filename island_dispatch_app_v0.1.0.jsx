@@ -1,6 +1,6 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.119
-// Updated: 2026-04-17 22:45 PT
+// Version: v0.4.120
+// Updated: 2026-04-17 23:00 PT
 // Part of: Wipomo / CCE Solar Tools
 
 "use strict";
@@ -2828,14 +2828,16 @@ function App() {
           res._traceData = traceResult.trace;
           res._optSolarH = solarH;
 
-          // Annual trace — always generated for stationary battery alone (no EVs).
-          // For V2G designs this shows the battery-only baseline; V2G provides supplemental
-          // coverage during the worst window and better days.  The chart note indicates
-          // when V2G was part of the design.
+          // Annual trace — uses the same fleet as the Criterion 2 annual check
+          // (sweepFleetScen) so the chart is consistent with what was optimized.
+          // The stationary battery SOC trace reflects actual dispatch with EVs helping;
+          // it will NOT show false depletion during hours the EV covered.
           if (loadHourly) {
             const annSolar8760 = optMount.solarNormalized.map(x => x * opt.pvKw);
-            const batAnnTr = countAnnualGenHours(
-              annSolar8760, loadHourly, optBat.kwh, optBat.kw, 0, 0, -1, 0, 4, true
+            const annWeather8760 = buildAnnualWeather(annSolar8760.length);
+            const batAnnTr = simulatePeriod(
+              annSolar8760, loadHourly, optBat.kwh, optBat.kw, 0, sweepFleetScen, annWeather8760,
+              { initialSoc: 1.0, returnTrace: true }
             );
             res._annualTrace = {
               bat:              batAnnTr.traceBat,
@@ -2843,7 +2845,6 @@ function App() {
               sol:              new Float32Array(annSolar8760),
               ld:               new Float32Array(loadHourly),
               batKwh:           optBat.kwh,
-              v2gEffKwh:        0,
               annUnservedKwh:   batAnnTr.unservedKwh,
               annUnservedHours: batAnnTr.unservedHours,
             };
@@ -4436,7 +4437,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.119</span>
+        <span style={S.version}>v0.4.120</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto"}}>
           <a href="https://tools.cc-energy.org/index.html"
@@ -5278,11 +5279,11 @@ function App() {
                             Values at center: <span style={{ fontWeight: 400, color: "#555" }}>{hourToLabel(centerH)}</span>
                           </div>
                           <div style={{ display: "flex", gap: "12px" }}>
-                            {/* Battery-only column */}
+                            {/* Battery (+ EV if co-designed) column */}
                             {batTr && batOpt && (
                               <div style={{ flex: 1, fontSize: "10px", lineHeight: 1.9, minWidth: 0 }}>
                                 <div style={{ fontWeight: 700, color: "#155724", marginBottom: "2px", borderBottom: "1px solid #b8d6c0", paddingBottom: "2px" }}>
-                                  🔋 Battery-only — {batOpt.pvKw} kW · {batOpt.batteryLabel}
+                                  🔋 {sweepEvList.length > 0 ? `Battery + ${sweepEvList.length} EV` : "Battery-only"} — {batOpt.pvKw} kW · {batOpt.batteryLabel}
                                 </div>
                                 <div><span style={{ color: "#888" }}>Solar:</span> <strong>{fmtKw(batTr.sol[centerH])} kW</strong></div>
                                 <div><span style={{ color: "#888" }}>Load:</span> <strong>{fmtKw(batTr.ld[centerH])} kW</strong></div>
@@ -5340,20 +5341,18 @@ function App() {
                         </div>
                       </div>
 
-                      {/* Battery-only chart card */}
+                      {/* Annual dispatch chart card */}
                       {batTr && batOpt && (
                         <div style={S.card}>
                           <div style={{ fontSize: "12px", fontWeight: 700, color: "#155724", marginBottom: "4px" }}>
-                            📅 Battery-Only Annual — {batOpt.pvKw} kW {batOpt.mountLabel} · {batOpt.batteryLabel}
+                            📅 Annual Dispatch — {batOpt.pvKw} kW {batOpt.mountLabel} · {batOpt.batteryLabel}
+                            {sweepEvList.length > 0 && (
+                              <span style={{ fontWeight: 400, color: "#155724", marginLeft: "6px" }}>· {sweepEvList.length} EV{sweepEvList.length > 1 ? "s" : ""} co-designed</span>
+                            )}
                             {!result.optimum && result._wwOnlyOptimum && (
                               <span style={{ fontWeight: 400, color: "#856404", marginLeft: "6px" }}>(⚠ WW-only — no config passes full-year coverage)</span>
                             )}
                           </div>
-                          {result._sweepHasV2g && (
-                            <div style={{ background: "#e8f0fe", border: "1px solid #9ab0e8", borderRadius: "4px", padding: "4px 10px", marginBottom: "6px", fontSize: "10px", color: "#1a4080" }}>
-                              ℹ Stationary battery only — V2G EVs supplement coverage during the worst-window period but are excluded from this annual trace for conservatism.
-                            </div>
-                          )}
                           {batHasUnsv ? (
                             <div style={{ background: "#fff3cd", border: "1px solid #ffc107", borderRadius: "4px", padding: "6px 10px", marginBottom: "6px", fontSize: "11px", color: "#856404", lineHeight: 1.6 }}>
                               <strong>⚠ {annUnsKwh.toLocaleString()} kWh unserved across {annUnsHours} hours/yr</strong> — red bars show days with unserved load
