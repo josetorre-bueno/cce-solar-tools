@@ -1,6 +1,6 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.125
-// Updated: 2026-04-18 01:00 PT
+// Version: v0.4.126
+// Updated: 2026-04-18 01:30 PT
 // Part of: Wipomo / CCE Solar Tools
 
 "use strict";
@@ -3892,21 +3892,41 @@ function App() {
       },
     });
 
+    // Curtailment overlay plugin for EV impact P1 — same bezier fill as main result chart
+    const evImpCurtailPlugin = {
+      id: "evImpCurtFill",
+      afterDatasetsDraw(chart) {
+        if (!hasCurt) return;
+        const { ctx, scales } = chart;
+        if (!scales.x || !scales.y) return;
+        const topMeta = chart.getDatasetMeta(0); // solar
+        const botMeta = chart.getDatasetMeta(2); // solar − curtailed (hidden dataset)
+        if (!topMeta?.data.length || !botMeta?.data.length) return;
+        ctx.save();
+        ctx.fillStyle = "rgba(140,140,0,0.60)";
+        drawCurtainBezier(ctx, topMeta, botMeta, curtDs);
+        ctx.restore();
+      },
+    };
+
     // Panel 1: Solar + Load (no right axis — padding.right = Y2_W keeps x-axis aligned)
     {
       const opts = commonOpts(false);
       opts.scales.y = { title: { display: true, text: "Power (kW)", font: { size: 10 } }, beginAtZero: true, grid: { color: "#f0f0f0" }, afterFit: yFit };
       opts.layout = { padding: { right: Y2_W } };
-      opts.plugins.legend = buildLegend([LEG_WW]);
+      const LEG_CURT_IMP = { text: "Curtailed solar", fillStyle: "rgba(140,140,0,0.45)", strokeStyle: "rgba(0,0,0,0)", lineWidth: 0, lineDash: [], hidden: false, datasetIndex: null, pointStyle: "rect" };
+      const p1Leg = [LEG_WW];
+      if (hasCurt) p1Leg.push(LEG_CURT_IMP);
+      opts.plugins.legend = buildLegend(p1Leg);
       evImpP1Inst.current = new Chart(evImpP1Ref.current, {
         type: "line",
         data: { labels, datasets: [
           { label: "Solar kW",  data: solarDs,    borderColor: "#d48000", backgroundColor: "rgba(244,160,32,0.35)", fill: true,  tension: 0.15, pointRadius: 0, borderWidth: 1.5 },
           { label: "Load kW",   data: loadDs,     borderColor: "#204090", backgroundColor: "rgba(48,96,192,0.15)",  fill: true,  tension: 0.15, pointRadius: 0, borderWidth: 1.5 },
-          { label: "", data: solarBotDs, borderColor: "transparent", backgroundColor: "transparent", fill: false, tension: 0.15, pointRadius: 0, borderWidth: 0 },
+          { label: "", data: solarBotDs, borderColor: "transparent", backgroundColor: "transparent", fill: false, tension: 0.15, pointRadius: 0, borderWidth: 0, _curtBot: true },
         ]},
         options: opts,
-        plugins: [WHITE_BG, makeWwPlugin2("ww_imp1"), dcfcPlugin2, makeImpCrosshair("ch_imp1")],
+        plugins: [WHITE_BG, makeWwPlugin2("ww_imp1"), dcfcPlugin2, evImpCurtailPlugin, makeImpCrosshair("ch_imp1")],
       });
     }
 
@@ -4600,7 +4620,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.125</span>
+        <span style={S.version}>v0.4.126</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto"}}>
           <a href="https://tools.cc-energy.org/index.html"
