@@ -1,6 +1,6 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.136
-// Updated: 2026-04-18 12:00 PT
+// Version: v0.4.137
+// Updated: 2026-04-19 09:00 PT
 // Part of: Wipomo / CCE Solar Tools
 
 "use strict";
@@ -19,27 +19,27 @@ const WW_SOLAR_FACTOR  = 0.5;   // pessimism factor for worst-window days
 // These are editable defaults — the user sets actual costs in the Battery Options panel.
 const BATTERY_LIBRARY = {
   // Enphase IQ Battery 10C — 10.08 kWh / 7.68 kW per unit (scalable stack)
-  "1x Enphase 10C": { label: "1x Enphase 10C", kwh:  10.0, kw:  7.08, fixedCost: 14000 },
-  "2x Enphase 10C": { label: "2x Enphase 10C", kwh:  20.0, kw: 14.16, fixedCost: 28000 },
-  "3x Enphase 10C": { label: "3x Enphase 10C", kwh:  30.0, kw: 21.24, fixedCost: 42000 },
-  "4x Enphase 10C": { label: "4x Enphase 10C", kwh:  40.0, kw: 28.32, fixedCost: 56000 },
-  "5x Enphase 10C": { label: "5x Enphase 10C", kwh:  50.0, kw: 35.40, fixedCost: 70000 },
-  "6x Enphase 10C":  { label: "6x Enphase 10C",  kwh:  60.0, kw: 42.48, fixedCost:  84000 },
-  "7x Enphase 10C":  { label: "7x Enphase 10C",  kwh:  70.0, kw: 49.56, fixedCost:  98000 },
-  "8x Enphase 10C":  { label: "8x Enphase 10C",  kwh:  80.0, kw: 56.64, fixedCost: 112000 },
-  "9x Enphase 10C":  { label: "9x Enphase 10C",  kwh:  90.0, kw: 63.72, fixedCost: 126000 },
-  "10x Enphase 10C": { label: "10x Enphase 10C", kwh: 100.0, kw: 70.80, fixedCost: 140000 },
+  "1x Enphase 10C":  { label: "1x Enphase 10C",  kwh:  10.0, kw:  7.08, fixedCost:  19600 },
+  "2x Enphase 10C":  { label: "2x Enphase 10C",  kwh:  20.0, kw: 14.16, fixedCost:  28610 },
+  "3x Enphase 10C":  { label: "3x Enphase 10C",  kwh:  30.0, kw: 21.24, fixedCost:  37621 },
+  "4x Enphase 10C":  { label: "4x Enphase 10C",  kwh:  40.0, kw: 28.32, fixedCost:  46632 },
+  "5x Enphase 10C":  { label: "5x Enphase 10C",  kwh:  50.0, kw: 35.40, fixedCost:  55643 },
+  "6x Enphase 10C":  { label: "6x Enphase 10C",  kwh:  60.0, kw: 42.48, fixedCost:  64654 },
+  "7x Enphase 10C":  { label: "7x Enphase 10C",  kwh:  70.0, kw: 49.56, fixedCost:  73644 },
+  "8x Enphase 10C":  { label: "8x Enphase 10C",  kwh:  80.0, kw: 56.64, fixedCost:  82675 },
+  "9x Enphase 10C":  { label: "9x Enphase 10C",  kwh:  90.0, kw: 63.72, fixedCost:  91703 },
+  "10x Enphase 10C": { label: "10x Enphase 10C", kwh: 100.0, kw: 70.80, fixedCost: 100714 },
   // Tesla Powerwall 3 — 13.5 kWh / 11.5 kW per unit (integrated inverter, stackable)
-  "1x Powerwall 3": { label: "1x Powerwall 3", kwh:  13.5, kw: 11.5,  fixedCost: 15500 },
-  "2x Powerwall 3": { label: "2x Powerwall 3", kwh:  27.0, kw: 23.0,  fixedCost: 31000 },
-  "3x Powerwall 3": { label: "3x Powerwall 3", kwh:  40.5, kw: 34.5,  fixedCost: 46500 },
-  "4x Powerwall 3": { label: "4x Powerwall 3", kwh:  54.0, kw: 46.0,  fixedCost: 62000 },
-  "5x Powerwall 3": { label: "5x Powerwall 3", kwh:  67.5, kw: 57.5,  fixedCost: 77500 },
-  "6x Powerwall 3":  { label: "6x Powerwall 3",  kwh:  81.0, kw:  69.0, fixedCost:  93000 },
-  "7x Powerwall 3":  { label: "7x Powerwall 3",  kwh:  94.5, kw:  80.5, fixedCost: 108500 },
-  "8x Powerwall 3":  { label: "8x Powerwall 3",  kwh: 108.0, kw:  92.0, fixedCost: 124000 },
-  "9x Powerwall 3":  { label: "9x Powerwall 3",  kwh: 121.5, kw: 103.5, fixedCost: 139500 },
-  "10x Powerwall 3": { label: "10x Powerwall 3", kwh: 135.0, kw: 115.0, fixedCost: 155000 },
+  "1x Powerwall 3":  { label: "1x Powerwall 3",  kwh:  13.5, kw:  11.5, fixedCost:  19627 },
+  "2x Powerwall 3":  { label: "2x Powerwall 3",  kwh:  27.0, kw:  23.0, fixedCost:  39254 },
+  "3x Powerwall 3":  { label: "3x Powerwall 3",  kwh:  40.5, kw:  34.5, fixedCost:  58881 },
+  "4x Powerwall 3":  { label: "4x Powerwall 3",  kwh:  54.0, kw:  46.0, fixedCost:  78508 },
+  "5x Powerwall 3":  { label: "5x Powerwall 3",  kwh:  67.5, kw:  57.5, fixedCost:  98135 },
+  "6x Powerwall 3":  { label: "6x Powerwall 3",  kwh:  81.0, kw:  69.0, fixedCost: 117762 },
+  "7x Powerwall 3":  { label: "7x Powerwall 3",  kwh:  94.5, kw:  80.5, fixedCost: 137389 },
+  "8x Powerwall 3":  { label: "8x Powerwall 3",  kwh: 108.0, kw:  92.0, fixedCost: 157016 },
+  "9x Powerwall 3":  { label: "9x Powerwall 3",  kwh: 121.5, kw: 103.5, fixedCost: 176643 },
+  "10x Powerwall 3": { label: "10x Powerwall 3", kwh: 135.0, kw: 115.0, fixedCost: 196270 },
 };
 
 // ── TITLE 24 TABLE 150.1-C: PV SIZING FACTORS ────────────────────────────────
@@ -4955,7 +4955,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.136</span>
+        <span style={S.version}>v0.4.137</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto", display:"flex", alignItems:"center", gap:"10px"}}>
           <button
