@@ -1,12 +1,15 @@
 // MOD-02b green_button.emulator — module
-// Version: v2.4.0
+// Version: v2.4.1
+// Updated: 2026-04-20 09:00 PT
 // Part of: Wipomo / CCE Solar Tools (see TOOL_ARCHITECTURE_5.md)
 // Outputs to: MOD-05 (bill_modeler), MOD-06 (battery_simulator)
-// Changelog: v2.4.0 — add in-app User Manual with modal viewer and plain-text download.
+// Changelog: v2.4.1 — Annual kWh override: user can set a target annual total; all 35,040
+//   intervals scale proportionally so monthly kWh, monthly peak kW, and all output files
+//   match the specified total. Load shape (seasonal variation, time-of-day) is preserved.
 
 const { useState, useCallback, useRef } = React;
 
-const VERSION = "2.4.0";
+const VERSION = "2.4.1";
 
 // ─── DATA SOURCES (for citation in output files) ──────────────────────────────
 const DATA_SOURCES = {
@@ -670,7 +673,7 @@ function computeSummary(intervals, year) {
 }
 
 // ─── ESPI XML BUILDER ─────────────────────────────────────────────────────────
-function buildESPIXml(address, sqft, occupants, year, intervals, utilityName, buildingTypeLabel, fuelConfigLabel, climateZoneKey) {
+function buildESPIXml(address, sqft, occupants, year, intervals, utilityName, buildingTypeLabel, fuelConfigLabel, climateZoneKey, opts = {}) {
   // Simple UUID v4 using crypto if available, else deterministic
   const makeUuid = (seed) => {
     const h = (n) => n.toString(16).padStart(2,'0');
@@ -708,6 +711,9 @@ function buildESPIXml(address, sqft, occupants, year, intervals, utilityName, bu
     `    Occupants       : ${occupants}`,
     `    Simulation year : ${year}`,
     `    Generated       : ${nowIso}`,
+    ...(opts.annualKwhOverride ? [
+    `    Annual kWh override applied: target=${opts.annualKwhOverride.toLocaleString()} kWh, model estimate=${opts.nativeKwh.toFixed(0)} kWh, scale factor=${opts.scaleFactor.toFixed(4)}×`,
+    ] : []),
     ``,
     `    DATA SOURCES`,
     `    Annual kWh totals  : ${DATA_SOURCES.load_totals}`,
@@ -888,6 +894,7 @@ function buildCSV(params, intervals) {
     isMF, units, sqft, occupants, bedrooms,
     hasPool, hasSpa, efficiencyPct,
     evCount, evMiles, evEfficiency, evChargeMode,
+    annualKwhOverride, nativeKwh, scaleFactor,
   } = params;
 
   const rows = [];
@@ -922,6 +929,9 @@ function buildCSV(params, intervals) {
     rows.push(`EV annual kWh:,${((parseInt(evCount)||0)*(parseFloat(evMiles)||0)/(parseFloat(evEfficiency)||3.5)).toFixed(0)}`);
   } else {
     rows.push(`EV charging:,None`);
+  }
+  if (annualKwhOverride) {
+    rows.push(`Annual kWh override:,"${annualKwhOverride.toLocaleString()} kWh (model estimate: ${(nativeKwh||0).toFixed(0)} kWh · scale factor: ${(scaleFactor||1).toFixed(4)}×)"`);
   }
   rows.push("");
   rows.push("DATA SOURCES");
@@ -1039,6 +1049,7 @@ function buildSummaryCSV(params, summary) {
     hasPool, hasSpa, efficiencyPct,
     evCount, evMiles, evEfficiency, evChargeMode,
     buildingTypeKey, waterHeaterKey, spaceHeatingKey, cookingKey,
+    annualKwhOverride, nativeKwh, scaleFactor,
   } = params;
 
   const rows = [];
@@ -1071,6 +1082,11 @@ function buildSummaryCSV(params, summary) {
   rows.push(`EV efficiency (mi/kWh),${evEfficiency || 0}`);
   rows.push(`EV charge mode,${evChargeMode || 'midnight'}`);
   rows.push(`EV annual kWh,${parseInt(evCount) > 0 ? ((parseInt(evCount)||0)*(parseFloat(evMiles)||0)/(parseFloat(evEfficiency)||3.5)).toFixed(0) : 0}`);
+  if (annualKwhOverride) {
+    rows.push(`Annual kWh override,${annualKwhOverride},kWh`);
+    rows.push(`Model native estimate,${(nativeKwh||0).toFixed(1)},kWh`);
+    rows.push(`Scale factor applied,${(scaleFactor||1).toFixed(4)},×`);
+  }
   rows.push("");
 
   if (isMF) {
@@ -1540,6 +1556,7 @@ function App() {
   const [evMiles,       setEvMiles]       = useState(12000);
   const [evEfficiency,  setEvEfficiency]  = useState(3.5);  // mi/kWh — ~280 Wh/mi, typical L2 BEV
   const [evChargeMode,  setEvChargeMode]  = useState("midnight");
+  const [annualKwhOverride, setAnnualKwhOverride] = useState("");   // optional target annual kWh
   const [status,           setStatus]           = useState("idle");
   const [summary,          setSummary]          = useState(null);
   const [xmlContent,       setXmlContent]       = useState(null);
@@ -1696,8 +1713,17 @@ function App() {
         }
 
         setProgress(60);
-        const sum = computeSummary(intervals, _year);
-        setSummary(sum);
+        const rawSum = computeSummary(intervals, _year);
+        // Annual kWh override: scale every interval proportionally to hit the target total
+        const _annualOverride = parseFloat(annualKwhOverride);
+        let _scaleFactor = 1.0;
+        if (_annualOverride > 100 && rawSum.totalKwh > 0) {
+          _scaleFactor = _annualOverride / rawSum.totalKwh;
+          intervals = intervals.map(v => v * _scaleFactor);
+        }
+        const sum = _scaleFactor !== 1.0 ? computeSummary(intervals, _year) : rawSum;
+        // Attach scaling metadata to summary for display
+        setSummary({ ...sum, _nativeKwh: rawSum.totalKwh, _scaleFactor });
         setProgress(70);
 
         const btLabel = BUILDING_TYPES[_buildingType].label;
@@ -1732,6 +1758,10 @@ function App() {
           waterHeaterKey:   _waterHeater,
           spaceHeatingKey:  _spaceHeating,
           cookingKey:       _cooking,
+          // Annual kWh override metadata
+          annualKwhOverride: _annualOverride > 100 ? _annualOverride : null,
+          nativeKwh:         rawSum.totalKwh,
+          scaleFactor:       _scaleFactor,
         };
 
         const csv = buildCSV(exportParams, intervals);
@@ -1740,7 +1770,7 @@ function App() {
         const hourlyCsv = buildHourlyCSV(exportParams, intervals);
         setHourlyCsvContent(hourlyCsv);
         setProgress(87);
-        const xml = buildESPIXml(address, _isMF ? unitDesc : _sqft, _isMF ? `${_units.length} units` : _occupants, _year, intervals, "Utility", btLabel, fcLabel, _climateZone);
+        const xml = buildESPIXml(address, _isMF ? unitDesc : _sqft, _isMF ? `${_units.length} units` : _occupants, _year, intervals, "Utility", btLabel, fcLabel, _climateZone, exportParams);
         setXmlContent(xml);
         const summaryCSV = buildSummaryCSV(exportParams, sum);
         setSummaryContent(summaryCSV);
@@ -1751,7 +1781,7 @@ function App() {
         setStatus("error");
       }
     }, 50);
-  }, [address, sqft, bedrooms, occupants, climateZone, buildingType, waterHeater, spaceHeating, cooking, year, hasPool, hasSpa, efficiencyPct, evCount, evMiles, evEfficiency, evChargeMode, units]);
+  }, [address, sqft, bedrooms, occupants, climateZone, buildingType, waterHeater, spaceHeating, cooking, year, hasPool, hasSpa, efficiencyPct, evCount, evMiles, evEfficiency, evChargeMode, units, annualKwhOverride]);
 
   const safeName = address.replace(/[^a-zA-Z0-9]/g,'_').slice(0,40);
 
@@ -2212,6 +2242,36 @@ function App() {
               )}
             </div>
           </div>
+
+          {/* Annual kWh Override */}
+          <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 10, padding: 18 }}>
+            <div style={{ fontSize: 12, color: C.accent, fontFamily: "'DM Mono', monospace", letterSpacing: "0.1em", marginBottom: 12 }}>
+              ANNUAL OVERRIDE <span style={{ color: C.faint, fontSize: 11, fontWeight: 400 }}>— OPTIONAL</span>
+            </div>
+            <div style={{ marginBottom: 10 }}>
+              <label style={labelStyle}>Target Annual kWh</label>
+              <input
+                style={inputStyle}
+                type="number"
+                value={annualKwhOverride}
+                onChange={e => setAnnualKwhOverride(e.target.value)}
+                placeholder="leave blank to use model estimate"
+                min={100}
+                step={100}
+              />
+            </div>
+            {annualKwhOverride && parseFloat(annualKwhOverride) > 100 ? (
+              <div style={{ fontSize: 11, color: C.green, fontFamily: "'DM Mono', monospace" }}>
+                ✓ All intervals will scale to {parseFloat(annualKwhOverride).toLocaleString()} kWh/yr
+              </div>
+            ) : (
+              <div style={{ fontSize: 11, color: C.faint, lineHeight: 1.5 }}>
+                If set, all 35,040 intervals scale proportionally so the annual total matches exactly.
+                Monthly kWh, peak kW, and all output files reflect the target. Load shape is preserved.
+              </div>
+            )}
+          </div>
+
           <button
             onClick={generate}
             disabled={status === "running"}
@@ -2264,7 +2324,7 @@ function App() {
                   >💾 Save PNG</button>
                 </div>
 
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: summary._scaleFactor !== 1.0 ? 8 : 14 }}>
                   {[
                     { label: "Annual Total", val: `${summary.totalKwh.toFixed(0)} kWh`, color: C.accent },
                     { label: "Monthly Avg",  val: `${(summary.totalKwh/12).toFixed(0)} kWh`, color: C.text },
@@ -2277,6 +2337,14 @@ function App() {
                     </div>
                   ))}
                 </div>
+                {summary._scaleFactor !== 1.0 && (
+                  <div style={{ background: `${C.green}12`, border: `1px solid ${C.green}40`, borderRadius: 7, padding: "8px 12px", marginBottom: 14, fontSize: 11, fontFamily: "'DM Mono', monospace", color: C.green, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span>★ Annual override applied</span>
+                    <span style={{ color: C.muted }}>
+                      model {(summary._nativeKwh||0).toFixed(0)} kWh → {summary.totalKwh.toFixed(0)} kWh &nbsp;·&nbsp; ×{(summary._scaleFactor||1).toFixed(3)}
+                    </span>
+                  </div>
+                )}
 
                 {/* Monthly kWh bar chart */}
                 <div style={{ fontSize: 10, color: C.muted, letterSpacing: "0.07em", textTransform: "uppercase", fontWeight: 600, marginBottom: 8 }}>Monthly kWh</div>
