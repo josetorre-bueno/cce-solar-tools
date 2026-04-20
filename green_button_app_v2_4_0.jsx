@@ -1,15 +1,21 @@
 // MOD-02b green_button.emulator — module
-// Version: v2.4.1
-// Updated: 2026-04-20 09:00 PT
+// Version: v2.4.2
+// Updated: 2026-04-20 10:00 PT
 // Part of: Wipomo / CCE Solar Tools (see TOOL_ARCHITECTURE_5.md)
 // Outputs to: MOD-05 (bill_modeler), MOD-06 (battery_simulator)
+// Changelog: v2.4.2 — Per-month kWh adjustment: click "✏ Edit" near the Monthly kWh chart,
+//   click a month bar to select it, use ↑↓ arrow keys for ±1% steps (adjacent months ±0.5%,
+//   next-over ±0.25%), or type an exact kWh value. Smooth center-to-center interpolation
+//   between month centers prevents abrupt steps in the 15-min interval CSV. Annual total
+//   floats with adjustments. Two resets: "Reset Months" clears month multipliers; "Reset"
+//   in the annual override banner restores the pre-override model estimate.
 // Changelog: v2.4.1 — Annual kWh override: user can set a target annual total; all 35,040
 //   intervals scale proportionally so monthly kWh, monthly peak kW, and all output files
 //   match the specified total. Load shape (seasonal variation, time-of-day) is preserved.
 
-const { useState, useCallback, useRef } = React;
+const { useState, useCallback, useRef, useEffect } = React;
 
-const VERSION = "2.4.1";
+const VERSION = "2.4.2";
 
 // ─── DATA SOURCES (for citation in output files) ──────────────────────────────
 const DATA_SOURCES = {
@@ -420,6 +426,13 @@ const EV_PROFILES = {
 const DAYS_IN_MONTH = [31,28,31,30,31,30,31,31,30,31,30,31];
 const MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 
+// Mid-point (0-indexed day-of-year) of each month — anchor points for smooth interpolation
+const MONTH_CENTERS = (() => {
+  const c = []; let d = 0;
+  for (let m = 0; m < 12; m++) { c.push(d + (DAYS_IN_MONTH[m] - 1) / 2); d += DAYS_IN_MONTH[m]; }
+  return c; // [15, 44.5, 73.5, 104, 134.5, 165, 195.5, 226.5, 257, 287.5, 318, 348.5]
+})();
+
 // ─── SEEDED PSEUDO-RANDOM (reproducible) ──────────────────────────────────────
 function mulberry32(seed) {
   return function() {
@@ -650,6 +663,54 @@ function generateIntervals(sqft, occupants, bedrooms, climateZoneKey, buildingTy
   }
 
   return intervals;
+}
+
+// ─── MONTHLY ADJUSTMENT HELPERS ──────────────────────────────────────────────
+
+// Piecewise-linear interpolation of per-month multipliers between month centers.
+// Treats the year as a circle so Dec and Jan blend smoothly across the year boundary.
+// dayOfYear: 0-indexed (0 = Jan 1, 364 = Dec 31)
+function interpMonthMult(monthMults, dayOfYear) {
+  const C = MONTH_CENTERS;
+  let leftM, rightM, cL, cR;
+  if (dayOfYear < C[0]) {
+    leftM = 11; rightM = 0; cL = C[11] - 365; cR = C[0];
+  } else if (dayOfYear >= C[11]) {
+    leftM = 11; rightM = 0; cL = C[11]; cR = C[0] + 365;
+  } else {
+    for (let m = 0; m < 11; m++) {
+      if (dayOfYear >= C[m] && dayOfYear < C[m + 1]) { leftM = m; rightM = m + 1; break; }
+    }
+    cL = C[leftM]; cR = C[rightM];
+  }
+  const t = (dayOfYear - cL) / (cR - cL);
+  return monthMults[leftM] * (1 - t) + monthMults[rightM] * t;
+}
+
+// Apply per-month multipliers to an intervals array using smooth center-to-center blending.
+// Returns a new array; original is unchanged.
+function applyMonthAdj(intervals, monthMult) {
+  if (monthMult.every(m => m === 1.0)) return intervals;
+  const result = new Array(intervals.length);
+  let iIdx = 0, dayOfYear = 0;
+  for (let mo = 0; mo < 12; mo++) {
+    for (let d = 0; d < DAYS_IN_MONTH[mo]; d++) {
+      const mult = interpMonthMult(monthMult, dayOfYear++);
+      for (let t = 0; t < 96; t++) { result[iIdx] = intervals[iIdx] * mult; iIdx++; }
+    }
+  }
+  return result;
+}
+
+// Apply a ±pct adjustment to month mIdx with gaussian-style spread to ±1 (×0.5) and ±2 (×0.25)
+// neighbours on the circular year. Returns a new monthMult array.
+function spreadMonthAdj(monthMult, mIdx, pct) {
+  const next = [...monthMult];
+  [[0, 1.0], [-1, 0.5], [1, 0.5], [-2, 0.25], [2, 0.25]].forEach(([offset, weight]) => {
+    const m = (mIdx + offset + 12) % 12;
+    next[m] = next[m] * (1 + pct * weight);
+  });
+  return next;
 }
 
 // ─── SUMMARY STATS ────────────────────────────────────────────────────────────
@@ -1557,6 +1618,11 @@ function App() {
   const [evEfficiency,  setEvEfficiency]  = useState(3.5);  // mi/kWh — ~280 Wh/mi, typical L2 BEV
   const [evChargeMode,  setEvChargeMode]  = useState("midnight");
   const [annualKwhOverride, setAnnualKwhOverride] = useState("");   // optional target annual kWh
+  // Per-month multipliers (1.0 = no change). Spread ±1 = ×0.5, ±2 = ×0.25 on each edit.
+  const [monthMult,        setMonthMult]        = useState(Array(12).fill(1.0));
+  const [monthEditActive,  setMonthEditActive]  = useState(false);
+  const [editingMonth,     setEditingMonth]     = useState(null);   // 0-11 or null
+  const [editInputVal,     setEditInputVal]     = useState("");
   const [status,           setStatus]           = useState("idle");
   const [summary,          setSummary]          = useState(null);
   const [xmlContent,       setXmlContent]       = useState(null);
@@ -1568,6 +1634,12 @@ function App() {
   const [showManual,       setShowManual]        = useState(false);
 
   const restoreInputRef = useRef(null);
+  // Month adjustment refs — avoid re-running generate() on every keypress
+  const baseIntervalsRef    = useRef(null);   // intervals after annual override, before month adj
+  const baseMonthlyKwhRef   = useRef(null);   // monthly kWh of base intervals
+  const basePeakKwRef       = useRef(null);   // monthly peak kW of base intervals
+  const exportParamsRef     = useRef(null);   // latest exportParams (for rebuilding files)
+  const monthRebuildTimer   = useRef(null);   // debounce handle
   // Multifamily per-unit configuration
   const [units,         setUnits]         = useState(DEFAULT_UNITS);
   const [unitCount,     setUnitCount]     = useState(6);
@@ -1721,9 +1793,17 @@ function App() {
           _scaleFactor = _annualOverride / rawSum.totalKwh;
           intervals = intervals.map(v => v * _scaleFactor);
         }
-        const sum = _scaleFactor !== 1.0 ? computeSummary(intervals, _year) : rawSum;
+        // Save base intervals (after annual override, before month adj) for live month editing
+        baseIntervalsRef.current = intervals;
+        const baseSum = _scaleFactor !== 1.0 ? computeSummary(intervals, _year) : rawSum;
+        baseMonthlyKwhRef.current  = baseSum.monthlyKwh;
+        basePeakKwRef.current      = baseSum.monthlyPeakKw;
+        // Apply current month multipliers
+        const _monthMult = monthMult; // capture current state
+        intervals = applyMonthAdj(intervals, _monthMult);
+        const sum = _monthMult.every(m => m === 1.0) ? baseSum : computeSummary(intervals, _year);
         // Attach scaling metadata to summary for display
-        setSummary({ ...sum, _nativeKwh: rawSum.totalKwh, _scaleFactor });
+        setSummary({ ...sum, _nativeKwh: rawSum.totalKwh, _scaleFactor, _monthMult: _monthMult.slice() });
         setProgress(70);
 
         const btLabel = BUILDING_TYPES[_buildingType].label;
@@ -1763,6 +1843,7 @@ function App() {
           nativeKwh:         rawSum.totalKwh,
           scaleFactor:       _scaleFactor,
         };
+        exportParamsRef.current = exportParams;  // save for live month-adj file rebuilds
 
         const csv = buildCSV(exportParams, intervals);
         setCsvContent(csv);
@@ -1782,6 +1863,70 @@ function App() {
       }
     }, 50);
   }, [address, sqft, bedrooms, occupants, climateZone, buildingType, waterHeater, spaceHeating, cooking, year, hasPool, hasSpa, efficiencyPct, evCount, evMiles, evEfficiency, evChargeMode, units, annualKwhOverride]);
+
+  // ── Live month adjustment: rebuild summary + files when monthMult changes ──────
+  // Summary updates immediately; CSV/XML rebuild is debounced 400ms to avoid
+  // rebuilding 2.5 MB files on every keypress.
+  useEffect(() => {
+    if (!baseIntervalsRef.current || !exportParamsRef.current) return;
+    // Update summary immediately (cheap)
+    const adj = applyMonthAdj(baseIntervalsRef.current, monthMult);
+    const newSum = computeSummary(adj);
+    setSummary(prev => prev ? {
+      ...newSum,
+      _nativeKwh:   prev._nativeKwh,
+      _scaleFactor: prev._scaleFactor,
+      _monthMult:   monthMult.slice(),
+    } : null);
+    // Rebuild CSV/XML with debounce
+    clearTimeout(monthRebuildTimer.current);
+    monthRebuildTimer.current = setTimeout(() => {
+      const ep = exportParamsRef.current;
+      if (!ep) return;
+      setCsvContent(buildCSV(ep, adj));
+      setHourlyCsvContent(buildHourlyCSV(ep, adj));
+      setXmlContent(buildESPIXml(ep.address,
+        ep.isMF ? `${ep.units?.length} units` : ep.sqft,
+        ep.isMF ? `${ep.units?.length} units` : ep.occupants,
+        ep.year, adj, "Utility",
+        ep.buildingTypeLabel, ep.fuelConfigLabel, ep.climateZoneKey, ep));
+      setSummaryContent(buildSummaryCSV(ep, computeSummary(adj)));
+    }, 400);
+  }, [monthMult]);  // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Keyboard handler for month editing ────────────────────────────────────────
+  useEffect(() => {
+    if (!monthEditActive || editingMonth === null) return;
+    const onKey = (e) => {
+      if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+        e.preventDefault();
+        setMonthMult(prev => spreadMonthAdj(prev, editingMonth, e.key === 'ArrowUp' ? 0.01 : -0.01));
+        setEditInputVal(''); // clear typed override; display will recompute from state
+      } else if (e.key === 'Escape') {
+        setEditingMonth(null);
+        setEditInputVal('');
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [monthEditActive, editingMonth]);
+
+  // Reset annual kWh override: undo the stored scale factor to restore pre-override intervals,
+  // then re-apply month multipliers so the display reflects the raw model estimate.
+  const handleResetAnnualOverride = () => {
+    if (!baseIntervalsRef.current || !summary) return;
+    const sf = summary._scaleFactor || 1.0;
+    if (sf !== 1.0) {
+      const restored = baseIntervalsRef.current.map(v => v / sf);
+      baseIntervalsRef.current = restored;
+      const restoredSum = computeSummary(restored);
+      baseMonthlyKwhRef.current = restoredSum.monthlyKwh;
+      basePeakKwRef.current     = restoredSum.monthlyPeakKw;
+    }
+    setAnnualKwhOverride("");
+    // Force the monthMult useEffect to re-run and rebuild summary + files
+    setMonthMult(prev => [...prev]);
+  };
 
   const safeName = address.replace(/[^a-zA-Z0-9]/g,'_').slice(0,40);
 
@@ -2338,32 +2483,106 @@ function App() {
                   ))}
                 </div>
                 {summary._scaleFactor !== 1.0 && (
-                  <div style={{ background: `${C.green}12`, border: `1px solid ${C.green}40`, borderRadius: 7, padding: "8px 12px", marginBottom: 14, fontSize: 11, fontFamily: "'DM Mono', monospace", color: C.green, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div style={{ background: `${C.green}12`, border: `1px solid ${C.green}40`, borderRadius: 7, padding: "8px 12px", marginBottom: 14, fontSize: 11, fontFamily: "'DM Mono', monospace", color: C.green, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
                     <span>★ Annual override applied</span>
-                    <span style={{ color: C.muted }}>
+                    <span style={{ color: C.muted, flex: 1 }}>
                       model {(summary._nativeKwh||0).toFixed(0)} kWh → {summary.totalKwh.toFixed(0)} kWh &nbsp;·&nbsp; ×{(summary._scaleFactor||1).toFixed(3)}
                     </span>
+                    <button
+                      onClick={handleResetAnnualOverride}
+                      style={{ fontSize: 9, padding: "2px 7px", background: "transparent", border: `1px solid ${C.green}60`, borderRadius: 4, color: C.green, cursor: "pointer", letterSpacing: "0.05em", whiteSpace: "nowrap" }}
+                    >Reset</button>
                   </div>
                 )}
 
                 {/* Monthly kWh bar chart */}
-                <div style={{ fontSize: 10, color: C.muted, letterSpacing: "0.07em", textTransform: "uppercase", fontWeight: 600, marginBottom: 8 }}>Monthly kWh</div>
-                <div style={{ display: "flex", gap: 3, alignItems: "flex-end", height: 60 }}>
-                  {summary.monthlyKwh.map((kwh, i) => {
-                    const maxKwh = Math.max(...summary.monthlyKwh);
-                    const h = Math.max(4, (kwh / maxKwh) * 56);
-                    return (
-                      <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 3 }}>
-                        <div style={{ width: "100%", height: h, background: `linear-gradient(180deg, ${C.accent}, ${C.accent2})`, borderRadius: "2px 2px 0 0", opacity: 0.85 }}/>
-                        <div style={{ fontSize: 8, color: C.faint, fontFamily: "'DM Mono', monospace" }}>{MONTH_NAMES[i].slice(0,1)}</div>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                  <div style={{ fontSize: 10, color: C.muted, letterSpacing: "0.07em", textTransform: "uppercase", fontWeight: 600 }}>Monthly kWh</div>
+                  <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    {monthMult.some(m => m !== 1.0) && (
+                      <button
+                        onClick={() => { setMonthMult(Array(12).fill(1.0)); setEditingMonth(null); setEditInputVal(""); }}
+                        style={{ fontSize: 9, padding: "2px 7px", background: "transparent", border: `1px solid ${C.orange}60`, borderRadius: 4, color: C.orange, cursor: "pointer", letterSpacing: "0.05em" }}
+                      >Reset Months</button>
+                    )}
+                    <button
+                      onClick={() => { setMonthEditActive(p => !p); if (monthEditActive) { setEditingMonth(null); setEditInputVal(""); } }}
+                      style={{ fontSize: 9, padding: "2px 8px", background: monthEditActive ? `${C.accent}22` : "transparent", border: `1px solid ${monthEditActive ? C.accent : C.border}`, borderRadius: 4, color: monthEditActive ? C.accent : C.muted, cursor: "pointer", letterSpacing: "0.05em" }}
+                    >{monthEditActive ? "✓ Editing" : "✏ Edit"}</button>
+                  </div>
+                </div>
+                {(() => {
+                  // Use live values: base × monthMult (avoids waiting for debounce)
+                  const base = baseMonthlyKwhRef.current || summary.monthlyKwh;
+                  const liveKwh = base.map((v, i) => v * monthMult[i]);
+                  const maxKwh = Math.max(...liveKwh);
+                  return (
+                    <>
+                      <div style={{ display: "flex", gap: 3, alignItems: "flex-end", height: 60 }}>
+                        {liveKwh.map((kwh, i) => {
+                          const h = Math.max(4, (kwh / maxKwh) * 56);
+                          const isSelected = editingMonth === i;
+                          const isEditing = monthEditActive;
+                          return (
+                            <div
+                              key={i}
+                              onClick={() => { if (!isEditing) return; setEditingMonth(i); setEditInputVal(""); }}
+                              style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 3, cursor: isEditing ? "pointer" : "default" }}
+                            >
+                              <div style={{
+                                width: "100%", height: h,
+                                background: isSelected
+                                  ? `linear-gradient(180deg, ${C.accent}, ${C.accent})`
+                                  : `linear-gradient(180deg, ${C.accent}, ${C.accent2})`,
+                                borderRadius: "2px 2px 0 0",
+                                opacity: isEditing && !isSelected ? 0.55 : 0.85,
+                                outline: isSelected ? `2px solid ${C.accent}` : "none",
+                                outlineOffset: 1,
+                                transition: "opacity 0.1s",
+                              }}/>
+                              <div style={{ fontSize: 8, color: isSelected ? C.accent : C.faint, fontFamily: "'DM Mono', monospace", fontWeight: isSelected ? 700 : 400 }}>{MONTH_NAMES[i].slice(0,1)}</div>
+                            </div>
+                          );
+                        })}
                       </div>
-                    );
-                  })}
-                </div>
-                <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6 }}>
-                  <div style={{ fontSize: 10, color: C.faint }}>Min: {Math.min(...summary.monthlyKwh).toFixed(0)} kWh</div>
-                  <div style={{ fontSize: 10, color: C.faint }}>Max: {Math.max(...summary.monthlyKwh).toFixed(0)} kWh</div>
-                </div>
+                      {/* Selected month editor */}
+                      {monthEditActive && editingMonth !== null && (() => {
+                        const base2 = baseMonthlyKwhRef.current || summary.monthlyKwh;
+                        const curKwh = base2[editingMonth] * monthMult[editingMonth];
+                        return (
+                          <div style={{ marginTop: 8, background: `${C.accent}10`, border: `1px solid ${C.accent}30`, borderRadius: 6, padding: "8px 10px", display: "flex", alignItems: "center", gap: 8 }}>
+                            <div style={{ fontSize: 11, color: C.accent, fontWeight: 600, minWidth: 32 }}>{MONTH_NAMES[editingMonth].slice(0,3)}</div>
+                            <input
+                              type="number"
+                              value={editInputVal !== "" ? editInputVal : curKwh.toFixed(0)}
+                              onChange={e => setEditInputVal(e.target.value)}
+                              onBlur={e => {
+                                const typed = parseFloat(e.target.value);
+                                const b = (baseMonthlyKwhRef.current || summary.monthlyKwh)[editingMonth];
+                                if (!isNaN(typed) && typed > 0 && b > 0) {
+                                  const newMult = typed / b;
+                                  setMonthMult(prev => { const n = [...prev]; n[editingMonth] = newMult; return n; });
+                                }
+                                setEditInputVal("");
+                              }}
+                              onKeyDown={e => { if (e.key === 'Enter') e.target.blur(); }}
+                              style={{ ...inputStyle, width: 90, padding: "4px 8px", fontSize: 12, textAlign: "right" }}
+                            />
+                            <div style={{ fontSize: 10, color: C.muted }}>kWh</div>
+                            <div style={{ fontSize: 9, color: C.faint, marginLeft: "auto" }}>↑↓ ±1% &nbsp;·&nbsp; or type value</div>
+                          </div>
+                        );
+                      })()}
+                      {monthEditActive && editingMonth === null && (
+                        <div style={{ marginTop: 6, fontSize: 9, color: C.faint, textAlign: "center" }}>Click a month bar to select it</div>
+                      )}
+                      <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6 }}>
+                        <div style={{ fontSize: 10, color: C.faint }}>Min: {Math.min(...liveKwh).toFixed(0)} kWh</div>
+                        <div style={{ fontSize: 10, color: C.faint }}>Max: {Math.max(...liveKwh).toFixed(0)} kWh</div>
+                      </div>
+                    </>
+                  );
+                })()}
 
                 {/* Monthly peak kW bar chart */}
                 <div style={{ fontSize: 10, color: C.muted, letterSpacing: "0.07em", textTransform: "uppercase", fontWeight: 600, marginBottom: 8, marginTop: 16 }}>Monthly Peak kW</div>
