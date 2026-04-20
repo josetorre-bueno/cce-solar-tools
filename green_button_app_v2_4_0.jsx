@@ -1,6 +1,6 @@
 // MOD-02b green_button.emulator — module
-// Version: v2.4.2
-// Updated: 2026-04-20 10:00 PT
+// Version: v2.4.3
+// Updated: 2026-04-20 10:30 PT
 // Part of: Wipomo / CCE Solar Tools (see TOOL_ARCHITECTURE_5.md)
 // Outputs to: MOD-05 (bill_modeler), MOD-06 (battery_simulator)
 // Changelog: v2.4.2 — Per-month kWh adjustment: click "✏ Edit" near the Monthly kWh chart,
@@ -15,7 +15,7 @@
 
 const { useState, useCallback, useRef, useEffect } = React;
 
-const VERSION = "2.4.2";
+const VERSION = "2.4.3";
 
 // ─── DATA SOURCES (for citation in output files) ──────────────────────────────
 const DATA_SOURCES = {
@@ -1922,9 +1922,13 @@ function App() {
       const restoredSum = computeSummary(restored);
       baseMonthlyKwhRef.current = restoredSum.monthlyKwh;
       basePeakKwRef.current     = restoredSum.monthlyPeakKw;
+      // Immediately clear _scaleFactor in summary state so repeated clicks
+      // see sf === 1.0 and skip the division (prevents compounding on re-click).
+      setSummary(prev => prev ? { ...prev, _scaleFactor: 1.0 } : null);
     }
     setAnnualKwhOverride("");
-    // Force the monthMult useEffect to re-run and rebuild summary + files
+    // Force the monthMult useEffect to re-run and rebuild summary + files.
+    // The useEffect preserves prev._scaleFactor (now 1.0) so the banner stays hidden.
     setMonthMult(prev => [...prev]);
   };
 
