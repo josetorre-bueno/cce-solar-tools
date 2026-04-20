@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <!-- tools.cc-energy.org landing page -->
-<!-- Version: v1.2 -->
+<!-- Version: v1.3 -->
 <!-- Part of: Wipomo / CCE Solar Tools -->
 <html lang="en">
 <head>
@@ -45,6 +45,20 @@ h1 { font-size: 28px; font-weight: 700; color: #e8edf2; margin-bottom: 0.5rem; t
 .coming-soon .tool-tag { color: #4a6a8a; }
 .footer { margin-top: 3rem; font-size: 11px; color: #5a7a9a; font-family: 'DM Mono', monospace; text-align: center; line-height: 1.8; }
 .footer a { color: #6a9acc; text-decoration: none; }
+#logout-btn {
+  margin-top: 0.6rem;
+  background: none;
+  border: 1px solid #2a3d52;
+  border-radius: 6px;
+  color: #4a6a8a;
+  font-family: 'DM Mono', monospace;
+  font-size: 11px;
+  padding: 4px 12px;
+  cursor: pointer;
+  letter-spacing: 0.06em;
+  transition: border-color 0.15s, color 0.15s;
+}
+#logout-btn:hover { border-color: #ff6b6b; color: #ff6b6b; }
 </style>
 </head>
 <body>
@@ -86,4 +100,11 @@ h1 { font-size: 28px; font-weight: 700; color: #e8edf2; margin-bottom: 0.5rem; t
 </div>
 
 <div class="footer">
-  Center for Community Energy / Makello · <a href="/cdn-cgi/l/email-protection#69080d040007290a0a440c070c1b0e1047061b0e"><span class="__cf_email__" data-cfemail="2140454c484f6142420c444f445346580f4e5346">[ema
+  Center for Community Energy / Makello &nbsp;&middot;&nbsp; jose.torrebueno@cc-energy.org<br>
+  Internal access only &nbsp;&middot;&nbsp; tools.cc-energy.org
+  <br>
+  <button id="logout-btn" onclick="localStorage.removeItem('cce_auth'); location.reload();">Sign out</button>
+</div>
+
+</body>
+</html>
