@@ -1,6 +1,6 @@
 // MOD-02b green_button.emulator — module
-// Version: v2.4.6
-// Updated: 2026-04-20 12:00 PT
+// Version: v2.4.7
+// Updated: 2026-04-20 12:30 PT
 // Part of: Wipomo / CCE Solar Tools (see TOOL_ARCHITECTURE_5.md)
 // Outputs to: MOD-05 (bill_modeler), MOD-06 (battery_simulator)
 // Changelog: v2.4.2 — Per-month kWh adjustment: click "✏ Edit" near the Monthly kWh chart,
@@ -15,7 +15,7 @@
 
 const { useState, useCallback, useRef, useEffect } = React;
 
-const VERSION = "2.4.6";
+const VERSION = "2.4.7";
 
 // ─── DATA SOURCES (for citation in output files) ──────────────────────────────
 const DATA_SOURCES = {
@@ -1556,6 +1556,17 @@ const MANUAL = [
     body2: "The annual EV load estimate (EVs × miles/yr ÷ mi/kWh) updates live as you type.",
   },
   {
+    heading: "ANNUAL kWh OVERRIDE — OPTIONAL",
+    body: "If you know the building's actual or expected annual consumption (from a utility bill, energy model, or customer estimate), enter it in the Target Annual kWh field before clicking Generate Files. All 35,040 intervals will be scaled proportionally so the annual total matches exactly. The seasonal load shape and time-of-use distribution are preserved — only the magnitude changes.",
+    bullets: [
+      "Leave blank to use the ResStock archetype estimate (default).",
+      "Enter a value greater than 100 kWh to activate the override.",
+      "After generation, a green banner in the summary confirms the override is active and shows the model estimate vs. the target and the scale factor applied.",
+      "Click Reset in the green banner to undo the override without re-running the simulation. The model estimate is restored instantly.",
+    ],
+    body2: "The annual override and the per-month adjustment (see below) are independent and can be applied in either order. Apply the annual override first if you want to anchor the total, then use per-month adjustment to reshape the seasonal distribution.",
+  },
+  {
     heading: "GENERATING FILES",
     body: "Click Generate Files. The simulation runs entirely in the browser — no internet connection required. A progress bar shows completion; generation takes 2–10 seconds depending on the number of units.",
   },
@@ -1569,10 +1580,26 @@ const MANUAL = [
     bullets: [
       "Annual Total kWh and Monthly Average kWh.",
       "Annual Peak demand (kW) and Average Daily kWh.",
-      "Monthly kWh bar chart (blue bars).",
+      "Monthly kWh bar chart (blue bars) — interactive when editing is active (see Per-Month Adjustment below).",
       "Monthly Peak kW bar chart (orange bars).",
     ],
     body2: "Click 💾 Save PNG (in the 03 — SUMMARY header) to export both charts as a 900 × 590 px image suitable for proposals and reports. The image includes the address, simulation year, and tool version.",
+  },
+  {
+    heading: "PER-MONTH ADJUSTMENT",
+    body: "After generation, individual months can be adjusted without re-running the simulation. This is useful when you have utility bill data showing that a specific month is higher or lower than the archetype estimate.",
+    bullets: [
+      "Click ✏ Edit next to the Monthly kWh heading to enter editing mode. The button label changes to ✓ Editing.",
+      "Click any month bar to select it. The selected bar is highlighted and an editor row appears below the chart showing the month name and current kWh value.",
+      "Spinner ▲▼ on the kWh input — adjusts the selected month immediately. Each click updates the bar chart in real time.",
+      "↑ / ↓ arrow keys — same as spinner but in 1% steps. Works while the editor row is visible.",
+      "Type a value + Enter — type an exact kWh target and press Enter (or click away) to commit. The bars update when you commit, not while you type.",
+      "Adjacent spreading — every adjustment propagates to neighbouring months: ±1 months change by half as much, ±2 months by one quarter. Only those five months are affected.",
+      "The annual total floats: it reflects the sum of all adjusted monthly values and is not held to the annual override target.",
+      "Reset Months button — appears when any month has been adjusted. Clears all month multipliers and returns every month to its post-generation value.",
+      "All output files (XML, CSV, Summary CSV) rebuild automatically to reflect month adjustments. The 15-min interval CSV uses the adjusted per-month scale factors applied uniformly within each calendar month.",
+    ],
+    body2: "Tip: the annual override and per-month adjustment are independent. You can set an annual target (e.g. 12,000 kWh/yr from a utility bill), generate, then use per-month editing to match the seasonal shape of the actual bills — the annual total will drift slightly from the target as you adjust months, which is expected.",
   },
   {
     heading: "DOWNLOADING YOUR DATA",
