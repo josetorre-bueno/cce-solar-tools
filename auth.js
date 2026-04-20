@@ -1,5 +1,8 @@
 // CCE / Wipomo Tools — Access Gate
-// Version: v1.0.1
+// Version: v1.0.2
+// Login persists across tabs and browser sessions (localStorage). The user logs in
+// once on the index page and all tools are accessible without re-entering the password.
+// To log out: open browser dev tools → Application → Local Storage → delete cce_auth.
 // To change the password: compute SHA-256 of the new password and replace HASH below.
 // Quick way: open browser console on any page and run:
 //   crypto.subtle.digest('SHA-256', new TextEncoder().encode('newpassword'))
@@ -10,7 +13,7 @@
   const TOKEN_KEY = 'cce_auth';
   const TOKEN_VALUE = 'granted_' + HASH.slice(0, 16);
 
-  if (sessionStorage.getItem(TOKEN_KEY) === TOKEN_VALUE) return;
+  if (localStorage.getItem(TOKEN_KEY) === TOKEN_VALUE) return;
 
   // Hide page content until authenticated
   document.documentElement.style.visibility = 'hidden';
@@ -110,7 +113,7 @@
       btn.disabled = true;
       const ok = await checkPassword(val);
       if (ok) {
-        sessionStorage.setItem(TOKEN_KEY, TOKEN_VALUE);
+        localStorage.setItem(TOKEN_KEY, TOKEN_VALUE);
         gate.remove();
         document.documentElement.style.visibility = '';
       } else {
