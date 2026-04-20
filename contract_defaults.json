@@ -1,0 +1,18 @@
+{
+  "contractor_name": "Green Energy EPC by Makello",
+  "contractor_address": "9434 Chesapeake Dr., #1210, San Diego, CA 92123",
+  "contractor_license_no": "1110498",
+  "material_escalation_threshold_pct": "5%",
+  "labor_escalation_threshold_pct": "5%",
+  "phase1_completion_days": "75",
+  "phase1_fee_pct": "8%",
+  "phase2_start_days": "30",
+  "payment_ntp_pct": "25%",
+  "payment_equipment_pct": "35%",
+  "payment_installation_pct": "25%",
+  "payment_closeout_pct": "15%",
+  "workmanship_warranty_years": "1",
+  "design_warranty_years": "1",
+  "contractor_signatory_name": "Charlie Johnson",
+  "contractor_signatory_title": "President"
+}

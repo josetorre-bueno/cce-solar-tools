@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Makello Contract Tool</title>
+
+  <!-- React -->
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+
+  <!-- Babel (JSX transpiler) -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- PizZip + Docxtemplater (client-side Word template filling) -->
+  <script src="https://unpkg.com/pizzip@3/dist/pizzip.js"></script>
+  <script src="https://unpkg.com/docxtemplater@3/build/docxtemplater.js"></script>
+
+  <!-- FileSaver (download trigger) -->
+  <script src="https://unpkg.com/file-saver@2/dist/FileSaver.min.js"></script>
+
+  <!-- PapaParse (CSV parsing) -->
+  <script src="https://unpkg.com/papaparse@5/papaparse.min.js"></script>
+
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f0f4f8; font-family: system-ui, -apple-system, sans-serif; }
+    #root { min-height: 100vh; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel" src="contract_tool_app_v0.2.7.jsx"></script>
+</body>
+</html>
