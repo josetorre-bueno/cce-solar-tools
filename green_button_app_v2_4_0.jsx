@@ -1,6 +1,6 @@
 // MOD-02b green_button.emulator — module
-// Version: v2.4.3
-// Updated: 2026-04-20 10:30 PT
+// Version: v2.4.4
+// Updated: 2026-04-20 11:00 PT
 // Part of: Wipomo / CCE Solar Tools (see TOOL_ARCHITECTURE_5.md)
 // Outputs to: MOD-05 (bill_modeler), MOD-06 (battery_simulator)
 // Changelog: v2.4.2 — Per-month kWh adjustment: click "✏ Edit" near the Monthly kWh chart,
@@ -15,7 +15,7 @@
 
 const { useState, useCallback, useRef, useEffect } = React;
 
-const VERSION = "2.4.3";
+const VERSION = "2.4.4";
 
 // ─── DATA SOURCES (for citation in output files) ──────────────────────────────
 const DATA_SOURCES = {
@@ -2559,16 +2559,19 @@ function App() {
                             <input
                               type="number"
                               value={editInputVal !== "" ? editInputVal : curKwh.toFixed(0)}
-                              onChange={e => setEditInputVal(e.target.value)}
-                              onBlur={e => {
-                                const typed = parseFloat(e.target.value);
+                              onChange={e => {
+                                const val = e.target.value;
+                                setEditInputVal(val);
+                                // Apply immediately so spinner clicks and live typing
+                                // both update the bar chart without needing Enter/blur.
+                                const typed = parseFloat(val);
                                 const b = (baseMonthlyKwhRef.current || summary.monthlyKwh)[editingMonth];
                                 if (!isNaN(typed) && typed > 0 && b > 0) {
                                   const newMult = typed / b;
                                   setMonthMult(prev => { const n = [...prev]; n[editingMonth] = newMult; return n; });
                                 }
-                                setEditInputVal("");
                               }}
+                              onBlur={() => setEditInputVal("")}
                               onKeyDown={e => { if (e.key === 'Enter') e.target.blur(); }}
                               style={{ ...inputStyle, width: 90, padding: "4px 8px", fontSize: 12, textAlign: "right" }}
                             />
