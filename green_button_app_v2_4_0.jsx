@@ -1,6 +1,6 @@
 // MOD-02b green_button.emulator — module
-// Version: v2.4.5
-// Updated: 2026-04-20 11:30 PT
+// Version: v2.4.6
+// Updated: 2026-04-20 12:00 PT
 // Part of: Wipomo / CCE Solar Tools (see TOOL_ARCHITECTURE_5.md)
 // Outputs to: MOD-05 (bill_modeler), MOD-06 (battery_simulator)
 // Changelog: v2.4.2 — Per-month kWh adjustment: click "✏ Edit" near the Monthly kWh chart,
@@ -15,7 +15,7 @@
 
 const { useState, useCallback, useRef, useEffect } = React;
 
-const VERSION = "2.4.5";
+const VERSION = "2.4.6";
 
 // ─── DATA SOURCES (for citation in output files) ──────────────────────────────
 const DATA_SOURCES = {
@@ -691,11 +691,17 @@ function interpMonthMult(monthMults, dayOfYear) {
 // Returns a new array; original is unchanged.
 function applyMonthAdj(intervals, monthMult) {
   if (monthMult.every(m => m === 1.0)) return intervals;
+  // Flat per-month multiplication: every 15-min interval within a calendar month
+  // is scaled by that month's multiplier only. This ensures monthly totals change
+  // for exactly the months touched by spreadMonthAdj (0, ±1, ±2) and no others.
+  // Smooth interpolation was removed because centre-to-centre blending caused
+  // months ±3 and beyond to show small changes in their computed totals, which
+  // violated the spreading spec.
   const result = new Array(intervals.length);
-  let iIdx = 0, dayOfYear = 0;
+  let iIdx = 0;
   for (let mo = 0; mo < 12; mo++) {
+    const mult = monthMult[mo];
     for (let d = 0; d < DAYS_IN_MONTH[mo]; d++) {
-      const mult = interpMonthMult(monthMult, dayOfYear++);
       for (let t = 0; t < 96; t++) { result[iIdx] = intervals[iIdx] * mult; iIdx++; }
     }
   }
@@ -1645,7 +1651,10 @@ function App() {
   // never compound. Arrow keys update the snapshot after each press.
   const editStartKwhRef     = useRef(null);   // kWh of selected month when editing started
   const monthMultAtStartRef = useRef(null);   // all 12 monthMults when editing started
-  const monthSpreadTimer    = useRef(null);   // debounce for spreading adjacent months
+  const monthSpreadTimer    = useRef(null);   // (unused — kept for safety)
+  // True while a keyboard key is held during input editing; false between keystrokes
+  // and never true during spinner clicks (which fire onChange with no preceding keydown).
+  const isTypingRef         = useRef(false);
   // Multifamily per-unit configuration
   const [units,         setUnits]         = useState(DEFAULT_UNITS);
   const [unitCount,     setUnitCount]     = useState(6);
@@ -2583,45 +2592,52 @@ function App() {
                             <input
                               type="number"
                               value={editInputVal !== "" ? editInputVal : curKwh.toFixed(0)}
+                              onKeyDown={e => {
+                                if (e.key === 'Enter') {
+                                  // Commit typed value immediately — handled in onBlur
+                                  e.target.blur();
+                                } else if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') {
+                                  // Mark that a keyboard key is down so onChange knows
+                                  // this is a typed character, not a spinner click.
+                                  isTypingRef.current = true;
+                                }
+                              }}
+                              onKeyUp={() => { isTypingRef.current = false; }}
                               onChange={e => {
                                 const val = e.target.value;
                                 setEditInputVal(val);
+                                if (isTypingRef.current) {
+                                  // User is typing — don't apply yet; wait for Enter/blur
+                                  // so intermediate values ("1", "12" before "1200") are ignored.
+                                  return;
+                                }
+                                // Spinner click: no keydown precedes this onChange.
+                                // Apply spread immediately from the session-start snapshot.
                                 const typed = parseFloat(val);
-                                const startKwh  = editStartKwhRef.current;
+                                const startKwh   = editStartKwhRef.current;
                                 const startMults = monthMultAtStartRef.current;
                                 if (!isNaN(typed) && typed > 0 && startKwh > 0 && startMults) {
                                   const pct = (typed - startKwh) / startKwh;
-                                  // Debounce 200 ms: bars don't thrash while the user is
-                                  // typing digits ("1", "12", "120" before "1200"), but settle
-                                  // to the correct spread value once typing pauses.
-                                  clearTimeout(monthSpreadTimer.current);
-                                  monthSpreadTimer.current = setTimeout(() => {
-                                    setMonthMult(spreadMonthAdj(startMults, editingMonth, pct));
-                                    // Update snapshot so further edits continue from here.
-                                    const base2 = baseMonthlyKwhRef.current;
-                                    if (base2) editStartKwhRef.current = base2[editingMonth] * startMults[editingMonth] * (1 + pct);
-                                    monthMultAtStartRef.current = spreadMonthAdj(startMults, editingMonth, pct);
-                                  }, 200);
+                                  setMonthMult(spreadMonthAdj(startMults, editingMonth, pct));
                                 }
                               }}
                               onBlur={() => {
-                                // Commit any pending spread immediately on blur/Enter.
-                                clearTimeout(monthSpreadTimer.current);
-                                const val = editInputVal;
-                                const typed = parseFloat(val);
+                                isTypingRef.current = false;
+                                const typed = parseFloat(editInputVal);
                                 const startKwh   = editStartKwhRef.current;
                                 const startMults = monthMultAtStartRef.current;
                                 if (!isNaN(typed) && typed > 0 && startKwh > 0 && startMults) {
                                   const pct = (typed - startKwh) / startKwh;
                                   const next = spreadMonthAdj(startMults, editingMonth, pct);
                                   setMonthMult(next);
+                                  // Update snapshot so the next edit on this bar continues
+                                  // from the newly committed value, not the original click-in value.
                                   const base2 = baseMonthlyKwhRef.current;
                                   if (base2) editStartKwhRef.current = base2[editingMonth] * next[editingMonth];
                                   monthMultAtStartRef.current = [...next];
                                 }
                                 setEditInputVal("");
                               }}
-                              onKeyDown={e => { if (e.key === 'Enter') e.target.blur(); }}
                               style={{ ...inputStyle, width: 90, padding: "4px 8px", fontSize: 12, textAlign: "right" }}
                             />
                             <div style={{ fontSize: 10, color: C.muted }}>kWh</div>
