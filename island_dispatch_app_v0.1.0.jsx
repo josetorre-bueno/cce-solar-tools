@@ -1,6 +1,6 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.137
-// Updated: 2026-04-19 09:00 PT
+// Version: v0.4.138
+// Updated: 2026-04-20 14:30 PT
 // Part of: Wipomo / CCE Solar Tools
 
 "use strict";
@@ -1891,6 +1891,114 @@ const LEG_PW   = { text: "Post-window",        fillStyle: "rgba(32,128,64,0.14)"
 const LEG_GEN  = { text: "Generator running",  fillStyle: "rgba(192,100,0,0.24)", strokeStyle: "rgba(0,0,0,0)",        lineWidth: 0,   lineDash: [],   hidden: false, datasetIndex: null, pointStyle: "rect" };
 const LEG_DCFC = { text: "DCFC top-off",       fillStyle: "rgba(0,0,0,0)",        strokeStyle: "rgba(192,57,43,0.75)", lineWidth: 1.5, lineDash: [4,3], hidden: false, datasetIndex: null, pointStyle: "line" };
 
+// ── Summary CSV helpers (save / restore) ──────────────────────────────────────
+
+function buildMod06SummaryCSV(inputs, result) {
+  const now = new Date();
+  const pad = n => String(n).padStart(2, "0");
+  const ts = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())} PT`;
+
+  function csvVal(v) {
+    if (v == null) return "";
+    const s = typeof v === "object" ? JSON.stringify(v) : String(v);
+    if (s.includes(",") || s.includes('"') || s.includes("\n")) {
+      return '"' + s.replace(/"/g, '""') + '"';
+    }
+    return s;
+  }
+
+  const rows = [
+    ["# MOD-06 Off-Grid Optimizer — Input Summary", ""],
+    ["# Version", "v0.4.138"],
+    ["# Saved", ts],
+    ["siteName",             inputs.siteName || ""],
+    ["lat",                  inputs.lat ?? ""],
+    ["lon",                  inputs.lon ?? ""],
+    ["geoAddress",           inputs.geoAddress || ""],
+    ["mounts",               inputs.mounts],
+    ["pvSizesStr",           inputs.pvSizesStr || ""],
+    ["loadMode",             inputs.loadMode || "synthetic"],
+    ["annualKwh",            inputs.annualKwh ?? ""],
+    ["daytimeShiftPct",      inputs.daytimeShiftPct ?? ""],
+    ["uploadedLoad",         (inputs.loadMode === "upload" && inputs.uploadedLoad) ? inputs.uploadedLoad : null],
+    ["uploadedFileName",     inputs.uploadedFileName || ""],
+    ["selectedBatteries",    inputs.selectedBatteries],
+    ["batteryCosts",         inputs.batteryCosts],
+    ["evList",               inputs.evList],
+    ["dcfcCostPerKwh",       inputs.dcfcCostPerKwh ?? ""],
+    ["evseCost",             inputs.evseCost ?? ""],
+    ["maxEmergencyDcfc",     inputs.maxEmergencyDcfc ?? ""],
+    ["maxEnrouteDcfc",       inputs.maxEnrouteDcfc ?? ""],
+    ["npvYears",             inputs.npvYears ?? ""],
+    ["discountRate",         inputs.discountRate ?? ""],
+    ["genSizesStr",          inputs.genSizesStr || ""],
+    ["fuelCostPerHour",      inputs.fuelCostPerHour ?? ""],
+    ["genLookaheadDays",     inputs.genLookaheadDays ?? ""],
+    ["genInstalledCost",     inputs.genInstalledCost ?? ""],
+    ["genHrLimit",           inputs.genHrLimit ?? ""],
+    ["emergencyGenHrLimit",  inputs.emergencyGenHrLimit ?? ""],
+    ["climateZone",          inputs.climateZone ?? ""],
+    ["cfa",                  inputs.cfa ?? ""],
+    ["ndu",                  inputs.ndu ?? ""],
+    ["criticalLoadKwhPerDay",inputs.criticalLoadKwhPerDay ?? ""],
+    ["--- RESULTS (reference only — not restored) ---", ""],
+  ];
+
+  if (result) {
+    const opt = result.optimum || result._wwOnlyOptimum;
+    if (opt) {
+      rows.push(["result.batOpt.mountLabel",  opt.mountLabel  || ""]);
+      rows.push(["result.batOpt.pvKw",        opt.pvKw        ?? ""]);
+      rows.push(["result.batOpt.batteryLabel", opt.batteryLabel || ""]);
+      rows.push(["result.batOpt.batteryKwh",  opt.batteryKwh  ?? ""]);
+      rows.push(["result.batOpt.totalCost",   opt.totalCost   ?? ""]);
+      rows.push(["result.batOpt.wwPct",       opt.wwPct       ?? ""]);
+    }
+    const genOpt = result._genOptResult?.optimum;
+    if (genOpt) {
+      rows.push(["result.genOpt.pvKw",         genOpt.pvKw         ?? ""]);
+      rows.push(["result.genOpt.batteryLabel",  genOpt.batteryLabel || ""]);
+      rows.push(["result.genOpt.genKw",         genOpt.genKw        ?? ""]);
+      rows.push(["result.genOpt.totalCost",     genOpt.totalCost    ?? ""]);
+      rows.push(["result.genOpt.annualGenHours",genOpt.annualGenHours ?? ""]);
+    }
+    rows.push(["result.nPassing", result.nPassing ?? ""]);
+    rows.push(["result.nTotal",   result.nTotal   ?? ""]);
+  }
+
+  return rows.map(([k, v]) => `${csvVal(k)},${csvVal(v)}`).join("\n");
+}
+
+function parseMod06SummaryCSV(text) {
+  const lines = text.split(/\r?\n/);
+  const inputs = {};
+  for (const line of lines) {
+    if (!line.trim() || line.startsWith("#")) continue;
+    if (line.startsWith("--- RESULTS")) break;
+    const commaIdx = line.indexOf(",");
+    if (commaIdx < 0) continue;
+    const rawKey = line.slice(0, commaIdx).trim().replace(/^"|"$/g, "");
+    const rawVal = line.slice(commaIdx + 1).trim();
+    let val = rawVal;
+    if (val.startsWith('"') && val.endsWith('"')) {
+      val = val.slice(1, -1).replace(/""/g, '"');
+    }
+    if (val === "null") {
+      val = null;
+    } else if (val === "true") {
+      val = true;
+    } else if (val === "false") {
+      val = false;
+    } else if (val.startsWith("{") || val.startsWith("[")) {
+      try { val = JSON.parse(val); } catch (e) { /* keep as string */ }
+    } else if (val !== "" && !isNaN(Number(val))) {
+      val = Number(val);
+    }
+    inputs[rawKey] = val;
+  }
+  return inputs;
+}
+
 // ── MAIN APP ──────────────────────────────────────────────────────────────────
 
 function App() {
@@ -2078,6 +2186,7 @@ function App() {
   // Slice refs: hold current visible slice so onContextMenu can look up position from event coords
   const evSliceRef     = useRef([]);
   const genSliceRef    = useRef([]);
+  const restoreFileRef = useRef(null);   // hidden <input type="file"> for summary CSV restore
 
   // ── Load NSRDB on mount ───────────────────────────────────────────────────
 
@@ -2314,88 +2423,67 @@ function App() {
     return sortAsc ? String(av).localeCompare(String(bv)) : String(bv).localeCompare(String(av));
   }) : [];
 
-  // ── Save / Restore inputs ─────────────────────────────────────────────────
+  // ── Restore inputs from summary CSV file ─────────────────────────────────
 
-  const handleSaveInputs = useCallback(() => {
-    const now = new Date();
-    const timeStr = `${String(now.getHours()).padStart(2,"0")}:${String(now.getMinutes()).padStart(2,"0")}`;
-    const payload = {
-      _savedAt: timeStr,
-      siteName, lat, lon, geoAddress, mounts, pvSizesStr,
-      loadMode, annualKwh, daytimeShiftPct,
-      uploadedLoad: (loadMode === "upload" && uploadedLoad) ? uploadedLoad : null,
-      uploadedFileName: (loadMode === "upload" && uploadedLoad) ? uploadedFileName : "",
-      selectedBatteries: Array.from(selectedBatteries),
-      batteryCosts,
-      evList, dcfcCostPerKwh, evseCost, maxEmergencyDcfc, maxEnrouteDcfc,
-      npvYears, discountRate,
-      genSizesStr, fuelCostPerHour, genLookaheadDays, genInstalledCost, genHrLimit, emergencyGenHrLimit,
-      climateZone, cfa, ndu, criticalLoadKwhPerDay,
+  const handleRestoreFile = useCallback((e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = ""; // reset so same file can be re-selected
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const p = parseMod06SummaryCSV(ev.target.result);
+        if (p.siteName                  !== undefined) setSiteName(p.siteName);
+        if (p.lat                       !== undefined) setLat(p.lat);
+        if (p.lon                       !== undefined) setLon(p.lon);
+        if (p.geoAddress                !== undefined) setGeoAddress(p.geoAddress);
+        if (p.mounts                    !== undefined) setMounts(p.mounts);
+        if (p.pvSizesStr                !== undefined) setPvSizesStr(p.pvSizesStr);
+        if (p.annualKwh                 !== undefined) setAnnualKwh(p.annualKwh);
+        if (p.daytimeShiftPct           !== undefined) setDaytimeShiftPct(p.daytimeShiftPct);
+        if (p.selectedBatteries         !== undefined) setSelectedBatteries(new Set(p.selectedBatteries));
+        if (p.batteryCosts              !== undefined) setBatteryCosts(prev => ({ ...prev, ...p.batteryCosts }));
+        if (p.evList && Array.isArray(p.evList))       setEvList(p.evList);
+        if (p.dcfcCostPerKwh            !== undefined) setDcfcCostPerKwh(p.dcfcCostPerKwh);
+        if (p.evseCost                  !== undefined) setEvseCost(p.evseCost);
+        if (p.maxEmergencyDcfc          !== undefined) setMaxEmergencyDcfc(p.maxEmergencyDcfc);
+        if (p.maxEnrouteDcfc            !== undefined) setMaxEnrouteDcfc(p.maxEnrouteDcfc);
+        if (p.npvYears                  !== undefined) setNpvYears(p.npvYears);
+        if (p.discountRate              !== undefined) setDiscountRate(p.discountRate);
+        // genSizesStr: strip sub-10 kW sizes (older summary files may contain them)
+        if (p.genSizesStr !== undefined) {
+          const cleaned = String(p.genSizesStr).split(",").map(s => parseFloat(s.trim())).filter(v => !isNaN(v) && v >= 10);
+          setGenSizesStr(cleaned.length > 0 ? cleaned.join(",") : "10");
+        }
+        if (p.fuelCostPerHour           !== undefined) setFuelCostPerHour(p.fuelCostPerHour);
+        if (p.genLookaheadDays          !== undefined) setGenLookaheadDays(p.genLookaheadDays);
+        if (p.genInstalledCost          !== undefined) setGenInstalledCost(p.genInstalledCost);
+        // genHrLimit: migrate old default (100) to correct ordinance value (52)
+        if (p.genHrLimit !== undefined) setGenHrLimit(p.genHrLimit === 100 ? 52 : p.genHrLimit);
+        if (p.emergencyGenHrLimit       !== undefined) setEmergencyGenHrLimit(p.emergencyGenHrLimit);
+        if (p.climateZone               !== undefined) setClimateZone(p.climateZone);
+        if (p.cfa                       !== undefined) setCfa(p.cfa);
+        if (p.ndu                       !== undefined) setNdu(p.ndu);
+        if (p.criticalLoadKwhPerDay     !== undefined) setCriticalLoadKwhPerDay(p.criticalLoadKwhPerDay);
+        // Green Button data
+        if (p.uploadedLoad && Array.isArray(p.uploadedLoad) && p.uploadedLoad.length > 0) {
+          setLoadMode("upload");
+          setUploadedLoad(p.uploadedLoad);
+          const fn = p.uploadedFileName || "";
+          setUploadedFileName(fn);
+          const ann = Math.round(p.uploadedLoad.reduce((s, v) => s + v, 0));
+          const fname = fn ? `${fn} — ` : "";
+          setUploadStatus(`Restored: ${fname}${p.uploadedLoad.length} hours, ${ann.toLocaleString()} kWh/yr`);
+        } else {
+          setLoadMode(p.loadMode === "upload" ? "synthetic" : (p.loadMode || "synthetic"));
+          if (p.loadMode === "upload") setUploadStatus("Green Button data not in summary file — using synthetic load.");
+        }
+        setBtnFeedback("restored"); setTimeout(() => setBtnFeedback(""), 2000);
+      } catch (err) {
+        alert("Failed to restore inputs: " + err.message);
+      }
     };
-    localStorage.setItem("cce_mod06_inputs", JSON.stringify(payload));
-    setLastSavedTime(timeStr);
-    setBtnFeedback("saved"); setTimeout(() => setBtnFeedback(""), 2000);
-  }, [siteName, lat, lon, geoAddress, mounts, pvSizesStr, loadMode, annualKwh, daytimeShiftPct, uploadedLoad, selectedBatteries,
-      batteryCosts, evList, dcfcCostPerKwh, evseCost, maxEmergencyDcfc, maxEnrouteDcfc, npvYears, discountRate,
-      genSizesStr, fuelCostPerHour, genLookaheadDays, genInstalledCost, genHrLimit, emergencyGenHrLimit,
-      climateZone, cfa, ndu, criticalLoadKwhPerDay, uploadedFileName]);
-
-  const handleRestoreInputs = useCallback(() => {
-    const raw = localStorage.getItem("cce_mod06_inputs");
-    if (!raw) { alert("No saved inputs found."); return; }
-    try {
-      const p = JSON.parse(raw);
-      if (p.siteName)                           setSiteName(p.siteName);
-      if (p.lat               !== undefined)    setLat(p.lat);
-      if (p.lon               !== undefined)    setLon(p.lon);
-      if (p.geoAddress)                         setGeoAddress(p.geoAddress);
-      if (p.mounts            !== undefined) setMounts(p.mounts);
-      if (p.pvSizesStr        !== undefined) setPvSizesStr(p.pvSizesStr);
-      if (p.annualKwh         !== undefined) setAnnualKwh(p.annualKwh);
-      if (p.daytimeShiftPct   !== undefined) setDaytimeShiftPct(p.daytimeShiftPct);
-      if (p.selectedBatteries !== undefined) setSelectedBatteries(new Set(p.selectedBatteries));
-      if (p.batteryCosts !== undefined) setBatteryCosts(prev => ({ ...prev, ...p.batteryCosts }));
-      if (p.evList && Array.isArray(p.evList)) setEvList(p.evList);
-      if (p.dcfcCostPerKwh    !== undefined) setDcfcCostPerKwh(p.dcfcCostPerKwh);
-      if (p.evseCost          !== undefined) setEvseCost(p.evseCost);
-      if (p.maxEmergencyDcfc  !== undefined) setMaxEmergencyDcfc(p.maxEmergencyDcfc);
-      else if (p.maxDcfcTrips !== undefined) setMaxEmergencyDcfc(p.maxDcfcTrips); // migrate old saves
-      if (p.maxEnrouteDcfc    !== undefined) setMaxEnrouteDcfc(p.maxEnrouteDcfc);
-      if (p.npvYears          !== undefined) setNpvYears(p.npvYears);
-      if (p.discountRate      !== undefined) setDiscountRate(p.discountRate);
-      // genSizesStr: migrate old saves that included sub-10 kW sizes (no soundproofing)
-      if (p.genSizesStr !== undefined) {
-        const cleaned = p.genSizesStr.split(",").map(s => parseFloat(s.trim())).filter(v => !isNaN(v) && v >= 10);
-        setGenSizesStr(cleaned.length > 0 ? cleaned.join(",") : "10");
-      }
-      if (p.fuelCostPerHour   !== undefined) setFuelCostPerHour(p.fuelCostPerHour);
-      if (p.genLookaheadDays  !== undefined) setGenLookaheadDays(p.genLookaheadDays);
-      if (p.genInstalledCost  !== undefined) setGenInstalledCost(p.genInstalledCost);
-      // genHrLimit: migrate old default (100) to correct ordinance value (52)
-      if (p.genHrLimit !== undefined) setGenHrLimit(p.genHrLimit === 100 ? 52 : p.genHrLimit);
-      if (p.emergencyGenHrLimit  !== undefined) setEmergencyGenHrLimit(p.emergencyGenHrLimit);
-      if (p.climateZone          !== undefined) setClimateZone(p.climateZone);
-      if (p.cfa                  !== undefined) setCfa(p.cfa);
-      if (p.ndu                  !== undefined) setNdu(p.ndu);
-      if (p.criticalLoadKwhPerDay !== undefined) setCriticalLoadKwhPerDay(p.criticalLoadKwhPerDay);
-      if (p._savedAt) setLastSavedTime(p._savedAt);
-      // Green Button data
-      if (p.uploadedLoad && Array.isArray(p.uploadedLoad) && p.uploadedLoad.length > 0) {
-        setLoadMode("upload");
-        setUploadedLoad(p.uploadedLoad);
-        const fn = p.uploadedFileName || localStorage.getItem("cce_mod06_gb_filename") || "";
-        setUploadedFileName(fn);
-        const ann = Math.round(p.uploadedLoad.reduce((s, v) => s + v, 0));
-        const fname = fn ? `${fn} — ` : "";
-        setUploadStatus(`Restored: ${fname}${p.uploadedLoad.length} hours, ${ann.toLocaleString()} kWh/yr`);
-      } else {
-        setLoadMode(p.loadMode === "upload" ? "synthetic" : (p.loadMode || "synthetic"));
-        if (p.loadMode === "upload") setUploadStatus("Green Button file not in saved data — using synthetic.");
-      }
-      setBtnFeedback("restored"); setTimeout(() => setBtnFeedback(""), 2000);
-    } catch (e) {
-      alert("Failed to restore inputs: " + e.message);
-    }
+    reader.readAsText(file);
   }, []);
 
   // ── Phase 2: EV impact analysis ──────────────────────────────────────────
@@ -2758,6 +2846,25 @@ function App() {
         downloadCsv(`annual_gen_trace_${slug}.csv`, lines.join("\n"));
       }, 900);
     }
+    // 5. Summary CSV — all input parameters + results reference section
+    setTimeout(() => {
+      const inputs = {
+        siteName, lat, lon, geoAddress, mounts, pvSizesStr,
+        loadMode, annualKwh, daytimeShiftPct,
+        uploadedLoad: (loadMode === "upload" && uploadedLoad) ? uploadedLoad : null,
+        uploadedFileName: (loadMode === "upload" && uploadedLoad) ? uploadedFileName : "",
+        selectedBatteries: Array.from(selectedBatteries),
+        batteryCosts,
+        evList, dcfcCostPerKwh, evseCost, maxEmergencyDcfc, maxEnrouteDcfc,
+        npvYears, discountRate,
+        genSizesStr, fuelCostPerHour, genLookaheadDays, genInstalledCost, genHrLimit, emergencyGenHrLimit,
+        climateZone, cfa, ndu, criticalLoadKwhPerDay,
+      };
+      downloadCsv(`summary_${slug}.csv`, buildMod06SummaryCSV(inputs, res));
+      const now = new Date();
+      const pad = n => String(n).padStart(2, "0");
+      setLastSavedTime(`${pad(now.getHours())}:${pad(now.getMinutes())}`);
+    }, 1200);
   }
 
   // Composite multiple panel canvases vertically into one PNG with white background
@@ -3089,28 +3196,10 @@ function App() {
           : "";
       setRunStatus(`Done. Battery-only: ${res.nPassing} of ${res.nTotal} pass all criteria (${res.nWwOnly} pass WW).${annualNote}${genNote}`);
 
-      // Auto-export all sweep and trace data to CSV (no button required)
+      // Auto-export all sweep and trace data to CSV (no button required).
+      // The 5th export (summary CSV) also sets lastSavedTime.
       const slug = (siteName || "site").replace(/\s+/g, "_");
       triggerAutoExports(res, slug, sweepFleetScen.length > 0);
-
-      // Auto-save after successful run
-      const now = new Date();
-      const timeStr = `${String(now.getHours()).padStart(2,"0")}:${String(now.getMinutes()).padStart(2,"0")}`;
-      const payload = {
-        _savedAt: timeStr,
-        siteName, lat, lon, geoAddress, mounts, pvSizesStr,
-        loadMode, annualKwh, daytimeShiftPct,
-        uploadedLoad: (loadMode === "upload" && uploadedLoad) ? uploadedLoad : null,
-      uploadedFileName: (loadMode === "upload" && uploadedLoad) ? uploadedFileName : "",
-        selectedBatteries: Array.from(selectedBatteries),
-        batteryCosts,
-        evList, dcfcCostPerKwh, evseCost, maxEmergencyDcfc, maxEnrouteDcfc,
-        npvYears, discountRate,
-        genSizesStr, fuelCostPerHour, genLookaheadDays, genInstalledCost, genHrLimit, emergencyGenHrLimit,
-        climateZone, cfa, ndu, criticalLoadKwhPerDay,
-      };
-      localStorage.setItem("cce_mod06_inputs", JSON.stringify(payload));
-      setLastSavedTime(timeStr);
 
     } catch (err) {
       setRunError(err.message);
@@ -4955,7 +5044,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.137</span>
+        <span style={S.version}>v0.4.138</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto", display:"flex", alignItems:"center", gap:"10px"}}>
           <button
@@ -4994,18 +5083,22 @@ function App() {
           {/* ── LEFT PANEL: inputs ── */}
           <div style={S.leftPanel}>
 
-            {/* A) Save/Restore/Reset block + last-saved time — at TOP */}
+            {/* A) Restore/Reset block + last-saved time — at TOP */}
+            {/* Hidden file input for summary CSV restore */}
+            <input type="file" accept=".csv" ref={restoreFileRef} style={{ display: "none" }}
+              onChange={handleRestoreFile} />
             <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-              <button style={{ ...S.btnSmall, flex: 1 }} onClick={handleSaveInputs}>{btnFeedback === "saved" ? "✓ Saved" : "Save inputs"}</button>
-              <button style={{ ...S.btnSmall, flex: 1 }} onClick={handleRestoreInputs}>{btnFeedback === "restored" ? "✓ Restored" : "Restore saved"}</button>
+              <button style={{ ...S.btnSmall, flex: 1 }} onClick={() => restoreFileRef.current?.click()}>
+                {btnFeedback === "restored" ? "✓ Restored" : "📂 Restore"}
+              </button>
               <button style={{ ...S.btnSmall, flex: 1, background: "#721c24", color: "#fff" }}
-                onClick={() => { if (window.confirm("Reset all inputs to factory defaults and clear saved session?")) handleResetDefaults(); }}>
+                onClick={() => { if (window.confirm("Reset all inputs to factory defaults?")) handleResetDefaults(); }}>
                 Reset defaults
               </button>
             </div>
             {lastSavedTime && (
               <div style={{ fontSize: "11px", color: "#888", marginTop: "-4px" }}>
-                Session auto-saved at {lastSavedTime} — inputs restored on next reload.
+                Summary CSV downloaded at {lastSavedTime} — open it with "📂 Restore" to reload these inputs.
               </div>
             )}
 
