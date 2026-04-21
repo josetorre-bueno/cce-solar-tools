@@ -1,6 +1,6 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.138
-// Updated: 2026-04-20 14:30 PT
+// Version: v0.4.139
+// Updated: 2026-04-21 11:00 PT
 // Part of: Wipomo / CCE Solar Tools
 
 "use strict";
@@ -1219,16 +1219,34 @@ async function fetchPVWatts(lat, lon, apiKey, arrayType, tilt, azimuth, losses, 
 }
 
 // ── GREEN BUTTON CSV PARSER ───────────────────────────────────────────────────
+// Accepts both 15-min (35,040 rows) and hourly (8,760 rows) Green Button CSVs.
+// The emulator can export either format; both use the same 4-column structure
+// with the same header block. Hourly files are used directly; 15-min files are
+// summed in groups of 4 to produce the hourly array. Row count determines which
+// path is taken (≤ 10,000 rows → hourly; > 10,000 rows → 15-min).
+//
+// Also scans the header lines above the DATE row for site metadata and returns
+// it alongside the load array so the caller can auto-populate form fields.
+// Returns: { hourly: number[], meta: { address?, climateZone?, cfa?, isHourly } }
 
 function parseGreenButtonCsv(text) {
   const lines = text.split(/\r?\n/);
-  // Find the DATE header row
+  const meta = {};
+
+  // Scan pre-DATA header lines for metadata
   let dataStart = -1;
   for (let i = 0; i < lines.length; i++) {
-    if (lines[i].toUpperCase().includes("DATE")) {
-      dataStart = i + 1;
-      break;
-    }
+    const line = lines[i];
+    if (line.toUpperCase().includes("DATE")) { dataStart = i + 1; break; }
+    // Service Address:,"29756 Wilkes Road, Valley Center CA 92082"
+    const addrM = line.match(/^Service [Aa]ddress[^,]*,\s*"?([^"\r\n]+)"?\s*$/i);
+    if (addrM) meta.address = addrM[1].trim().replace(/^"|"$/g, "");
+    // Climate zone:,"CZ10 (CEC Title 24 Part 6)"
+    const czM = line.match(/^Climate zone[^,]*,\s*"?CZ\s*(\d+)/i);
+    if (czM) meta.climateZone = parseInt(czM[1]);
+    // Floor area:,"1626 sq ft"
+    const cfaM = line.match(/^Floor area[^,]*,\s*"?(\d+)/i);
+    if (cfaM) meta.cfa = parseInt(cfaM[1]);
   }
   if (dataStart < 0) throw new Error("Could not find DATE header row in Green Button CSV");
 
@@ -1242,16 +1260,24 @@ function parseGreenButtonCsv(text) {
     if (!isNaN(val)) intervals.push(val);
   }
 
-  // Sum every 4 × 15-min intervals to get hourly kWh
   const hourly = [];
-  for (let i = 0; i + 3 < intervals.length; i += 4) {
-    hourly.push(intervals[i] + intervals[i+1] + intervals[i+2] + intervals[i+3]);
+  if (intervals.length <= 10000) {
+    // Already-hourly file (emulator "Hourly CSV" option, or SDG&E hourly export)
+    meta.isHourly = true;
+    for (const v of intervals) hourly.push(v);
+  } else {
+    // 15-min file — sum every 4 consecutive intervals to get hourly kWh
+    meta.isHourly = false;
+    for (let i = 0; i + 3 < intervals.length; i += 4) {
+      hourly.push(intervals[i] + intervals[i+1] + intervals[i+2] + intervals[i+3]);
+    }
   }
 
   // Trim or pad to 8760
-  if (hourly.length > 8760) return hourly.slice(0, 8760);
+  if (hourly.length > 8760) hourly.splice(8760);
   while (hourly.length < 8760) hourly.push(hourly[hourly.length - 1] || 0);
-  return hourly;
+
+  return { hourly, meta };
 }
 
 // ── SYNTHETIC LOAD PROFILE ────────────────────────────────────────────────────
@@ -1909,7 +1935,7 @@ function buildMod06SummaryCSV(inputs, result) {
 
   const rows = [
     ["# MOD-06 Off-Grid Optimizer — Input Summary", ""],
-    ["# Version", "v0.4.138"],
+    ["# Version", "v0.4.139"],
     ["# Saved", ts],
     ["siteName",             inputs.siteName || ""],
     ["lat",                  inputs.lat ?? ""],
@@ -2379,10 +2405,19 @@ function App() {
     const reader = new FileReader();
     reader.onload = (ev) => {
       try {
-        const parsed = parseGreenButtonCsv(ev.target.result);
-        setUploadedLoad(parsed);
-        const ann = Math.round(parsed.reduce((s, v) => s + v, 0));
-        setUploadStatus(`${file.name} — ${parsed.length} hours, ${ann.toLocaleString()} kWh/yr`);
+        const { hourly, meta } = parseGreenButtonCsv(ev.target.result);
+        setUploadedLoad(hourly);
+        const ann = Math.round(hourly.reduce((s, v) => s + v, 0));
+        const fmt = meta.isHourly ? "hourly" : "15-min";
+        setUploadStatus(`${file.name} — ${fmt}, ${ann.toLocaleString()} kWh/yr`);
+
+        // Auto-populate site fields from CSV header metadata — only if blank
+        if (meta.address) {
+          if (!geoAddress.trim())  setGeoAddress(meta.address);
+          if (!siteName.trim())    setSiteName(meta.address);
+        }
+        if (meta.climateZone && !climateZone) setClimateZone(meta.climateZone);
+        if (meta.cfa        && !cfa)          setCfa(meta.cfa);
       } catch (err) {
         setUploadStatus("Parse error: " + err.message);
         setUploadedLoad(null);
@@ -5044,7 +5079,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.138</span>
+        <span style={S.version}>v0.4.139</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto", display:"flex", alignItems:"center", gap:"10px"}}>
           <button
