@@ -1,6 +1,6 @@
 // MOD-06 island_dispatch — module
-// Version: v0.4.139
-// Updated: 2026-04-21 11:00 PT
+// Version: v0.4.140
+// Updated: 2026-04-21 11:15 PT
 // Part of: Wipomo / CCE Solar Tools
 
 "use strict";
@@ -1935,7 +1935,7 @@ function buildMod06SummaryCSV(inputs, result) {
 
   const rows = [
     ["# MOD-06 Off-Grid Optimizer — Input Summary", ""],
-    ["# Version", "v0.4.139"],
+    ["# Version", "v0.4.140"],
     ["# Saved", ts],
     ["siteName",             inputs.siteName || ""],
     ["lat",                  inputs.lat ?? ""],
@@ -2099,8 +2099,8 @@ function App() {
   const [emergencyGenHrLimit, setEmergencyGenHrLimit] = useState(200); // worst-window emergency limit (hrs)
 
   // Building code compliance (Title 24 §150.1-C)
-  const [climateZone, setClimateZone]           = useState(10);
-  const [cfa, setCfa]                           = useState(1626); // conditioned floor area, sqft
+  const [climateZone, setClimateZone]           = useState("");  // blank until set by user or GB CSV
+  const [cfa, setCfa]                           = useState("");  // conditioned floor area, sqft; blank until set
   const [ndu, setNdu]                           = useState(1);    // number of dwelling units
   // Critical load panel daily energy (kWh/day): heat + fridge + 1 lighting + 1 outlet circuit.
   // Code-min battery = 3 × this value.  User enters directly; 15 kWh/day is a reasonable
@@ -2316,7 +2316,8 @@ function App() {
       { label: "2-Axis Tracker", arrayType: 4, tilt: 30, azimuth: 180, pvCostPerKw: 3800, dcAcRatio: 1.25, losses: 10 },
     ]);
     setPvSizesStr("5,8,10,12,15,18,20,25");
-    setSelectedBatteries(new Set(["1x Powerwall 3", "2x Powerwall 3", "1x Enphase 10C", "2x Enphase 10C", "3x Enphase 10C"]));
+    // Battery selections and costs are intentionally NOT reset — the user's
+    // product/price choices apply across sites and should survive a defaults reset.
     setEvList([]); setDcfcCostPerKwh(0.40);
     setEvseCost(3500); setMaxEmergencyDcfc(5); setMaxEnrouteDcfc(26);
     setNpvYears(10); setDiscountRate(6);
@@ -5079,7 +5080,7 @@ function App() {
       <div style={S.topBar}>
         <span style={S.orgName}>CCE / Makello</span>
         <span style={S.toolTitle}>Off-Grid Optimizer</span>
-        <span style={S.version}>v0.4.139</span>
+        <span style={S.version}>v0.4.140</span>
         <span style={S.version}>MOD-06</span>
         <span style={{...S.tagline, marginLeft:"auto", display:"flex", alignItems:"center", gap:"10px"}}>
           <button
