@@ -4,14 +4,14 @@
 //
 // Changes from v0.2.7:
 //  - Legacy Makello database export detection. The Makello CRM exports a
-//    row-oriented CSV (one field per row: col A = field name, col B = value)
-//    which is structurally different from the normal contract_input CSV
-//    (one column per field type, {{placeholder}} in col B). The parser now
-//    detects which format it received and extracts the three fields that have
-//    a defined mapping: owner_name → customer_org_name,
-//    address → customer_address, gross_cost → estimated_total.
-//    Detection: normal format has {{...}} in column 1 of data rows;
-//    legacy format does not. The status line reports which format was loaded.
+//    wide CSV with all field names across row 1 and all values across row 2,
+//    unlike the normal contract_input CSV (one row per field). The parser
+//    detects the format by checking whether row 0 contains 'owner_name' as
+//    a column header. Three fields are currently mapped: owner_name →
+//    customer_org_name, address → customer_address, gross_cost →
+//    estimated_total. Additional mappings can be added to LEGACY_FIELD_MAP.
+//    The status line notes "(legacy Makello format — partial data)" when a
+//    legacy file is loaded.
 
 const { useState, useEffect, useRef } = React;
 
@@ -235,32 +235,43 @@ async function addPhotoToDocx(docxBlob, photoData) {
 // CSV helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Detect whether a parsed CSV is the legacy Makello row-oriented export.
-// Normal format: data rows have {{placeholder}} in column 1.
-// Legacy format: column 1 is the field value; no {{}} in column 1.
+// ── Legacy Makello database export ───────────────────────────────────────────
+// The Makello CRM exports a wide CSV: row 0 = field names spread across
+// columns, row 1 = corresponding values. This is the opposite orientation from
+// the normal contract_input CSV (one row per field, field name in col A).
+//
+// Detection: the legacy file's first row contains 'owner_name' as one of its
+// column headers. The normal contract_input file's first column always starts
+// with 'description' or a similar label.
+//
+// Field mapping — only three legacy fields currently map to contract_input:
+//   owner_name   → customer_org_name   (customer organization name)
+//   address      → customer_address    (site address)
+//   gross_cost   → estimated_total     (estimated total project cost)
+// Additional mappings can be added to LEGACY_FIELD_MAP as the Makello export
+// is extended.
+
+const LEGACY_FIELD_MAP = {
+  'owner_name':  'customer_org_name',
+  'address':     'customer_address',
+  'gross_cost':  'estimated_total',
+};
+
 function isLegacyCsv(rows) {
-  for (const row of rows) {
-    if (row.length < 2) continue;
-    const c0 = String(row[0]).trim();
-    if (c0.toLowerCase() === 'description' || c0.toLowerCase() === 'field') continue;
-    // First substantive data row decides — if col 1 has {{ it's normal format
-    return !String(row[1]).trim().includes('{{');
-  }
-  return false;
+  // Legacy: row 0 is a wide header row containing 'owner_name' as a cell value.
+  // Normal: row 0 col 0 is 'description' or 'field'.
+  if (rows.length < 2) return false;
+  return rows[0].some(cell => String(cell).trim() === 'owner_name');
 }
 
-// Parse a legacy Makello export. Only rows where column 3 (index 3) carries a
-// {{placeholder}} annotation are mapped — all other rows are ignored. The three
-// currently annotated fields are: owner_name, address, gross_cost.
 function parseLegacyCsv(rows) {
+  // rows[0] = field names (headers), rows[1] = field values
+  const headers = rows[0].map(c => String(c).trim());
+  const values  = (rows[1] || []).map(c => String(c).trim());
   const out = {};
-  for (const row of rows) {
-    if (row.length < 4) continue;
-    const placeholder = String(row[3]).trim();
-    if (!placeholder.includes('{{')) continue;
-    const key   = placeholder.replace(/\{\{|\}\}/g, '').trim();
-    const value = String(row[1]).trim();
-    if (key) out[key] = value;
+  for (let i = 0; i < headers.length; i++) {
+    const mapped = LEGACY_FIELD_MAP[headers[i]];
+    if (mapped !== undefined && values[i]) out[mapped] = values[i];
   }
   return out;
 }
