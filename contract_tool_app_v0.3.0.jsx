@@ -1,6 +1,6 @@
-// contract_tool_app_v0.2.9.jsx
+// contract_tool_app_v0.3.0.jsx
 // Makello Contract Tool
-// v0.2.9 — 2026-04-25
+// v0.3.0 — 2026-04-25
 //
 // Changes from v0.2.7:
 //  - Legacy Makello database export detection. The Makello CRM exports a
@@ -50,7 +50,7 @@ const FIELDS = [
   { key: 'payment_equipment_pct',             label: 'Payment due upon delivery of equipment to site',                       type: 'stable', dflt: '35%', unit: 'pct' },
   { key: 'payment_installation_pct',          label: 'Payment due upon completion of installation',                          type: 'stable', dflt: '25%', unit: 'pct' },
   { key: 'payment_closeout_pct',              label: 'Payment due upon PTO and closeout docs',                               type: 'stable', dflt: '15%', unit: 'pct' },
-  { key: 'prevailing_wage',                   label: 'Prevailing wage',                                                       type: 'job',    fillStatus: 'manual',     widget: 'toggle', options: ['is', 'is not'] },
+  { key: 'prevailing_wage',                   label: 'Prevailing wage',                                                       type: 'job',    fillStatus: 'manual',     widget: 'toggle', options: ['yes', 'no'] },
   { key: 'workmanship_warranty_years',        label: 'Workmanship warranty period in years',                                  type: 'stable', dflt: '1' },
   { key: 'design_warranty_years',             label: 'Phase 1 design and engineering warranty in years',                     type: 'stable', dflt: '1' },
   { key: 'contractor_signatory_name',         label: 'Full name of person signing on behalf of contractor',                   type: 'stable', dflt: '' },
@@ -97,6 +97,15 @@ function normalizeValue(val, unit) {
   if (unit === 'pct') return normalizePct(val);
   if (unit === 'usd') return normalizeUsd(val);
   return val;
+}
+// Match a CSV-loaded string against a known options list, ignoring case and
+// non-alphanumeric characters. Returns the canonical option if found, else val.
+function normalizeSelectValue(val, options) {
+  if (!val || !options) return val;
+  const strip = s => String(s).toLowerCase().replace(/[^a-z0-9]/g, '');
+  const stripped = strip(val);
+  const match = options.find(o => strip(o) === stripped);
+  return match !== undefined ? match : val;
 }
 function normalizeAllValues(vals) {
   const out = { ...vals };
@@ -631,7 +640,10 @@ function App() {
     for (const key of JOB_KEYS) {
       if (parsed[key] !== undefined && parsed[key] !== '') {
         const field = FIELDS.find(f => f.key === key);
-        newJob[key] = normalizeValue(parsed[key], field?.unit);
+        let v = normalizeValue(parsed[key], field?.unit);
+        if (field?.widget === 'select') v = normalizeSelectValue(v, TAX_STATUS_OPTIONS);
+        if (field?.widget === 'toggle') v = normalizeSelectValue(v, field.options);
+        newJob[key] = v;
         matched++;
       }
     }
@@ -802,7 +814,7 @@ function App() {
       <div style={{ background: '#1a365d', color: 'white', padding: '10px 20px',
                     display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
         <span style={{ fontWeight: 700, fontSize: 17 }}>Makello Contract Tool</span>
-        <span style={{ fontSize: 11, opacity: 0.45 }}>v0.2.9</span>
+        <span style={{ fontSize: 11, opacity: 0.45 }}>v0.3.0</span>
         <button onClick={() => setShowHelp(h => !h)} title="Help"
           style={{ padding: '2px 10px', fontSize: 12, borderRadius: 4, border: '1px solid rgba(255,255,255,0.3)',
                    background: showHelp ? 'rgba(255,255,255,0.2)' : 'transparent',
