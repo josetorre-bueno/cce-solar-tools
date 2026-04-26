@@ -1,6 +1,6 @@
-// contract_tool_app_v0.3.0.jsx
+// contract_tool_app_v0.3.1.jsx
 // Makello Contract Tool
-// v0.3.0 — 2026-04-25
+// v0.3.1 — 2026-04-25
 //
 // Changes from v0.2.7:
 //  - Legacy Makello database export detection. The Makello CRM exports a
@@ -20,6 +20,10 @@ const { useState, useEffect, useRef } = React;
 // ─────────────────────────────────────────────────────────────────────────────
 
 const TAX_STATUS_OPTIONS = ['', 'C corporation', 'S corporation', '501(c)(3)', 'Other'];
+
+// Prevailing wage: UI shows yes/no (intuitive for data entry); template receives
+// is/is not (fits contract clause "This project [is / is not] subject to…").
+const PREVAILING_WAGE_OUTPUT = { yes: 'is', no: 'is not' };
 
 // fillStatus — how each job field is expected to be populated:
 //   'upload'     — should come from the customer data file; required for output
@@ -735,6 +739,9 @@ function App() {
         delimiters: { start: '{{', end: '}}' },
       });
       const mergeData = normalizeAllValues({ ...allValues, site_photo: '' });
+      // Map yes/no → is/is not for the prevailing wage contract clause
+      if (mergeData.prevailing_wage in PREVAILING_WAGE_OUTPUT)
+        mergeData.prevailing_wage = PREVAILING_WAGE_OUTPUT[mergeData.prevailing_wage];
       doc.render(mergeData);
 
       // 2. Extract rendered document.xml, strip comment anchors
@@ -814,7 +821,7 @@ function App() {
       <div style={{ background: '#1a365d', color: 'white', padding: '10px 20px',
                     display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
         <span style={{ fontWeight: 700, fontSize: 17 }}>Makello Contract Tool</span>
-        <span style={{ fontSize: 11, opacity: 0.45 }}>v0.3.0</span>
+        <span style={{ fontSize: 11, opacity: 0.45 }}>v0.3.1</span>
         <button onClick={() => setShowHelp(h => !h)} title="Help"
           style={{ padding: '2px 10px', fontSize: 12, borderRadius: 4, border: '1px solid rgba(255,255,255,0.3)',
                    background: showHelp ? 'rgba(255,255,255,0.2)' : 'transparent',
