@@ -1,6 +1,6 @@
-// contract_tool_app_v0.3.2.jsx
+// contract_tool_app_v0.3.3.jsx
 // Makello Contract Tool
-// v0.3.2 — 2026-04-25
+// v0.3.3 — 2026-04-25
 //
 // Changes from v0.2.7:
 //  - Legacy Makello database export detection. The Makello CRM exports a
@@ -102,11 +102,9 @@ function normalizePct(val) {
 function normalizeUsd(val) {
   const s = String(val).trim();
   if (!s) return s;
-  if (s.startsWith('$')) return s;
-  const n = parseFloat(s.replace(/[,%\s]/g, ''));
+  const n = parseFloat(s.replace(/[$,\s]/g, ''));
   if (isNaN(n)) return val;
-  const numStr = s.includes(',') ? s : n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  return '$' + numStr;
+  return '$' + Math.round(n).toLocaleString('en-US');
 }
 function normalizeValue(val, unit) {
   if (!unit || !val) return val;
@@ -147,7 +145,7 @@ function parseMoney(str) {
 }
 function fmtUsd(n) {
   if (!n || isNaN(n)) return '';
-  return '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return '$' + Math.round(n).toLocaleString('en-US');
 }
 function calcFields(vals) {
   const total = parseMoney(vals.estimated_total);
@@ -756,6 +754,14 @@ function App() {
       // Map yes/no → is/is not for the prevailing wage contract clause
       if (mergeData.prevailing_wage in PREVAILING_WAGE_OUTPUT)
         mergeData.prevailing_wage = PREVAILING_WAGE_OUTPUT[mergeData.prevailing_wage];
+      // Replace blank fields with underscores so the printed document has space
+      // to fill in by hand. Skips site_photo (binary) and non-job/calc fields.
+      const BLANK_LINE = '___________';
+      for (const f of FIELDS) {
+        if (f.type !== 'job' && f.type !== 'calc') continue;
+        if (f.widget === 'photo') continue;
+        if (!mergeData[f.key]) mergeData[f.key] = BLANK_LINE;
+      }
       doc.render(mergeData);
 
       // 2. Extract rendered document.xml, strip comment anchors
@@ -835,7 +841,7 @@ function App() {
       <div style={{ background: '#1a365d', color: 'white', padding: '10px 20px',
                     display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
         <span style={{ fontWeight: 700, fontSize: 17 }}>Makello Contract Tool</span>
-        <span style={{ fontSize: 11, opacity: 0.45 }}>v0.3.2</span>
+        <span style={{ fontSize: 11, opacity: 0.45 }}>v0.3.3</span>
         <button onClick={() => setShowHelp(h => !h)} title="Help"
           style={{ padding: '2px 10px', fontSize: 12, borderRadius: 4, border: '1px solid rgba(255,255,255,0.3)',
                    background: showHelp ? 'rgba(255,255,255,0.2)' : 'transparent',
