@@ -1,6 +1,6 @@
-// contract_tool_app_v0.3.1.jsx
+// contract_tool_app_v0.3.2.jsx
 // Makello Contract Tool
-// v0.3.1 — 2026-04-25
+// v0.3.2 — 2026-04-25
 //
 // Changes from v0.2.7:
 //  - Legacy Makello database export detection. The Makello CRM exports a
@@ -20,6 +20,18 @@ const { useState, useEffect, useRef } = React;
 // ─────────────────────────────────────────────────────────────────────────────
 
 const TAX_STATUS_OPTIONS = ['', 'C corporation', 'S corporation', '501(c)(3)', 'Other'];
+
+// Aliases accepted when loading tax status from CSV (keyed by stripped lowercase).
+// The fuzzy matcher handles full names case-insensitively; these cover abbreviations.
+const TAX_STATUS_ALIASES = {
+  'c':            'C corporation',
+  'ccorp':        'C corporation',
+  's':            'S corporation',
+  'scorp':        'S corporation',
+  'nonprofit':    '501(c)(3)',
+  'notforprofit': '501(c)(3)',
+  '501c3':        '501(c)(3)',
+};
 
 // Prevailing wage: UI shows yes/no (intuitive for data entry); template receives
 // is/is not (fits contract clause "This project [is / is not] subject to…").
@@ -103,11 +115,13 @@ function normalizeValue(val, unit) {
   return val;
 }
 // Match a CSV-loaded string against a known options list, ignoring case and
-// non-alphanumeric characters. Returns the canonical option if found, else val.
-function normalizeSelectValue(val, options) {
+// non-alphanumeric characters. Optional aliases map (keyed by stripped lowercase)
+// is checked first to handle abbreviations like 'c'→'C corporation'.
+function normalizeSelectValue(val, options, aliases) {
   if (!val || !options) return val;
   const strip = s => String(s).toLowerCase().replace(/[^a-z0-9]/g, '');
   const stripped = strip(val);
+  if (aliases && stripped in aliases) return aliases[stripped];
   const match = options.find(o => strip(o) === stripped);
   return match !== undefined ? match : val;
 }
@@ -645,7 +659,7 @@ function App() {
       if (parsed[key] !== undefined && parsed[key] !== '') {
         const field = FIELDS.find(f => f.key === key);
         let v = normalizeValue(parsed[key], field?.unit);
-        if (field?.widget === 'select') v = normalizeSelectValue(v, TAX_STATUS_OPTIONS);
+        if (field?.widget === 'select') v = normalizeSelectValue(v, TAX_STATUS_OPTIONS, TAX_STATUS_ALIASES);
         if (field?.widget === 'toggle') v = normalizeSelectValue(v, field.options);
         newJob[key] = v;
         matched++;
@@ -821,7 +835,7 @@ function App() {
       <div style={{ background: '#1a365d', color: 'white', padding: '10px 20px',
                     display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
         <span style={{ fontWeight: 700, fontSize: 17 }}>Makello Contract Tool</span>
-        <span style={{ fontSize: 11, opacity: 0.45 }}>v0.3.1</span>
+        <span style={{ fontSize: 11, opacity: 0.45 }}>v0.3.2</span>
         <button onClick={() => setShowHelp(h => !h)} title="Help"
           style={{ padding: '2px 10px', fontSize: 12, borderRadius: 4, border: '1px solid rgba(255,255,255,0.3)',
                    background: showHelp ? 'rgba(255,255,255,0.2)' : 'transparent',
