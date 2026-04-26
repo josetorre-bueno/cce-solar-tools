@@ -21,21 +21,27 @@ const { useState, useEffect, useRef } = React;
 
 const TAX_STATUS_OPTIONS = ['', 'C corporation', 'S corporation', '501(c)(3)', 'Other'];
 
+// fillStatus — how each job field is expected to be populated:
+//   'upload'     — should come from the customer data file; required for output
+//   'manual'     — must be entered manually; required for output
+//   'optional'   — can legitimately be left blank (e.g. effective date, "Other" detail)
+//   'at_signing' — intentionally blank in preliminary versions; filled at execution time
+
 const FIELDS = [
-  { key: 'effective_date',                    label: 'Contract execution date (e.g. April 17 2026)',                          type: 'job' },
+  { key: 'effective_date',                    label: 'Contract execution date (e.g. April 17 2026)',                          type: 'job',    fillStatus: 'optional' },
   { key: 'contractor_name',                   label: 'Contractor company name',                                               type: 'stable', dflt: '' },
   { key: 'contractor_address',                label: 'Contractor street address city state zip',                              type: 'stable', dflt: '' },
   { key: 'contractor_license_no',             label: 'California Contractor License number',                                  type: 'stable', dflt: '' },
-  { key: 'customer_org_name',                 label: 'Customer organization or business name',                                type: 'job' },
-  { key: 'customer_address',                  label: 'Project site address city state zip',                                   type: 'job' },
-  { key: 'customer_tax_status',               label: 'Customer tax status',                                                   type: 'job',    widget: 'select' },
-  { key: 'customer_tax_status_other',         label: 'If "Other" — specify type',                                            type: 'job' },
-  { key: 'initial_target_capacity',           label: 'System description (e.g. 24kW DC to 28kW DC solar tracker)',           type: 'job' },
+  { key: 'customer_org_name',                 label: 'Customer organization or business name',                                type: 'job',    fillStatus: 'upload' },
+  { key: 'customer_address',                  label: 'Project site address city state zip',                                   type: 'job',    fillStatus: 'upload' },
+  { key: 'customer_tax_status',               label: 'Customer tax status',                                                   type: 'job',    fillStatus: 'manual',     widget: 'select' },
+  { key: 'customer_tax_status_other',         label: 'If "Other" — specify type',                                            type: 'job',    fillStatus: 'optional' },
+  { key: 'initial_target_capacity',           label: 'System description (e.g. 24kW DC to 28kW DC solar tracker)',           type: 'job',    fillStatus: 'manual' },
   { key: 'material_escalation_threshold_pct', label: 'Material cost escalation threshold',                                   type: 'stable', dflt: '5%',  unit: 'pct' },
   { key: 'labor_escalation_threshold_pct',    label: 'Labor cost escalation threshold (ENR Skilled Labor Index)',             type: 'stable', dflt: '5%',  unit: 'pct' },
   { key: 'phase1_completion_days',            label: 'Days to complete Phase 1 after Effective Date',                        type: 'stable', dflt: '75' },
   { key: 'phase1_fee_pct',                    label: 'Phase 1 fee as % of Total Project Cost',                               type: 'stable', dflt: '8%',  unit: 'pct' },
-  { key: 'estimated_total',                   label: 'Estimated Total Project Cost',                                          type: 'job',                 unit: 'usd' },
+  { key: 'estimated_total',                   label: 'Estimated Total Project Cost',                                          type: 'job',    fillStatus: 'upload',     unit: 'usd' },
   { key: 'phase1_fee',                        label: 'Phase 1 fee — total dollar amount',                                     type: 'calc',   formula: 'estimated_total × phase1_fee_pct', unit: 'usd' },
   { key: 'phase1_fee_50pct_upfront',          label: '50% of Phase 1 fee due at signing',                                    type: 'calc',   formula: 'phase1_fee × 50%',                 unit: 'usd' },
   { key: 'phase1_fee_50pct_delivery',         label: '50% of Phase 1 fee due at delivery of Phase 1 deliverables',           type: 'calc',   formula: 'phase1_fee × 50%',                 unit: 'usd' },
@@ -44,15 +50,15 @@ const FIELDS = [
   { key: 'payment_equipment_pct',             label: 'Payment due upon delivery of equipment to site',                       type: 'stable', dflt: '35%', unit: 'pct' },
   { key: 'payment_installation_pct',          label: 'Payment due upon completion of installation',                          type: 'stable', dflt: '25%', unit: 'pct' },
   { key: 'payment_closeout_pct',              label: 'Payment due upon PTO and closeout docs',                               type: 'stable', dflt: '15%', unit: 'pct' },
-  { key: 'prevailing_wage',                   label: 'Prevailing wage',                                                       type: 'job',    widget: 'toggle', options: ['is', 'is not'] },
+  { key: 'prevailing_wage',                   label: 'Prevailing wage',                                                       type: 'job',    fillStatus: 'manual',     widget: 'toggle', options: ['is', 'is not'] },
   { key: 'workmanship_warranty_years',        label: 'Workmanship warranty period in years',                                  type: 'stable', dflt: '1' },
   { key: 'design_warranty_years',             label: 'Phase 1 design and engineering warranty in years',                     type: 'stable', dflt: '1' },
   { key: 'contractor_signatory_name',         label: 'Full name of person signing on behalf of contractor',                   type: 'stable', dflt: '' },
   { key: 'contractor_signatory_title',        label: 'Title of contractor signatory (e.g. President)',                        type: 'stable', dflt: '' },
-  { key: 'contract_date',                     label: 'Date contract is signed (same as or later than effective date)',         type: 'job' },
-  { key: 'customer_name',                     label: 'Full name of customer individual signing the contract',                 type: 'job' },
-  { key: 'customer_title',                    label: 'Title of customer signatory — leave blank if sole proprietor',          type: 'job' },
-  { key: 'site_photo',                        label: 'Site photo — appears at top of contract',                              type: 'job',    widget: 'photo' },
+  { key: 'contract_date',                     label: 'Date contract is signed (same as or later than effective date)',         type: 'job',    fillStatus: 'at_signing' },
+  { key: 'customer_name',                     label: 'Full name of customer individual signing the contract',                 type: 'job',    fillStatus: 'at_signing' },
+  { key: 'customer_title',                    label: 'Title of customer signatory — leave blank if sole proprietor',          type: 'job',    fillStatus: 'at_signing' },
+  { key: 'site_photo',                        label: 'Site photo — appears at top of contract',                               type: 'job',    fillStatus: 'optional',   widget: 'photo' },
 ];
 
 const LEFT_KEYS  = FIELDS.filter(f => f.type === 'job' || f.type === 'calc').map(f => f.key);
@@ -353,6 +359,16 @@ const C = {
   calc:   { bg: '#fffff0', bdr: '#faf089', lbl: '#975a16' },
 };
 
+// Visual tokens for each fillStatus × fill-state combination.
+// leftBdr: the 3px left accent on the card.
+// pillText / pillColor: compact status label shown when empty.
+const FILL_STATUS_CONFIG = {
+  upload:     { emptyBdr: '#ed8936', filledBdr: '#48bb78', pillText: '⬆ needs upload', pillColor: '#c05621' },
+  manual:     { emptyBdr: '#e53e3e', filledBdr: '#48bb78', pillText: '✏ fill in',      pillColor: '#c53030' },
+  optional:   { emptyBdr: '#cbd5e0', filledBdr: '#cbd5e0', pillText: 'optional',        pillColor: '#718096' },
+  at_signing: { emptyBdr: '#76b5e8', filledBdr: '#48bb78', pillText: 'at signing',      pillColor: '#2b6cb0' },
+};
+
 function UnitBadge({ unit }) {
   if (!unit) return null;
   const [label, bg, color] = unit === 'pct'
@@ -370,16 +386,33 @@ function UnitBadge({ unit }) {
 // Field widgets
 // ─────────────────────────────────────────────────────────────────────────────
 
-function FieldShell({ field, dimmed, children }) {
-  const col = C[field.type] || C.job;
+function FieldShell({ field, value, dimmed, children }) {
+  const col  = C[field.type] || C.job;
+  const fsc  = field.fillStatus ? FILL_STATUS_CONFIG[field.fillStatus] : null;
+  const filled = fsc && String(value ?? '').trim() !== '';
+  const leftBdr = fsc ? (filled ? fsc.filledBdr : fsc.emptyBdr) : null;
+
   return (
-    <div style={{ background: col.bg, border: `1px solid ${col.bdr}`, borderRadius: 6,
-                  padding: '6px 10px', opacity: dimmed ? 0.4 : 1, transition: 'opacity .2s' }}>
-      <div style={{ fontSize: 11, color: col.lbl, marginBottom: 3, lineHeight: 1.3 }}>
-        {field.label}
-        <UnitBadge unit={field.unit} />
-        {field.type === 'calc' && (
-          <span style={{ marginLeft: 6, fontSize: 10, color: '#b7791f' }}>= {field.formula}</span>
+    <div style={{ background: col.bg,
+                  border: `1px solid ${leftBdr || col.bdr}`,
+                  borderLeft: `3px solid ${leftBdr || col.bdr}`,
+                  borderRadius: 6, padding: '6px 10px',
+                  opacity: dimmed ? 0.4 : 1, transition: 'opacity .2s' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between',
+                    alignItems: 'baseline', marginBottom: 3, gap: 6 }}>
+        <div style={{ fontSize: 11, color: col.lbl, lineHeight: 1.3 }}>
+          {field.label}
+          <UnitBadge unit={field.unit} />
+          {field.type === 'calc' && (
+            <span style={{ marginLeft: 6, fontSize: 10, color: '#b7791f' }}>= {field.formula}</span>
+          )}
+        </div>
+        {fsc && !filled && (
+          <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.04em',
+                         textTransform: 'uppercase', color: fsc.pillColor,
+                         whiteSpace: 'nowrap', flexShrink: 0 }}>
+            {fsc.pillText}
+          </span>
         )}
       </div>
       {children}
@@ -392,7 +425,7 @@ const inputBase = { width: '100%', border: 'none', background: 'transparent',
 
 function SelectField({ field, value, locked, onChange }) {
   return (
-    <FieldShell field={field}>
+    <FieldShell field={field} value={value}>
       <select value={value} disabled={locked} onChange={e => onChange && onChange(e.target.value)}
         style={{ ...inputBase, borderBottom: locked ? 'none' : `1px solid ${C[field.type]?.bdr || '#e2e8f0'}`,
                  cursor: locked ? 'default' : 'pointer', appearance: locked ? 'none' : 'auto' }}>
@@ -404,7 +437,7 @@ function SelectField({ field, value, locked, onChange }) {
 
 function ToggleField({ field, value, locked, onChange }) {
   return (
-    <FieldShell field={field}>
+    <FieldShell field={field} value={value}>
       <div style={{ display: 'flex', gap: 4, marginTop: 2 }}>
         {(field.options || ['is', 'is not']).map(opt => {
           const active = value === opt;
@@ -453,7 +486,7 @@ function PhotoUploadField({ field, photo, onPhotoChange, csvPhotoName }) {
   }
 
   return (
-    <FieldShell field={field}>
+    <FieldShell field={field} value={photo ? photo.name : ''}>
       {photo ? (
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 4 }}>
           <img src={photo.dataUrl} alt="site" style={{ height: 64, maxWidth: 96, objectFit: 'cover', borderRadius: 4, border: '1px solid #e2e8f0' }} />
@@ -500,7 +533,7 @@ function FieldRow({ field, value, locked, onChange, dimmed, photo, onPhotoChange
   if (field.widget === 'select') return <SelectField field={field} value={value} locked={locked} onChange={onChange} />;
   if (field.widget === 'toggle') return <ToggleField  field={field} value={value} locked={locked} onChange={onChange} />;
   return (
-    <FieldShell field={field} dimmed={dimmed}>
+    <FieldShell field={field} value={value} dimmed={dimmed}>
       <input type="text" value={value} readOnly={locked}
         onChange={e => onChange && onChange(e.target.value)}
         onBlur={() => { if (!locked && field.unit && onChange) { const n = normalizeValue(value, field.unit); if (n !== value) onChange(n); } }}
@@ -527,21 +560,12 @@ function Btn({ onClick, children, title, bg = '#edf2f7', bdr = '#cbd5e0', color 
 // Pre-flight validation
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Fields that may legitimately be left blank
-const OPTIONAL_KEYS = new Set([
-  'site_photo',              // optional — no photo is fine
-  'customer_title',          // blank for sole proprietors
-  'customer_tax_status_other', // only required when tax status === 'Other'
-]);
-
-function getMissingFields(allValues, taxStatus) {
+// Required fields are those with fillStatus 'upload' or 'manual'.
+// 'optional' and 'at_signing' fields are never counted as missing.
+function getMissingFields(allValues) {
   const missing = [];
   for (const f of FIELDS) {
-    if (f.type === 'calc')       continue;  // auto-calculated, never blank
-    if (f.widget === 'photo')    continue;  // handled by OPTIONAL_KEYS
-    if (OPTIONAL_KEYS.has(f.key)) continue;
-    // customer_tax_status_other: only required when tax status is Other
-    if (f.key === 'customer_tax_status_other' && taxStatus !== 'Other') continue;
+    if (f.fillStatus !== 'upload' && f.fillStatus !== 'manual') continue;
     const val = allValues[f.key];
     if (!val || String(val).trim() === '') missing.push({ key: f.key, label: f.label });
   }
@@ -660,7 +684,7 @@ function App() {
     setDiagErrors([]);
 
     // ── Pre-flight: check required fields before touching the template ──────
-    const missing = getMissingFields(allValues, job.customer_tax_status);
+    const missing = getMissingFields(allValues);
     if (missing.length > 0) {
       setStatus(`✗ ${missing.length} required field${missing.length !== 1 ? 's' : ''} empty — fill them in and try again`);
       setDiagErrors(missing.map(f => ({ id: 'missing', tag: f.key, offset: '', message: f.label })));
@@ -752,7 +776,7 @@ function App() {
   }));
   const setStableField = (key, val) => setStable(prev => ({ ...prev, [key]: val }));
   const statusIsGood   = status.startsWith('✓');
-  const missingCount   = getMissingFields(allValues, job.customer_tax_status).length;
+  const missingCount   = getMissingFields(allValues).length;
   const readyToGenerate = missingCount === 0;
   const taxIsOther     = job.customer_tax_status === 'Other';
 
