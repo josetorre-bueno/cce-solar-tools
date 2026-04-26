@@ -362,11 +362,20 @@ const C = {
 // Visual tokens for each fillStatus × fill-state combination.
 // leftBdr: the 3px left accent on the card.
 // pillText / pillColor: compact status label shown when empty.
+//
+// 'upload'  — expected from the Makello legacy file; also populated by a
+//             contract_input CSV. Amber.
+// 'manual'  — not in the Makello legacy file, but CAN be filled by uploading
+//             a normal contract_input CSV or by typing. Orange (distinct from
+//             amber to signal it won't come from a legacy file automatically,
+//             but not red because a CSV upload can still satisfy it).
+// 'optional'   — legitimately blank. Grey.
+// 'at_signing' — intentionally blank until contract execution. Blue.
 const FILL_STATUS_CONFIG = {
-  upload:     { emptyBdr: '#ed8936', filledBdr: '#48bb78', pillText: '⬆ needs upload', pillColor: '#c05621' },
-  manual:     { emptyBdr: '#e53e3e', filledBdr: '#48bb78', pillText: '✏ fill in',      pillColor: '#c53030' },
-  optional:   { emptyBdr: '#cbd5e0', filledBdr: '#cbd5e0', pillText: 'optional',        pillColor: '#718096' },
-  at_signing: { emptyBdr: '#76b5e8', filledBdr: '#48bb78', pillText: 'at signing',      pillColor: '#2b6cb0' },
+  upload:     { emptyBdr: '#ed8936', filledBdr: '#48bb78', pillText: '⬆ needs upload',     pillColor: '#c05621' },
+  manual:     { emptyBdr: '#dd6b20', filledBdr: '#48bb78', pillText: '⬆ upload or fill in', pillColor: '#9c4221' },
+  optional:   { emptyBdr: '#cbd5e0', filledBdr: '#cbd5e0', pillText: 'optional',             pillColor: '#718096' },
+  at_signing: { emptyBdr: '#76b5e8', filledBdr: '#48bb78', pillText: 'at signing',           pillColor: '#2b6cb0' },
 };
 
 function UnitBadge({ unit }) {
@@ -965,6 +974,24 @@ function App() {
               <Btn onClick={downloadBlankCsv}>⬇ Blank CSV</Btn>
               <Btn onClick={exportCsv} bg="#2c7a7b" bdr="#285e61" color="white">↑ Export CSV</Btn>
             </div>
+          </div>
+
+          {/* Field status legend */}
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 8, fontSize: 10,
+                        fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
+            {[
+              { bdr: '#ed8936', text: '⬆ from Makello file',    desc: 'filled by Makello or contract_input CSV' },
+              { bdr: '#dd6b20', text: '⬆ upload or fill in',    desc: 'not in Makello file — use contract_input CSV or type' },
+              { bdr: '#76b5e8', text: 'at signing',              desc: 'intentionally blank until contract execution' },
+              { bdr: '#cbd5e0', text: 'optional',                desc: 'can be left blank' },
+              { bdr: '#48bb78', text: '✓ filled',               desc: 'has a value' },
+            ].map(({ bdr, text, desc }) => (
+              <span key={text} title={desc}
+                style={{ display: 'flex', alignItems: 'center', gap: 4, color: '#4a5568', cursor: 'default' }}>
+                <span style={{ display: 'inline-block', width: 3, height: 14, background: bdr, borderRadius: 2 }} />
+                {text}
+              </span>
+            ))}
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
