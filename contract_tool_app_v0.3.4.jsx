@@ -1,6 +1,6 @@
-// contract_tool_app_v0.3.3.jsx
+// contract_tool_app_v0.3.4.jsx
 // Makello Contract Tool
-// v0.3.3 — 2026-04-25
+// v0.3.4 — 2026-04-25
 //
 // Changes from v0.2.7:
 //  - Legacy Makello database export detection. The Makello CRM exports a
@@ -393,19 +393,19 @@ const C = {
 // leftBdr: the 3px left accent on the card.
 // pillText / pillColor: compact status label shown when empty.
 //
-// 'upload'  — expected from the Makello legacy file; also populated by a
-//             contract_input CSV. Amber.
-// 'manual'  — not in the Makello legacy file, but CAN be filled by uploading
-//             a normal contract_input CSV or by typing. Orange (distinct from
-//             amber to signal it won't come from a legacy file automatically,
-//             but not red because a CSV upload can still satisfy it).
+// 'upload' and 'manual' render identically — both mean "required input" from
+//   the user's perspective. The distinction is semantic only (upload = can come
+//   from a Makello/CSV file; manual = must be typed or added to the CSV) but
+//   there is no meaningful visual difference to show.
 // 'optional'   — legitimately blank. Grey.
-// 'at_signing' — intentionally blank until contract execution. Blue.
+// 'at_signing' — intentionally blank until contract execution. Deep blue,
+//   clearly distinct from the filled green.
+const REQUIRED_STATUS = { emptyBdr: '#ed8936', filledBdr: '#48bb78', pillText: '⬆ required', pillColor: '#c05621' };
 const FILL_STATUS_CONFIG = {
-  upload:     { emptyBdr: '#ed8936', filledBdr: '#48bb78', pillText: '⬆ needs upload',     pillColor: '#c05621' },
-  manual:     { emptyBdr: '#dd6b20', filledBdr: '#48bb78', pillText: '⬆ upload or fill in', pillColor: '#9c4221' },
-  optional:   { emptyBdr: '#cbd5e0', filledBdr: '#cbd5e0', pillText: 'optional',             pillColor: '#718096' },
-  at_signing: { emptyBdr: '#76b5e8', filledBdr: '#48bb78', pillText: 'at signing',           pillColor: '#2b6cb0' },
+  upload:     REQUIRED_STATUS,
+  manual:     REQUIRED_STATUS,
+  optional:   { emptyBdr: '#cbd5e0', filledBdr: '#cbd5e0', pillText: 'optional',    pillColor: '#718096' },
+  at_signing: { emptyBdr: '#2b6cb0', filledBdr: '#48bb78', pillText: 'at signing',  pillColor: '#2b6cb0' },
 };
 
 function UnitBadge({ unit }) {
@@ -841,7 +841,7 @@ function App() {
       <div style={{ background: '#1a365d', color: 'white', padding: '10px 20px',
                     display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
         <span style={{ fontWeight: 700, fontSize: 17 }}>Makello Contract Tool</span>
-        <span style={{ fontSize: 11, opacity: 0.45 }}>v0.3.3</span>
+        <span style={{ fontSize: 11, opacity: 0.45 }}>v0.3.4</span>
         <button onClick={() => setShowHelp(h => !h)} title="Help"
           style={{ padding: '2px 10px', fontSize: 12, borderRadius: 4, border: '1px solid rgba(255,255,255,0.3)',
                    background: showHelp ? 'rgba(255,255,255,0.2)' : 'transparent',
@@ -1024,11 +1024,10 @@ function App() {
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 8, fontSize: 10,
                         fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
             {[
-              { bdr: '#ed8936', text: '⬆ from Makello file',    desc: 'filled by Makello or contract_input CSV' },
-              { bdr: '#dd6b20', text: '⬆ upload or fill in',    desc: 'not in Makello file — use contract_input CSV or type' },
-              { bdr: '#76b5e8', text: 'at signing',              desc: 'intentionally blank until contract execution' },
-              { bdr: '#cbd5e0', text: 'optional',                desc: 'can be left blank' },
-              { bdr: '#48bb78', text: '✓ filled',               desc: 'has a value' },
+              { bdr: '#ed8936', text: '⬆ required',   desc: 'needs a value — load a CSV file or type' },
+              { bdr: '#2b6cb0', text: 'at signing',    desc: 'intentionally blank until contract execution' },
+              { bdr: '#cbd5e0', text: 'optional',      desc: 'can be left blank' },
+              { bdr: '#48bb78', text: '✓ filled',      desc: 'has a value' },
             ].map(({ bdr, text, desc }) => (
               <span key={text} title={desc}
                 style={{ display: 'flex', alignItems: 'center', gap: 4, color: '#4a5568', cursor: 'default' }}>
