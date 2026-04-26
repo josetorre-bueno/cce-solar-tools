@@ -264,20 +264,25 @@ const LEGACY_FIELD_MAP = {
 };
 
 function isLegacyCsv(rows) {
-  // Legacy: row 0 is a wide header row containing 'owner_name' as a cell value.
-  // Normal: row 0 col 0 is 'description' or 'field'.
-  if (rows.length < 2) return false;
-  return rows[0].some(cell => String(cell).trim() === 'owner_name');
+  // Legacy Makello export: vertical format — one field per row,
+  // col[0] = field name, col[1] = value. The first row has col[0] === 'owner_name'.
+  // Normal contract_input CSV: col[0] is 'description' or 'placeholder'.
+  if (rows.length < 1) return false;
+  return String(rows[0][0]).trim() === 'owner_name';
 }
 
 function parseLegacyCsv(rows) {
-  // rows[0] = field names (headers), rows[1] = field values
-  const headers = rows[0].map(c => String(c).trim());
-  const values  = (rows[1] || []).map(c => String(c).trim());
+  // Vertical format: each row is [field_name, value, ...extra cols ignored].
+  // Iterate all rows; look up col[0] in LEGACY_FIELD_MAP; use col[1] as value.
   const out = {};
-  for (let i = 0; i < headers.length; i++) {
-    const mapped = LEGACY_FIELD_MAP[headers[i]];
-    if (mapped !== undefined && values[i]) out[mapped] = values[i];
+  for (const row of rows) {
+    if (row.length < 2) continue;
+    const fieldName = String(row[0]).trim();
+    const mapped = LEGACY_FIELD_MAP[fieldName];
+    if (mapped !== undefined) {
+      const value = String(row[1]).trim();
+      if (value) out[mapped] = value;
+    }
   }
   return out;
 }
